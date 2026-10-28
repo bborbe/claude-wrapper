@@ -48,8 +48,17 @@ func main() {
 	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
 	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor))
 
+	server := &http.Server{
+		Addr:              *listen,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	log.Printf("claude-wrapper listening on %s", *listen)
-	if err := http.ListenAndServe(*listen, mux); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("listen failed: %v", err)
 	}
 }

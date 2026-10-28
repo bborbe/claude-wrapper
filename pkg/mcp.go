@@ -58,10 +58,10 @@ type rpcRequest struct {
 }
 
 type rpcResponse struct {
-	JSONRPC string `json:"jsonrpc"`
+	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
+	Result  any             `json:"result,omitempty"`
+	Error   any             `json:"error,omitempty"`
 }
 
 // Run serves until stdin closes.

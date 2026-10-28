@@ -183,6 +183,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	// HTTP request that spawned it. Binding it to req.Context() killed every
 	// child the instant POST /sessions responded, which read as a spawn that
 	// silently exited.
+	// #nosec G204 -- claudeBin is an operator-supplied flag, never request input.
 	cmd := exec.CommandContext(context.Background(), s.claudeBin, buildArgs(id, options, mcpConfig)...)
 	cmd.Dir = options.Cwd
 
@@ -289,13 +290,12 @@ func buildArgs(id string, options SpawnOptions, mcpConfig string) []string {
 
 // child is one running claude process and the state read off its stream.
 type child struct {
-	mutex     sync.RWMutex
-	writeMu   sync.Mutex
-	id        string
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	startedAt time.Time
-	session   Session
+	mutex   sync.RWMutex
+	writeMu sync.Mutex
+	id      string
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	session Session
 }
 
 func (c *child) snapshot() *Session {
