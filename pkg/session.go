@@ -116,4 +116,11 @@ type Session struct {
 	Cwd         string    `json:"cwd"`
 	StartedAt   time.Time `json:"started_at"`
 	ExitCode    *int      `json:"exit_code"`
+	// LastEventAgeSeconds is how long the child's stream has been silent.
+	//
+	// It is reported so a caller can tell a genuinely idle child from one that
+	// is busy inside a tool call: the latter is silent too, but its state stays
+	// generating. State is never derived from this value — that inversion is
+	// the defect this field exists to make visible.
+	LastEventAgeSeconds *int `json:"last_event_age_seconds"`
 }

@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
@@ -209,6 +210,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 
 	c := &child{
 		id:    id,
+		now:   s.now,
 		cmd:   cmd,
 		stdin: stdin,
 		session: Session{
@@ -298,12 +300,14 @@ func buildArgs(id string, options SpawnOptions, mcpConfig string) []string {
 
 // child is one running claude process and the state read off its stream.
 type child struct {
-	mutex   sync.RWMutex
-	writeMu sync.Mutex
-	id      string
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	session Session
+	mutex       sync.RWMutex
+	writeMu     sync.Mutex
+	id          string
+	now         libtime.CurrentDateTimeGetter
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	lastEventAt time.Time
+	session     Session
 }
 
 func (c *child) snapshot() *Session {
@@ -315,6 +319,10 @@ func (c *child) snapshot() *Session {
 		clone.Question = &question
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
+	if !c.lastEventAt.IsZero() {
+		age := int(c.now.Now().Time().Sub(c.lastEventAt).Seconds())
+		clone.LastEventAgeSeconds = &age
+	}
 	return &clone
 }
 
@@ -410,6 +418,7 @@ func (c *child) consume(scanner *bufio.Scanner) {
 func (c *child) apply(event map[string]any) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	c.lastEventAt = c.now.Now().Time()
 	switch event["type"] {
 	case "system":
 		if event["subtype"] == "init" {

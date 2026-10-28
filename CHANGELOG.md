@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Expose `last_event_age_seconds` per session, so a caller can tell a genuinely idle child
+  from one that is busy inside a tool call. State is never derived from it — that inversion is
+  the defect the field makes visible.
 - Conform to the house style the first cut skipped: inject the clock instead of calling
   `time.Now()`, return an interface from `NewPending`, use Ginkgo for the handler tests, and
   build the sentinel errors without a package-level `context.Background()`.
