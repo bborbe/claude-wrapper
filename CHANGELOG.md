@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Stream a session's events over `GET /api/1.0/sessions/{id}/events` (server-sent events),
+  replaying what the child has already emitted before the live frames. Until now the wrapper
+  folded every event into `state` and discarded it, so a supervisor could read a child's state
+  but never the turn that produced it — which is why replacing an in-process `query()` with a
+  wrapper-backed spawn left the supervisor blind to the child it supervises.
+
 - Expose `last_event_age_seconds` per session, so a caller can tell a genuinely idle child
   from one that is busy inside a tool call. State is never derived from it — that inversion is
   the defect the field makes visible.

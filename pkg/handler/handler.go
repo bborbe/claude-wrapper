@@ -7,6 +7,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -80,6 +81,8 @@ func Session(supervisor pkg.Supervisor) http.Handler {
 			handleMessage(ctx, resp, req, supervisor, id)
 		case "question":
 			handleQuestion(ctx, resp, req, supervisor, id, requestID)
+		case "events":
+			handleEvents(ctx, resp, req, supervisor, id)
 		default:
 			handleSession(ctx, resp, req, supervisor, id)
 		}
@@ -193,6 +196,77 @@ func handleSession(
 	default:
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))
+	}
+}
+
+// handleEvents serves the child's event stream as server-sent events.
+//
+// The replay is written before the live channel is drained, so a subscriber
+// that arrives mid-turn sees the turn it missed rather than joining at an
+// arbitrary point. A closed channel ends the response: the child exited, or the
+// subscriber fell so far behind that the stream stopped being a faithful
+// account of it — both are reported as `event: end` rather than as silence.
+func handleEvents(
+	ctx context.Context,
+	resp http.ResponseWriter,
+	req *http.Request,
+	supervisor pkg.Supervisor,
+	id string,
+) {
+	if req.Method != http.MethodGet {
+		writeError(resp, http.StatusMethodNotAllowed,
+			errors.Errorf(ctx, "method %q not allowed", req.Method))
+		return
+	}
+	flusher, ok := resp.(http.Flusher)
+	if !ok {
+		writeError(resp, http.StatusInternalServerError,
+			errors.Errorf(ctx, "streaming unsupported"))
+		return
+	}
+	replay, live, cancel, err := supervisor.Subscribe(req.Context(), id)
+	if err != nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	defer cancel()
+
+	resp.Header().Set("Content-Type", "text/event-stream")
+	resp.Header().Set("Cache-Control", "no-cache")
+	resp.Header().Set("Connection", "keep-alive")
+	resp.WriteHeader(http.StatusOK)
+
+	writeFrame := func(event pkg.Event) bool {
+		encoded, marshalErr := json.Marshal(event)
+		if marshalErr != nil {
+			return true
+		}
+		if _, writeErr := fmt.Fprintf(resp, "data: %s\n\n", encoded); writeErr != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	for _, event := range replay {
+		if !writeFrame(event) {
+			return
+		}
+	}
+	for {
+		select {
+		case <-req.Context().Done():
+			return
+		case event, open := <-live:
+			if !open {
+				fmt.Fprint(resp, "event: end\ndata: {}\n\n")
+				flusher.Flush()
+				return
+			}
+			if !writeFrame(event) {
+				return
+			}
+		}
 	}
 }
 

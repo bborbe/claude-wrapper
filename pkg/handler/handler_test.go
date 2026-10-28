@@ -21,6 +21,7 @@ import (
 type fakeSupervisor struct {
 	sessions []pkg.Session
 	getErr   error
+	events   []pkg.Event
 }
 
 func (f *fakeSupervisor) Spawn(_ context.Context, _ pkg.SpawnOptions) (*pkg.Session, error) {
@@ -56,6 +57,15 @@ func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (string, bool, 
 
 func (f *fakeSupervisor) Stop(_ context.Context, _ string) error {
 	return f.getErr
+}
+
+func (f *fakeSupervisor) Subscribe(_ context.Context, _ string) ([]pkg.Event, <-chan pkg.Event, func(), error) {
+	if f.getErr != nil {
+		return nil, nil, nil, f.getErr
+	}
+	live := make(chan pkg.Event)
+	close(live)
+	return f.events, live, func() {}, nil
 }
 
 var _ = Describe("handler", func() {
@@ -98,5 +108,33 @@ var _ = Describe("handler", func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
 		handler.Session(sup).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	// The replay is the whole point of the route: a subscriber that arrives
+	// after a turn must still see that turn, not join at an arbitrary point.
+	It("streams the replay before the live channel and ends explicitly", func() {
+		sup := &fakeSupervisor{events: []pkg.Event{
+			{"type": "assistant"},
+			{"type": "result"},
+		}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
+		handler.Session(sup).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Header().Get("Content-Type")).To(Equal("text/event-stream"))
+		// Assert the payloads, not a frame count: the closing `event: end` frame
+		// carries a `data:` line of its own, so counting them proves nothing about
+		// the replay.
+		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"assistant"}`))
+		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"result"}`))
+		Expect(rec.Body.String()).To(ContainSubstring("event: end"))
+	})
+
+	It("refuses a non-GET on the events route", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/events", nil)
+		handler.Session(sup).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
 	})
 })

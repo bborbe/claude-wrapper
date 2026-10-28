@@ -42,6 +42,7 @@ type Supervisor interface {
 	RegisterQuestion(ctx context.Context, id string, question Question) error
 	PollAnswer(ctx context.Context, requestID string) (string, bool, error)
 	Stop(ctx context.Context, id string) error
+	Subscribe(ctx context.Context, id string) ([]Event, <-chan Event, func(), error)
 }
 
 // NewSupervisor creates a Supervisor that runs the given claude binary.
@@ -105,6 +106,25 @@ func (s *supervisor) Get(ctx context.Context, id string) (*Session, error) {
 		return nil, errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
 	}
 	return c.snapshot(), nil
+}
+
+// Subscribe streams one child's events: the replay of what it has already
+// emitted, then everything that follows.
+//
+// The channel closes when the child exits, or when the caller falls more than
+// subscriberBuffer events behind — the two cases are deliberately the same
+// signal, because in both the stream has stopped being a faithful account of
+// the child. Cancel must be called once the caller stops reading; it is safe to
+// call more than once.
+func (s *supervisor) Subscribe(ctx context.Context, id string) ([]Event, <-chan Event, func(), error) {
+	s.mutex.RLock()
+	c, ok := s.sessions[id]
+	s.mutex.RUnlock()
+	if !ok {
+		return nil, nil, nil, errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
+	}
+	replay, live, cancel := c.subscribe()
+	return replay, live, cancel, nil
 }
 
 func (s *supervisor) Answer(ctx context.Context, id string, requestID string, behavior string) error {
@@ -209,10 +229,11 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	}
 
 	c := &child{
-		id:    id,
-		now:   s.now,
-		cmd:   cmd,
-		stdin: stdin,
+		id:          id,
+		now:         s.now,
+		cmd:         cmd,
+		stdin:       stdin,
+		subscribers: map[int]chan Event{},
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
@@ -308,6 +329,13 @@ type child struct {
 	stdin       io.WriteCloser
 	lastEventAt time.Time
 	session     Session
+	// events retains what the child has already emitted so a subscriber that
+	// arrives mid-turn still sees the turn it missed.
+	events []Event
+	// subscribers holds one channel per live Subscribe caller, keyed by an id
+	// that only exists so cancel can find its own entry.
+	subscribers map[int]chan Event
+	nextSubID   int
 }
 
 func (c *child) snapshot() *Session {
@@ -394,6 +422,7 @@ func (c *child) reap() {
 	c.session.State = StateExited
 	c.session.Question = nil
 	c.session.Controls = []Control{}
+	c.closeSubscribers()
 	code := 0
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		code = exitErr.ExitCode()
@@ -435,6 +464,65 @@ func (c *child) apply(event map[string]any) {
 		c.applyStreamEvent(event)
 	case "result":
 		c.session.State = StateIdle
+	}
+	c.publish(Event(event))
+}
+
+// publish retains one event for replay and hands it to every live subscriber.
+//
+// A subscriber that has fallen subscriberBuffer events behind is closed rather
+// than skipped: a supervision stream with an invisible hole in it is worse than
+// one that ends and says so.
+func (c *child) publish(event Event) {
+	c.events = append(c.events, event)
+	if len(c.events) > maxRetainedEvents {
+		c.events = append([]Event{}, c.events[len(c.events)-maxRetainedEvents:]...)
+	}
+	for id, ch := range c.subscribers {
+		select {
+		case ch <- event:
+		default:
+			close(ch)
+			delete(c.subscribers, id)
+		}
+	}
+}
+
+// subscribe returns everything the child has emitted so far plus a channel
+// carrying what follows. The replay is copied under the lock, so a caller never
+// races the reader goroutine.
+func (c *child) subscribe() ([]Event, <-chan Event, func()) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	replay := append([]Event{}, c.events...)
+	live := make(chan Event, subscriberBuffer)
+	if c.session.State == StateExited {
+		close(live)
+		return replay, live, func() {}
+	}
+	id := c.nextSubID
+	c.nextSubID++
+	c.subscribers[id] = live
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			if existing, ok := c.subscribers[id]; ok {
+				close(existing)
+				delete(c.subscribers, id)
+			}
+		})
+	}
+	return replay, live, cancel
+}
+
+// closeSubscribers ends every live stream. Called once the child is gone, so a
+// consumer stops waiting on events that can no longer arrive.
+func (c *child) closeSubscribers() {
+	for id, ch := range c.subscribers {
+		close(ch)
+		delete(c.subscribers, id)
 	}
 }
 
