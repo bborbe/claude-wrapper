@@ -17,7 +17,19 @@ import (
 // child of claude, so it reaches this registry over the wrapper's own HTTP
 // surface. That indirection is why the question is visible to a REST caller at
 // all — the tool is the only thing claude talks to, and it forwards.
-type Pending struct {
+type Pending interface {
+	Register(requestID string)
+	Resolve(ctx context.Context, requestID string, behavior string) error
+	Peek(requestID string) (string, bool, error)
+	Forget(requestID string)
+}
+
+// NewPending creates an empty registry.
+func NewPending() Pending {
+	return &pending{waiters: map[string]*waiter{}}
+}
+
+type pending struct {
 	mutex   sync.Mutex
 	waiters map[string]*waiter
 }
@@ -27,14 +39,9 @@ type waiter struct {
 	answered bool
 }
 
-// NewPending creates an empty registry.
-func NewPending() *Pending {
-	return &Pending{waiters: map[string]*waiter{}}
-}
-
 // Register records a request. Registering an id twice is a no-op so a retried
 // tool call cannot reset a decision already made.
-func (p *Pending) Register(requestID string) {
+func (p *pending) Register(requestID string) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	if _, ok := p.waiters[requestID]; ok {
@@ -44,7 +51,7 @@ func (p *Pending) Register(requestID string) {
 }
 
 // Resolve records an answer for a request.
-func (p *Pending) Resolve(ctx context.Context, requestID string, behavior string) error {
+func (p *pending) Resolve(ctx context.Context, requestID string, behavior string) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	entry, ok := p.waiters[requestID]
@@ -63,7 +70,7 @@ func (p *Pending) Resolve(ctx context.Context, requestID string, behavior string
 //
 // Non-blocking on purpose: the MCP tool polls this over HTTP, and a blocking
 // long-poll would tie up a server goroutine per pending prompt.
-func (p *Pending) Peek(requestID string) (string, bool, error) {
+func (p *pending) Peek(requestID string) (string, bool, error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	entry, ok := p.waiters[requestID]
@@ -74,7 +81,7 @@ func (p *Pending) Peek(requestID string) (string, bool, error) {
 }
 
 // Forget drops a request without answering it.
-func (p *Pending) Forget(requestID string) {
+func (p *pending) Forget(requestID string) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	delete(p.waiters, requestID)

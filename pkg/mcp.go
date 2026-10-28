@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 )
 
 // PermissionToolName is the MCP tool a child is told to call for a permission
@@ -39,6 +40,7 @@ type MCPServer struct {
 	In         io.Reader
 	Out        io.Writer
 	LogPath    string
+	Now        libtime.CurrentDateTimeGetter
 	WrapperURL string
 	SessionID  string
 	// Allow is the verdict returned when nobody answers. It is allow on
@@ -148,13 +150,20 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 	if s.WrapperURL == "" || s.SessionID == "" {
 		return s.verdictFor(s.defaultBehavior())
 	}
-	requestID := strconv.FormatInt(time.Now().UnixNano(), 36)
+	requestID := strconv.FormatInt(s.Now.Now().Time().UnixNano(), 36)
 	if err := s.register(ctx, requestID, params); err != nil {
 		log.Printf("mcp: register question failed: %v", err)
 		return s.verdictFor(s.defaultBehavior())
 	}
-	deadline := time.Now().Add(s.Hold)
-	for time.Now().Before(deadline) {
+	deadline := s.Now.Now().Time().Add(s.Hold)
+	for s.Now.Now().Time().Before(deadline) {
+		// A cancelled host must not keep polling: the caller that owns this
+		// context has gone away and the verdict can no longer reach it.
+		select {
+		case <-ctx.Done():
+			return s.verdictFor(s.defaultBehavior())
+		default:
+		}
 		behavior, answered, err := s.poll(ctx, requestID)
 		if err == nil && answered {
 			return s.verdictFor(behavior)

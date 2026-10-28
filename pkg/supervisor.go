@@ -15,9 +15,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 )
 
 // SpawnOptions is what a caller may ask for when starting a child.
@@ -44,9 +44,15 @@ type Supervisor interface {
 }
 
 // NewSupervisor creates a Supervisor that runs the given claude binary.
-func NewSupervisor(claudeBin string) Supervisor {
+func NewSupervisor(
+	ctx context.Context,
+	claudeBin string,
+	now libtime.CurrentDateTimeGetter,
+) Supervisor {
 	return &supervisor{
+		ctx:       ctx,
 		claudeBin: claudeBin,
+		now:       now,
 		mutex:     sync.RWMutex{},
 		sessions:  map[string]*child{},
 		pending:   NewPending(),
@@ -54,10 +60,12 @@ func NewSupervisor(claudeBin string) Supervisor {
 }
 
 type supervisor struct {
+	ctx       context.Context
 	claudeBin string
+	now       libtime.CurrentDateTimeGetter
 	mutex     sync.RWMutex
 	sessions  map[string]*child
-	pending   *Pending
+	pending   Pending
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -179,12 +187,12 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err != nil {
 		return nil, err
 	}
-	// context.Background(), never the caller's ctx: the child must outlive the
-	// HTTP request that spawned it. Binding it to req.Context() killed every
-	// child the instant POST /sessions responded, which read as a spawn that
-	// silently exited.
+	// s.ctx, never the caller's ctx: the child must outlive the HTTP request
+	// that spawned it. Binding it to req.Context() killed every child the
+	// instant POST /sessions responded, which read as a spawn that silently
+	// exited.
 	// #nosec G204 -- claudeBin is an operator-supplied flag, never request input.
-	cmd := exec.CommandContext(context.Background(), s.claudeBin, buildArgs(id, options, mcpConfig)...)
+	cmd := exec.CommandContext(s.ctx, s.claudeBin, buildArgs(id, options, mcpConfig)...)
 	cmd.Dir = options.Cwd
 
 	stdin, err := cmd.StdinPipe()
@@ -208,7 +216,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 			State:     StateStarting,
 			Controls:  []Control{ControlMessage},
 			Cwd:       options.Cwd,
-			StartedAt: time.Now().UTC(),
+			StartedAt: s.now.Now().Time().UTC(),
 		},
 	}
 	go c.consume(bufio.NewScanner(stdout))
