@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -110,7 +112,11 @@ func (s *supervisor) Stop(ctx context.Context, id string) error {
 }
 
 func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOptions) (*child, error) {
-	cmd := exec.CommandContext(ctx, s.claudeBin, buildArgs(id, options)...)
+	mcpConfig, err := writeMCPConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, s.claudeBin, buildArgs(id, options, mcpConfig)...)
 	cmd.Dir = options.Cwd
 
 	stdin, err := cmd.StdinPipe()
@@ -142,9 +148,53 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	return c, nil
 }
 
+// DefaultPermissionMode is how a child is spawned unless the caller says
+// otherwise.
+//
+// `auto` rather than `bypassPermissions`: auto approves what policy permits and
+// routes the remainder to the permission-prompt tool, which is what makes a
+// pending question observable at all. Measured 2026-10-28, `--permission-prompts
+// host` emits no control_request on stdout or stderr, so a child that asks with
+// no tool configured blocks until killed — the failure this default avoids.
+const DefaultPermissionMode = "auto"
+
+// writeMCPConfig points the child at this binary's stdio MCP mode.
+//
+// A permission-prompt tool has to resolve to a real MCP tool, so the child is
+// given a generated config whose `command` is the running wrapper. The log path
+// is what makes the tool's payload observable: its schema is undocumented, so
+// the first runs record it verbatim rather than parsing a guess.
+func writeMCPConfig(ctx context.Context, id string) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "resolve own binary failed")
+	}
+	config := map[string]any{
+		"mcpServers": map[string]any{
+			"claude-wrapper": map[string]any{
+				"command": self,
+				"args":    []string{"--mcp-stdio", "--mcp-log", filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.log")},
+			},
+		},
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "marshal mcp config failed")
+	}
+	path := filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		return "", errors.Wrapf(ctx, err, "write mcp config failed")
+	}
+	return path, nil
+}
+
 // buildArgs pins the flags the wrapper depends on. The stream formats are
 // --print-only, which is why phase 1 wraps only children it spawns.
-func buildArgs(id string, options SpawnOptions) []string {
+func buildArgs(id string, options SpawnOptions, mcpConfig string) []string {
+	mode := options.PermissionMode
+	if mode == "" {
+		mode = DefaultPermissionMode
+	}
 	args := []string{
 		"--print",
 		"--verbose",
@@ -152,12 +202,12 @@ func buildArgs(id string, options SpawnOptions) []string {
 		"--output-format", "stream-json",
 		"--include-partial-messages",
 		"--session-id", id,
+		"--permission-mode", mode,
+		"--mcp-config", mcpConfig,
+		"--permission-prompt-tool", "mcp__claude-wrapper__" + PermissionToolName,
 	}
 	if options.Model != "" {
 		args = append(args, "--model", options.Model)
-	}
-	if options.PermissionMode != "" {
-		args = append(args, "--permission-mode", options.PermissionMode)
 	}
 	if options.PermissionPrompt != "" {
 		args = append(args, "--permission-prompts", options.PermissionPrompt)

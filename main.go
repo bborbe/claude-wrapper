@@ -5,9 +5,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/bborbe/claude-wrapper/pkg"
 	"github.com/bborbe/claude-wrapper/pkg/handler"
@@ -16,7 +18,17 @@ import (
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
+	mcpStdio := flag.Bool("mcp-stdio", false, "serve the permission MCP tool on stdio instead of HTTP")
+	mcpLog := flag.String("mcp-log", "", "path to append raw permission requests to")
 	flag.Parse()
+
+	if *mcpStdio {
+		server := &pkg.MCPServer{In: os.Stdin, Out: os.Stdout, LogPath: *mcpLog, Allow: true}
+		if err := server.Run(context.Background()); err != nil {
+			log.Fatalf("mcp server failed: %v", err)
+		}
+		return
+	}
 
 	supervisor := pkg.NewSupervisor(*claudeBin)
 
