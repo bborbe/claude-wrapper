@@ -19,54 +19,58 @@ import (
 // all — the tool is the only thing claude talks to, and it forwards.
 type Pending struct {
 	mutex   sync.Mutex
-	waiters map[string]chan string
+	waiters map[string]*waiter
+}
+
+type waiter struct {
+	behavior string
+	answered bool
 }
 
 // NewPending creates an empty registry.
 func NewPending() *Pending {
-	return &Pending{waiters: map[string]chan string{}}
+	return &Pending{waiters: map[string]*waiter{}}
 }
 
-// Register records a question and returns the channel its answer will arrive on.
-func (p *Pending) Register(requestID string) chan string {
+// Register records a request. Registering an id twice is a no-op so a retried
+// tool call cannot reset a decision already made.
+func (p *Pending) Register(requestID string) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	if existing, ok := p.waiters[requestID]; ok {
-		return existing
+	if _, ok := p.waiters[requestID]; ok {
+		return
 	}
-	ch := make(chan string, 1)
-	p.waiters[requestID] = ch
-	return ch
+	p.waiters[requestID] = &waiter{}
 }
 
-// Resolve delivers an answer to the waiting tool call.
+// Resolve records an answer for a request.
 func (p *Pending) Resolve(ctx context.Context, requestID string, behavior string) error {
 	p.mutex.Lock()
-	ch, ok := p.waiters[requestID]
-	delete(p.waiters, requestID)
-	p.mutex.Unlock()
+	defer p.mutex.Unlock()
+	entry, ok := p.waiters[requestID]
 	if !ok {
 		return errors.Wrapf(ctx, ErrAnswerUnsupported, "no pending request %q", requestID)
 	}
-	ch <- behavior
+	if entry.answered {
+		return errors.Wrapf(ctx, ErrAnswerUnsupported, "request %q already answered", requestID)
+	}
+	entry.behavior = behavior
+	entry.answered = true
 	return nil
 }
 
-// Wait blocks until the request is answered, the context ends, or the answer
-// channel is closed. The caller decides what an unanswered request means.
-func (p *Pending) Wait(ctx context.Context, requestID string) (string, error) {
+// Peek reports whether the request has been answered, without blocking.
+//
+// Non-blocking on purpose: the MCP tool polls this over HTTP, and a blocking
+// long-poll would tie up a server goroutine per pending prompt.
+func (p *Pending) Peek(requestID string) (string, bool, error) {
 	p.mutex.Lock()
-	ch, ok := p.waiters[requestID]
-	p.mutex.Unlock()
+	defer p.mutex.Unlock()
+	entry, ok := p.waiters[requestID]
 	if !ok {
-		return "", errors.Wrapf(ctx, ErrAnswerUnsupported, "no pending request %q", requestID)
+		return "", false, nil
 	}
-	select {
-	case behavior := <-ch:
-		return behavior, nil
-	case <-ctx.Done():
-		return "", errors.Wrapf(ctx, ctx.Err(), "waiting for answer to %q", requestID)
-	}
+	return entry.behavior, entry.answered, nil
 }
 
 // Forget drops a request without answering it.

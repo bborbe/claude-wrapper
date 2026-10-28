@@ -53,30 +53,120 @@ func Sessions(supervisor pkg.Supervisor) http.Handler {
 	})
 }
 
-// Session serves one child: GET, DELETE, and POST …/answer.
+// Session serves one child: GET, DELETE, and the POST …/answer, …/message and
+// …/question sub-resources.
 func Session(supervisor pkg.Supervisor) http.Handler {
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
 		rest := strings.TrimPrefix(req.URL.Path, "/api/1.0/sessions/")
-		id, action := splitPath(rest)
+		parts := strings.Split(strings.Trim(rest, "/"), "/")
+		id := parts[0]
 		if id == "" {
 			writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "session id missing"))
 			return
 		}
-		if action == "answer" {
-			handleAnswer(ctx, resp, req, supervisor, id)
-			return
+		action := ""
+		requestID := ""
+		if len(parts) > 1 {
+			action = parts[1]
 		}
-		handleSession(ctx, resp, req, supervisor, id)
+		if len(parts) > 2 {
+			requestID = parts[2]
+		}
+		switch action {
+		case "answer":
+			handleAnswer(ctx, resp, req, supervisor, id)
+		case "message":
+			handleMessage(ctx, resp, req, supervisor, id)
+		case "question":
+			handleQuestion(ctx, resp, req, supervisor, id, requestID)
+		default:
+			handleSession(ctx, resp, req, supervisor, id)
+		}
 	})
 }
 
-func splitPath(rest string) (string, string) {
-	parts := strings.SplitN(strings.Trim(rest, "/"), "/", 2)
-	if len(parts) == 1 {
-		return parts[0], ""
+type messageRequest struct {
+	Text string `json:"text"`
+}
+
+func handleMessage(
+	ctx context.Context,
+	resp http.ResponseWriter,
+	req *http.Request,
+	supervisor pkg.Supervisor,
+	id string,
+) {
+	if req.Method != http.MethodPost {
+		writeError(resp, http.StatusMethodNotAllowed,
+			errors.Errorf(ctx, "method %q not allowed", req.Method))
+		return
 	}
-	return parts[0], parts[1]
+	var body messageRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
+		return
+	}
+	if body.Text == "" {
+		writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "text is required"))
+		return
+	}
+	if err := supervisor.Send(ctx, id, body.Text); err != nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	writeJSON(resp, http.StatusAccepted, map[string]string{"status": "sent"})
+}
+
+type questionRequest struct {
+	RequestID string         `json:"request_id"`
+	ToolName  string         `json:"tool_name"`
+	Input     map[string]any `json:"input"`
+}
+
+// handleQuestion is the two halves the MCP tool needs: POST registers a
+// permission request, GET polls for its answer. Polling rather than long-poll
+// keeps one pending prompt from holding a server goroutine.
+func handleQuestion(
+	ctx context.Context,
+	resp http.ResponseWriter,
+	req *http.Request,
+	supervisor pkg.Supervisor,
+	id string,
+	requestID string,
+) {
+	switch req.Method {
+	case http.MethodPost:
+		var body questionRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
+			return
+		}
+		question := pkg.Question{
+			RequestID: body.RequestID,
+			ToolName:  body.ToolName,
+			Input:     body.Input,
+			Options:   []string{"allow", "deny"},
+		}
+		if err := supervisor.RegisterQuestion(ctx, id, question); err != nil {
+			writeError(resp, statusFor(err), err)
+			return
+		}
+		writeJSON(resp, http.StatusAccepted, question)
+	case http.MethodGet:
+		behavior, answered, err := supervisor.PollAnswer(ctx, requestID)
+		if err != nil {
+			writeError(resp, statusFor(err), err)
+			return
+		}
+		writeJSON(resp, http.StatusOK, map[string]any{
+			"answered": answered,
+			"behavior": behavior,
+		})
+	default:
+		writeError(resp, http.StatusMethodNotAllowed,
+			errors.Errorf(ctx, "method %q not allowed", req.Method))
+	}
 }
 
 func handleSession(

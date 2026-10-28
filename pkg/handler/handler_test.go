@@ -40,6 +40,18 @@ func (f *fakeSupervisor) Answer(_ context.Context, _, _, _ string) error {
 	return f.getErr
 }
 
+func (f *fakeSupervisor) Send(_ context.Context, _, _ string) error {
+	return f.getErr
+}
+
+func (f *fakeSupervisor) RegisterQuestion(_ context.Context, _ string, _ pkg.Question) error {
+	return f.getErr
+}
+
+func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (string, bool, error) {
+	return "", false, f.getErr
+}
+
 func (f *fakeSupervisor) Stop(_ context.Context, _ string) error {
 	return f.getErr
 }

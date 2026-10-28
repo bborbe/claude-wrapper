@@ -7,7 +7,9 @@ package pkg
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -34,7 +36,10 @@ type Supervisor interface {
 	Spawn(ctx context.Context, options SpawnOptions) (*Session, error)
 	List(ctx context.Context) ([]Session, error)
 	Get(ctx context.Context, id string) (*Session, error)
+	Send(ctx context.Context, id string, text string) error
 	Answer(ctx context.Context, id string, requestID string, behavior string) error
+	RegisterQuestion(ctx context.Context, id string, question Question) error
+	PollAnswer(ctx context.Context, requestID string) (string, bool, error)
 	Stop(ctx context.Context, id string) error
 }
 
@@ -44,6 +49,7 @@ func NewSupervisor(claudeBin string) Supervisor {
 		claudeBin: claudeBin,
 		mutex:     sync.RWMutex{},
 		sessions:  map[string]*child{},
+		pending:   NewPending(),
 	}
 }
 
@@ -51,6 +57,7 @@ type supervisor struct {
 	claudeBin string
 	mutex     sync.RWMutex
 	sessions  map[string]*child
+	pending   *Pending
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -60,7 +67,7 @@ type supervisor struct {
 // observable and State can only ever read idle between turns. The partial
 // stream events are what make StateGenerating distinguishable from StateIdle.
 func (s *supervisor) Spawn(ctx context.Context, options SpawnOptions) (*Session, error) {
-	id := time.Now().UTC().Format("20060102T150405.000000000")
+	id := newID()
 	c, err := s.startChild(ctx, id, options)
 	if err != nil {
 		return nil, err
@@ -98,7 +105,47 @@ func (s *supervisor) Answer(ctx context.Context, id string, requestID string, be
 	if !ok {
 		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
 	}
-	return c.answer(ctx, requestID, behavior)
+	if err := s.pending.Resolve(ctx, requestID, behavior); err != nil {
+		return err
+	}
+	c.clearQuestion(requestID)
+	return nil
+}
+
+// Send writes one user turn to the child's stdin.
+//
+// Without this the wrapper can start a child and watch it, but never make it
+// do anything — and a child that is never asked never reaches a permission
+// gate, so the question path could not be exercised at all.
+func (s *supervisor) Send(ctx context.Context, id string, text string) error {
+	s.mutex.RLock()
+	c, ok := s.sessions[id]
+	s.mutex.RUnlock()
+	if !ok {
+		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
+	}
+	return c.send(ctx, text)
+}
+
+// RegisterQuestion records a permission request raised by the child's MCP tool.
+func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Question) error {
+	s.mutex.RLock()
+	c, ok := s.sessions[id]
+	s.mutex.RUnlock()
+	if !ok {
+		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
+	}
+	if c.isExited() {
+		return errors.Wrapf(ctx, ErrSessionExited, "session %q exited", id)
+	}
+	s.pending.Register(question.RequestID)
+	c.setQuestion(question)
+	return nil
+}
+
+// PollAnswer reports whether the pending request has been answered yet.
+func (s *supervisor) PollAnswer(ctx context.Context, requestID string) (string, bool, error) {
+	return s.pending.Peek(requestID)
 }
 
 func (s *supervisor) Stop(ctx context.Context, id string) error {
@@ -111,12 +158,32 @@ func (s *supervisor) Stop(ctx context.Context, id string) error {
 	return c.stop(ctx)
 }
 
+// newID returns a random UUID v4.
+//
+// It must be a UUID: `claude --session-id` rejects anything else outright
+// ("Invalid session ID. Must be a valid UUID."), and the child exits before
+// producing a single event — which reads as a spawn that silently failed.
+func newID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand failing is not recoverable in any useful way here.
+		panic(err)
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
+}
+
 func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOptions) (*child, error) {
 	mcpConfig, err := writeMCPConfig(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, s.claudeBin, buildArgs(id, options, mcpConfig)...)
+	// context.Background(), never the caller's ctx: the child must outlive the
+	// HTTP request that spawned it. Binding it to req.Context() killed every
+	// child the instant POST /sessions responded, which read as a spawn that
+	// silently exited.
+	cmd := exec.CommandContext(context.Background(), s.claudeBin, buildArgs(id, options, mcpConfig)...)
 	cmd.Dir = options.Cwd
 
 	stdin, err := cmd.StdinPipe()
@@ -173,7 +240,12 @@ func writeMCPConfig(ctx context.Context, id string) (string, error) {
 		"mcpServers": map[string]any{
 			"claude-wrapper": map[string]any{
 				"command": self,
-				"args":    []string{"--mcp-stdio", "--mcp-log", filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.log")},
+				"args": []string{
+					"--mcp-stdio",
+					"--mcp-log", filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.log"),
+					"--wrapper-url", "http://localhost:18090",
+					"--session-id", id,
+				},
 			},
 		},
 	}
@@ -250,46 +322,53 @@ func (c *child) stop(ctx context.Context) error {
 	return nil
 }
 
-// answer writes one control response to the child's stdin.
-//
-// The prompt is only reachable through this process, so the response is
-// written to the same child that raised it — answering a store instead would
-// answer nothing.
-func (c *child) answer(ctx context.Context, requestID string, behavior string) error {
+// send writes one user turn to the child's stdin as JSONL.
+func (c *child) send(ctx context.Context, text string) error {
 	c.mutex.RLock()
 	state := c.session.State
-	question := c.session.Question
 	c.mutex.RUnlock()
-
 	if state == StateExited {
 		return errors.Wrapf(ctx, ErrSessionExited, "session %q exited", c.id)
 	}
-	if question == nil {
-		return errors.Wrapf(ctx, ErrAnswerUnsupported, "session %q holds no open question", c.id)
-	}
-	if question.RequestID != requestID {
-		return errors.Wrapf(ctx, ErrAnswerUnsupported,
-			"session %q holds request %q, not %q", c.id, question.RequestID, requestID)
-	}
-
 	payload := map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": requestID,
-			"response":   map[string]any{"behavior": behavior},
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": []any{map[string]any{"type": "text", "text": text}},
 		},
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return errors.Wrapf(ctx, err, "marshal answer failed")
+		return errors.Wrapf(ctx, err, "marshal message failed")
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if _, err := c.stdin.Write(append(encoded, '\n')); err != nil {
-		return errors.Wrapf(ctx, err, "write answer to session %q failed", c.id)
+		return errors.Wrapf(ctx, err, "write message to session %q failed", c.id)
 	}
 	return nil
+}
+
+func (c *child) isExited() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.session.State == StateExited
+}
+
+func (c *child) setQuestion(question Question) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	clone := question
+	c.session.Question = &clone
+	c.session.Controls = []Control{ControlAnswer, ControlMessage}
+}
+
+func (c *child) clearQuestion(requestID string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.session.Question != nil && c.session.Question.RequestID == requestID {
+		c.session.Question = nil
+	}
 }
 
 func (c *child) reap() {

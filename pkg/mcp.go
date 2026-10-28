@@ -6,11 +6,15 @@ package pkg
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log"
+	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/bborbe/errors"
 )
@@ -32,11 +36,18 @@ const PermissionToolName = "permission_prompt"
 // LogPath and answers allow, so the real shape can be read off disk before any
 // parsing logic is written on top of it.
 type MCPServer struct {
-	In      io.Reader
-	Out     io.Writer
-	LogPath string
-	// Allow is the default verdict, and the only one this first cut returns.
+	In         io.Reader
+	Out        io.Writer
+	LogPath    string
+	WrapperURL string
+	SessionID  string
+	// Allow is the verdict returned when nobody answers. It is allow on
+	// purpose: a child that stalls forever on an unanswered prompt is the
+	// failure this whole channel exists to avoid.
 	Allow bool
+	// Hold is how long a request waits for a REST answer before the default
+	// verdict is returned.
+	Hold time.Duration
 }
 
 type rpcRequest struct {
@@ -103,7 +114,7 @@ func (s *MCPServer) handle(ctx context.Context, request *rpcRequest) (any, bool)
 	case "tools/call":
 		s.record(request.Params)
 		return map[string]any{"content": []any{
-			map[string]any{"type": "text", "text": s.verdict()},
+			map[string]any{"type": "text", "text": s.decide(ctx, request.Params)},
 		}}, len(request.ID) > 0
 	default:
 		return nil, false
@@ -127,9 +138,91 @@ func (s *MCPServer) record(params json.RawMessage) {
 	}
 }
 
-func (s *MCPServer) verdict() string {
-	if s.Allow {
-		return `{"behavior":"allow"}`
+// decide forwards the request to the wrapper and waits for a REST answer.
+//
+// The tool is a child of claude, so it cannot touch the wrapper's memory: it
+// registers the request over HTTP and polls until answered or the hold expires.
+// On expiry it returns the default verdict rather than blocking the child
+// forever — an unanswered prompt must never wedge a session.
+func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
+	if s.WrapperURL == "" || s.SessionID == "" {
+		return s.verdictFor(s.defaultBehavior())
 	}
-	return `{"behavior":"deny","message":"denied by claude-wrapper"}`
+	requestID := strconv.FormatInt(time.Now().UnixNano(), 36)
+	if err := s.register(ctx, requestID, params); err != nil {
+		log.Printf("mcp: register question failed: %v", err)
+		return s.verdictFor(s.defaultBehavior())
+	}
+	deadline := time.Now().Add(s.Hold)
+	for time.Now().Before(deadline) {
+		behavior, answered, err := s.poll(ctx, requestID)
+		if err == nil && answered {
+			return s.verdictFor(behavior)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	log.Printf("mcp: request %s unanswered after %s, defaulting", requestID, s.Hold)
+	return s.verdictFor(s.defaultBehavior())
+}
+
+func (s *MCPServer) register(ctx context.Context, requestID string, params json.RawMessage) error {
+	body := map[string]any{
+		"request_id": requestID,
+		"tool_name":  "permission",
+		"input":      json.RawMessage(params),
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "marshal question failed")
+	}
+	url := s.WrapperURL + "/api/1.0/sessions/" + s.SessionID + "/question"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(encoded))
+	if err != nil {
+		return errors.Wrapf(ctx, err, "build question request failed")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "post question failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return errors.Errorf(ctx, "question rejected with %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *MCPServer) poll(ctx context.Context, requestID string) (string, bool, error) {
+	url := s.WrapperURL + "/api/1.0/sessions/" + s.SessionID + "/question/" + requestID
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", false, errors.Wrapf(ctx, err, "build poll request failed")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", false, errors.Wrapf(ctx, err, "poll question failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Answered bool   `json:"answered"`
+		Behavior string `json:"behavior"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", false, errors.Wrapf(ctx, err, "decode poll failed")
+	}
+	return body.Behavior, body.Answered, nil
+}
+
+func (s *MCPServer) defaultBehavior() string {
+	if s.Allow {
+		return "allow"
+	}
+	return "deny"
+}
+
+func (s *MCPServer) verdictFor(behavior string) string {
+	if behavior == "deny" {
+		return `{"behavior":"deny","message":"denied by claude-wrapper"}`
+	}
+	return `{"behavior":"allow"}`
 }
