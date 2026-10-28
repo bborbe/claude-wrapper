@@ -470,6 +470,11 @@ func (c *child) apply(event map[string]any) {
 
 // publish retains one event for replay and hands it to every live subscriber.
 //
+// The caller must hold c.mutex — apply is the only caller, and it already does.
+// Taking the lock here instead would deadlock, so the precondition is stated
+// rather than enforced: a second caller that forgets it races the reader
+// goroutine on c.events and c.subscribers.
+//
 // A subscriber that has fallen subscriberBuffer events behind is closed rather
 // than skipped: a supervision stream with an invisible hole in it is worse than
 // one that ends and says so.
