@@ -44,8 +44,13 @@ type Supervisor interface {
 }
 
 // NewSupervisor creates a Supervisor that runs the given claude binary.
-func NewSupervisor(claudeBin string, now libtime.CurrentDateTimeGetter) Supervisor {
+func NewSupervisor(
+	ctx context.Context,
+	claudeBin string,
+	now libtime.CurrentDateTimeGetter,
+) Supervisor {
 	return &supervisor{
+		ctx:       ctx,
 		claudeBin: claudeBin,
 		now:       now,
 		mutex:     sync.RWMutex{},
@@ -55,6 +60,7 @@ func NewSupervisor(claudeBin string, now libtime.CurrentDateTimeGetter) Supervis
 }
 
 type supervisor struct {
+	ctx       context.Context
 	claudeBin string
 	now       libtime.CurrentDateTimeGetter
 	mutex     sync.RWMutex
@@ -181,12 +187,12 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err != nil {
 		return nil, err
 	}
-	// context.Background(), never the caller's ctx: the child must outlive the
-	// HTTP request that spawned it. Binding it to req.Context() killed every
-	// child the instant POST /sessions responded, which read as a spawn that
-	// silently exited.
+	// s.ctx, never the caller's ctx: the child must outlive the HTTP request
+	// that spawned it. Binding it to req.Context() killed every child the
+	// instant POST /sessions responded, which read as a spawn that silently
+	// exited.
 	// #nosec G204 -- claudeBin is an operator-supplied flag, never request input.
-	cmd := exec.CommandContext(context.Background(), s.claudeBin, buildArgs(id, options, mcpConfig)...)
+	cmd := exec.CommandContext(s.ctx, s.claudeBin, buildArgs(id, options, mcpConfig)...)
 	cmd.Dir = options.Cwd
 
 	stdin, err := cmd.StdinPipe()

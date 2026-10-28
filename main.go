@@ -44,7 +44,7 @@ func main() {
 		return
 	}
 
-	supervisor := pkg.NewSupervisor(*claudeBin, libtime.NewCurrentDateTime())
+	supervisor := pkg.NewSupervisor(context.Background(), *claudeBin, libtime.NewCurrentDateTime())
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", handler.Healthz())
