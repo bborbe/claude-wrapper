@@ -1,0 +1,16 @@
+# Opts this repo into maintainer-bot behaviors. Read per-repo by the maintainer agents.
+#
+# release.autoRelease: when true, the github-release watcher emits a release task
+# when CHANGELOG.md has a non-empty "## Unreleased" section and master has moved.
+#
+# prReviewer.autoApprove: when true, the pr-reviewer agent posts verdict "approve"
+# as an APPROVE review (counts toward branch-protection).
+release:
+  autoRelease: true
+  changelogRewrite: false
+prReviewer:
+  autoApprove: true
+autoMerge:
+  trivial: true
+goUpdate:
+  autoUpdate: true

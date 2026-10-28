@@ -1,0 +1,5 @@
+# workflow: direct — changes are authored in place on a feature branch rather than
+# generated from a spec/prompt pair. See the repo's CLAUDE.md for the branch flow.
+autoRelease: false
+autoGeneratePrompts: false
+workflow: direct
