@@ -157,6 +157,13 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 	}
 	deadline := s.Now.Now().Time().Add(s.Hold)
 	for s.Now.Now().Time().Before(deadline) {
+		// A cancelled host must not keep polling: the caller that owns this
+		// context has gone away and the verdict can no longer reach it.
+		select {
+		case <-ctx.Done():
+			return s.verdictFor(s.defaultBehavior())
+		default:
+		}
 		behavior, answered, err := s.poll(ctx, requestID)
 		if err == nil && answered {
 			return s.verdictFor(behavior)

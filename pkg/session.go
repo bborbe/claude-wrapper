@@ -4,7 +4,10 @@
 
 package pkg
 
-import "time"
+import (
+	stderrors "errors"
+	"time"
+)
 
 // State is a session's liveness verdict.
 //
@@ -25,6 +28,35 @@ const (
 	StateExited State = "exited"
 )
 
+// AvailableStates is every legal State, for validation and iteration.
+var AvailableStates = States{
+	StateStarting,
+	StateGenerating,
+	StateIdle,
+	StateExited,
+}
+
+// States is a collection of State values.
+type States []State
+
+// Contains reports whether the collection holds the given state.
+func (s States) Contains(state State) bool {
+	for _, candidate := range s {
+		if candidate == state {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate rejects a state outside AvailableStates.
+func (s State) Validate() error {
+	if !AvailableStates.Contains(s) {
+		return stderrors.New("invalid state " + string(s))
+	}
+	return nil
+}
+
 // Control is an operation a session supports.
 //
 // A wrapper that reports every session as answerable invites callers to attempt
@@ -37,6 +69,33 @@ const (
 	// ControlMessage means the caller may send a further user turn.
 	ControlMessage Control = "message"
 )
+
+// AvailableControls is every legal Control, for validation and iteration.
+var AvailableControls = Controls{
+	ControlAnswer,
+	ControlMessage,
+}
+
+// Controls is a collection of Control values.
+type Controls []Control
+
+// Contains reports whether the collection holds the given control.
+func (c Controls) Contains(control Control) bool {
+	for _, candidate := range c {
+		if candidate == control {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate rejects a control outside AvailableControls.
+func (c Control) Validate() error {
+	if !AvailableControls.Contains(c) {
+		return stderrors.New("invalid control " + string(c))
+	}
+	return nil
+}
 
 // Question is the permission request a session is parked on.
 type Question struct {
@@ -53,7 +112,7 @@ type Session struct {
 	Model       string    `json:"model"`
 	ModelSource string    `json:"model_source"`
 	Question    *Question `json:"question"`
-	Controls    []Control `json:"controls"`
+	Controls    Controls  `json:"controls"`
 	Cwd         string    `json:"cwd"`
 	StartedAt   time.Time `json:"started_at"`
 	ExitCode    *int      `json:"exit_code"`
