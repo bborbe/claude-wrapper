@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/bborbe/claude-wrapper/pkg"
 	"github.com/bborbe/claude-wrapper/pkg/handler"
@@ -56,52 +58,45 @@ func (f *fakeSupervisor) Stop(_ context.Context, _ string) error {
 	return f.getErr
 }
 
-func TestHealthzReturnsOK(t *testing.T) {
-	rec := httptest.NewRecorder()
-	handler.Healthz().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-}
+var _ = Describe("handler", func() {
+	It("reports healthy", func() {
+		rec := httptest.NewRecorder()
+		handler.Healthz().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
 
-func TestListReturnsSessions(t *testing.T) {
-	sup := &fakeSupervisor{sessions: []pkg.Session{
-		{ID: "a", State: pkg.StateGenerating, Model: "m1", ModelSource: "assistant"},
-		{ID: "b", State: pkg.StateIdle, Model: "m2", ModelSource: "assistant"},
-	}}
-	rec := httptest.NewRecorder()
-	handler.Sessions(sup).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/1.0/sessions", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var got []pkg.Session
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("len = %d, want 2", len(got))
-	}
-}
+	It("lists every session", func() {
+		sup := &fakeSupervisor{sessions: []pkg.Session{
+			{ID: "a", State: pkg.StateGenerating, Model: "m1", ModelSource: "assistant"},
+			{ID: "b", State: pkg.StateIdle, Model: "m2", ModelSource: "assistant"},
+		}}
+		rec := httptest.NewRecorder()
+		handler.Sessions(sup).ServeHTTP(
+			rec, httptest.NewRequest(http.MethodGet, "/api/1.0/sessions", nil),
+		)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var got []pkg.Session
+		Expect(json.Unmarshal(rec.Body.Bytes(), &got)).To(Succeed())
+		Expect(got).To(HaveLen(2))
+	})
 
-// A missing session must be 404, not 500 — the status contract is part of the
-// API, and a blanket 500 would make a caller retry something that cannot change.
-func TestUnknownSessionIsNotFound(t *testing.T) {
-	sup := &fakeSupervisor{getErr: pkg.ErrSessionNotFound}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/nope", nil)
-	handler.Session(sup).ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
-}
+	// A missing session must be 404, not 500 — the status contract is part of
+	// the API, and a blanket 500 would make a caller retry something that
+	// cannot change.
+	It("returns 404 for an unknown session", func() {
+		sup := &fakeSupervisor{getErr: pkg.ErrSessionNotFound}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/nope", nil)
+		handler.Session(sup).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
 
-func TestAnswerBodyIsDecoded(t *testing.T) {
-	sup := &fakeSupervisor{}
-	rec := httptest.NewRecorder()
-	body := strings.NewReader(`{"request_id":"r1","behavior":"allow"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
-	handler.Session(sup).ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-}
+	It("decodes an answer body", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"request_id":"r1","behavior":"allow"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
+		handler.Session(sup).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+})

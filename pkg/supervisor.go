@@ -15,9 +15,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 )
 
 // SpawnOptions is what a caller may ask for when starting a child.
@@ -44,9 +44,10 @@ type Supervisor interface {
 }
 
 // NewSupervisor creates a Supervisor that runs the given claude binary.
-func NewSupervisor(claudeBin string) Supervisor {
+func NewSupervisor(claudeBin string, now libtime.CurrentDateTimeGetter) Supervisor {
 	return &supervisor{
 		claudeBin: claudeBin,
+		now:       now,
 		mutex:     sync.RWMutex{},
 		sessions:  map[string]*child{},
 		pending:   NewPending(),
@@ -55,9 +56,10 @@ func NewSupervisor(claudeBin string) Supervisor {
 
 type supervisor struct {
 	claudeBin string
+	now       libtime.CurrentDateTimeGetter
 	mutex     sync.RWMutex
 	sessions  map[string]*child
-	pending   *Pending
+	pending   Pending
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -208,7 +210,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 			State:     StateStarting,
 			Controls:  []Control{ControlMessage},
 			Cwd:       options.Cwd,
-			StartedAt: time.Now().UTC(),
+			StartedAt: s.now.Now().Time().UTC(),
 		},
 	}
 	go c.consume(bufio.NewScanner(stdout))

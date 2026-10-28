@@ -12,6 +12,8 @@ import (
 	"os"
 	"time"
 
+	libtime "github.com/bborbe/time"
+
 	"github.com/bborbe/claude-wrapper/pkg"
 	"github.com/bborbe/claude-wrapper/pkg/handler"
 )
@@ -30,6 +32,7 @@ func main() {
 			In:         os.Stdin,
 			Out:        os.Stdout,
 			LogPath:    *mcpLog,
+			Now:        libtime.NewCurrentDateTime(),
 			WrapperURL: *wrapperURL,
 			SessionID:  *sessionID,
 			Allow:      true,
@@ -41,7 +44,7 @@ func main() {
 		return
 	}
 
-	supervisor := pkg.NewSupervisor(*claudeBin)
+	supervisor := pkg.NewSupervisor(*claudeBin, libtime.NewCurrentDateTime())
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", handler.Healthz())
