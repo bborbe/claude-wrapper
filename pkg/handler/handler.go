@@ -93,6 +93,10 @@ func Session(
 			handleEvents(ctx, resp, req, supervisor, id)
 		case "commands":
 			handleCommands(ctx, resp, req, sequencer, id)
+		case "model":
+			handleModel(ctx, resp, req, supervisor, sequencer, id)
+		case "permission-mode":
+			handlePermissionMode(ctx, resp, req, supervisor, locks, id)
 		default:
 			handleSession(ctx, resp, req, supervisor, id)
 		}
@@ -147,6 +151,142 @@ func handleMessage(
 type commandsRequest struct {
 	Macro   string `json:"macro"`
 	Confirm string `json:"confirm"`
+}
+
+// handleModel changes the model of a running session.
+//
+// The change is the child's own `/model` command followed by one probe turn,
+// run through the same sequencer every other multi-step write uses: the
+// sequencer holds the session lock, refuses a child that is mid-turn, and
+// advances on the child's own result events. The reported model is read from
+// the session afterwards — that is, from the probe turn's assistant event —
+// never from the request body, which would report the caller back to itself.
+func handleModel(
+	ctx context.Context,
+	resp http.ResponseWriter,
+	req *http.Request,
+	supervisor pkg.Supervisor,
+	sequencer pkg.Sequencer,
+	id string,
+) {
+	if req.Method != http.MethodPost {
+		writeError(resp, http.StatusMethodNotAllowed,
+			errors.Errorf(ctx, "method %q not allowed", req.Method))
+		return
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
+		return
+	}
+	if err := pkg.ValidateModelName(ctx, body.Model); err != nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	if sequencer == nil {
+		writeError(resp, http.StatusServiceUnavailable,
+			errors.Errorf(ctx, "no sequencer is wired"))
+		return
+	}
+	// A model change runs a real probe turn, so its response can legitimately
+	// outlive the server's 60 s WriteTimeout — the same reason handleCommands
+	// clears it. Best effort: a recorder under test does not implement
+	// deadlines, and refusing the change over that would make the route
+	// untestable for no gain.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
+	// Read before the run and after it. Both reads sit outside the sequencer's
+	// lock, so two model changes racing on one session can report each other's
+	// served model: the WRITES are serialized, the reported fields are
+	// best-effort. A single caller — the documented threat model — never sees
+	// it, and closing it would need the sequencer to hand back the state it
+	// observed, which it does not do.
+	before, err := supervisor.Get(ctx, id)
+	if err != nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	result, runErr := sequencer.Run(ctx, id, pkg.ModelChangeMacro(body.Model))
+	if runErr != nil && result == nil {
+		writeError(resp, statusFor(runErr), runErr)
+		return
+	}
+	after, err := supervisor.Get(ctx, id)
+	if err != nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	change := pkg.ModelChange{
+		Requested:     body.Model,
+		PreviousModel: before.Model,
+		ServedModel:   after.Model,
+		Changed:       after.Model != before.Model,
+	}
+	if runErr != nil {
+		// The command landed but the probe did not, so the change is applied and
+		// unverified. Reported rather than swallowed: an error alone would read
+		// as "nothing happened", which is the one thing this is not.
+		change.Partial = true
+		change.Steps = result.Steps
+		writeJSON(resp, http.StatusOK, change)
+		return
+	}
+	writeJSON(resp, http.StatusOK, change)
+}
+
+// handlePermissionMode changes the permission mode of a running session.
+//
+// It is the one write that is not a turn: the mode travels as the SDK's own
+// control request, so it takes the session lock but no sequencer. The reported
+// mode is the one the child answers with, not the one the caller sent.
+func handlePermissionMode(
+	ctx context.Context,
+	resp http.ResponseWriter,
+	req *http.Request,
+	supervisor pkg.Supervisor,
+	locks *pkg.SessionLocks,
+	id string,
+) {
+	if req.Method != http.MethodPost {
+		writeError(resp, http.StatusMethodNotAllowed,
+			errors.Errorf(ctx, "method %q not allowed", req.Method))
+		return
+	}
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
+		return
+	}
+	if body.Mode == "" {
+		writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "mode is required"))
+		return
+	}
+	// The same lock a sequence holds, and fail fast rather than queue: a
+	// compaction can hold it for minutes, which outlasts the server's write
+	// deadline — the response would be truncated after the mode had already
+	// changed. handleMessage takes the same choice for the same reason.
+	release, ok := locks.TryAcquire(id)
+	if !ok {
+		writeError(resp, http.StatusConflict,
+			errors.Errorf(ctx, "session %q is running a sequence", id))
+		return
+	}
+	defer release()
+	reported, err := supervisor.SetPermissionMode(ctx, id, body.Mode)
+	if err != nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	writeJSON(resp, http.StatusOK, map[string]string{
+		"status":          "changed",
+		"permission_mode": reported,
+	})
 }
 
 // handleCommands runs a named macro against one child.
@@ -502,6 +642,8 @@ func statusFor(err error) int {
 	case errors.Is(err, pkg.ErrAnswerShapeMismatch):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, pkg.ErrInvalidSpawnOptions):
+		return http.StatusBadRequest
+	case errors.Is(err, pkg.ErrInvalidSessionChange):
 		return http.StatusBadRequest
 	case errors.Is(err, pkg.ErrUnknownMacro):
 		return http.StatusBadRequest

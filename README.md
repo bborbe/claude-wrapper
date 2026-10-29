@@ -49,7 +49,7 @@ codex mcp list          # confirm: transport streamable_http, status enabled
 ```
 
 Codex namespaces the tools it exposes as `mcp__<server_name>__<tool_name>`, so
-the five below appear as `mcp__claude_wrapper__spawn_session` and so on. The
+the nine below appear as `mcp__claude_wrapper__spawn_session` and so on. The
 server name is chosen at `mcp add` time, not here.
 
 ### Tools
@@ -63,6 +63,8 @@ server name is chosen at `mcp add` time, not here.
 | `kill_session` | stop one child |
 | `get_pending` | what a session is parked on, with the options its question carries; `null` when it is not waiting |
 | `answer_pending` | answer that request: `behavior` for a permission, `answers` for a question |
+| `set_model` | change a running session's model; returns the model that served the next turn |
+| `set_permission_mode` | change a running session's permission mode; returns the mode the child reports |
 
 `send_message` is the one tool that cannot delegate to REST: `POST
 …/message` answers `202 {"status":"sent"}` and carries no answer, so the tool
@@ -106,9 +108,14 @@ This bounds the blast radius to a local caller. It is not authentication, and
 
 `spawn_session` defaults `permission_mode` to `bypassPermissions`. That is a
 deliberate phase-1 choice, not a safe default: a real session hits a gate on its
-first file write, and this phase exists to prove plain turns. It is removed in
-**phase 2**, where the client sees the prompt and answers it instead of skipping
-it.
+first file write, and phase 1 exists to prove plain turns.
+
+**Phase 2 landed and the default did not change.** A client can now see and
+answer the gate (`get_pending` / `answer_pending`), so the crutch is no longer
+needed to drive a session — but it is still the default, and that is now a
+compatibility decision rather than a limitation. Pass `permission_mode:
+"default"` to let the gates fire, and `set_permission_mode` to raise or lower
+the mode on a session already running.
 
 ## REST
 
@@ -117,7 +124,8 @@ Every business route is under `/api/1.0/`. `/healthz` touches no child.
 ### GET /api/1.0/sessions
 
 Lists every child this process spawned. Each row carries `id`, `state`, `model`,
-`model_source`, `question`, `controls`, `cwd`, `started_at`, `exit_code`.
+`model_source`, `permission_mode`, `question`, `controls`, `cwd`, `started_at`,
+`exit_code`.
 
 `state` is derived from the child's own event stream — `generating` while an
 assistant turn is open, `idle` when it closes, `exited` when the child leaves.
@@ -299,6 +307,93 @@ between a step's `closed_at` and the next step's `wrote_at` therefore stays near
 zero however long a turn takes — which is exactly what a sleep-driven sequence
 cannot produce.
 
+### POST /api/1.0/sessions/{id}/model
+
+Changes the model of a **running** session, without respawning it — the context
+survives.
+
+Body: `{"model": "deepseek-v4-flash-max"}`.
+
+The change is the child's own `/model` command, so it needs no new protocol. It
+runs as a two-step sequence through the same sequencer `…/commands` uses: the
+command itself, then one cheap probe turn. The probe is what makes the read-back
+possible — the `/model` turn is answered locally, so its `assistant` event
+reports `"<synthetic>"`, which names no model.
+
+```json
+{"requested": "deepseek-v4-flash-max",
+ "previous_model": "deepseek-v4-flash",
+ "served_model": "deepseek-v4-flash-max",
+ "changed": true}
+```
+
+**`served_model` is the model that actually answered the next turn**, taken from
+that turn's `assistant` event. It is not the launcher's `init` value and not an
+echo of `requested`.
+
+**A change that lands but cannot be verified says so.** If the `/model` step is
+written and the probe turn then fails, the route still answers `200` — the change
+was applied — with `partial: true` and the run's own step report:
+
+```json
+{"requested": "deepseek-v4-flash-max",
+ "previous_model": "deepseek-v4-flash",
+ "served_model": "deepseek-v4-flash",
+ "changed": false,
+ "partial": true,
+ "steps": [{"index": 1, "command": "/model deepseek-v4-flash-max", "status": "done"},
+           {"index": 2, "command": "Reply with only the word OK.", "status": "aborted"}]}
+```
+
+`served_model` there is the last model known to have answered, **not** one
+observed after the switch. A `200` with `partial: true` is an applied-but-
+unverified change; reading it as a verified one is the mistake this field exists
+to prevent.
+
+⚠️ **`init` is not the model.** The `system`/`init` event carries a `model` too,
+but that is the launcher's configuration and can differ from what served the
+request — measured 2026-10-28: init said `claude-opus-5-5` while the assistant
+event said `deepseek-v4-flash-max`. A model change is the same trap one step
+further: measured 2026-10-29, `/model claude-sonnet-5-5` made `init` report
+`claude-sonnet-5-5` while the next `assistant` event reported `deepseek-v4-flash`
+— the alias resolved to a different backend. `served_model` is what the child
+answered with, which is why `changed` can be `true` for a name that came back
+different from the one requested.
+
+### POST /api/1.0/sessions/{id}/permission-mode
+
+Changes the permission mode of a **running** session, so a session that started
+on the wrong mode no longer has to be respawned.
+
+Body: `{"mode": "acceptEdits"}` — one of `default`, `acceptEdits`,
+`bypassPermissions`, `plan`.
+
+```json
+{"status": "changed", "permission_mode": "acceptEdits"}
+```
+
+**This one is not a turn.** No slash command changes the permission mode —
+measured 2026-10-29 against a child advertising 219 of them — so the change
+travels as the SDK's own control request on the child's stdin:
+
+```json
+{"type": "control_request", "request_id": "perm-mode-...",
+ "request": {"subtype": "set_permission_mode", "mode": "acceptEdits"}}
+```
+
+The child answers `{"type": "control_response", "response": {"subtype":
+"success", "request_id": "perm-mode-...", "response": {"mode": "acceptEdits"}}}`,
+and `permission_mode` in the response is **the mode the child reports for
+itself** — not the value the caller sent. `GET /api/1.0/sessions/{id}` reports it
+too, from two sources: the child's `control_response`, stored the moment it
+arrives, and its `system`/`init` event, re-emitted on every turn. A change is
+therefore visible in `GET` immediately, without waiting for the next turn.
+
+The change takes the same per-session lock a sequence does, and **fails fast**
+(`409`) rather than waiting for it: a compaction can hold that lock for minutes,
+which outlasts the server's write deadline — the response would be truncated
+after the mode had already changed.
+
 ### DELETE /api/1.0/sessions/{id}
 
 Kills the child. `204` on success.
@@ -307,9 +402,9 @@ Kills the child. `204` on success.
 
 | Status | Meaning |
 |---|---|
-| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id` |
+| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id`. On the change routes: an empty or control-character model name on `…/model`, and a mode outside `default`/`acceptEdits`/`bypassPermissions`/`plan` on `…/permission-mode` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
-| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle |
+| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle, or a `…/permission-mode` change found the per-session lock held by a running sequence |
 | `410` | child exited — it is gone and accepts no control |
 | `422` | the answer's shape does not match the pending request — `answers` aimed at a permission request, or `behavior` aimed at a question. Nothing was recorded and the request is still unanswered |
 | `503` | child unreachable — the process exists but its stream is not responding |
@@ -320,12 +415,14 @@ Wrapping TUI sessions; multi-host supervision; auth beyond the localhost bind;
 caller-supplied command lists; and any sequencing beyond a linear list — no
 branches, loops or retries between steps.
 
-The MCP face carries the same limits, with one exception since phase 2: a client
-**can** now answer the permission prompt or `AskUserQuestion` a child raises —
+The MCP face carries the same limits, with two exceptions now. Since phase 2 a
+client **can** answer the permission prompt or `AskUserQuestion` a child raises —
 `get_pending` reads the request with the options it carries, `answer_pending`
 answers it, and `send_message` returns a parked turn early so the answer lands
-inside the child's 90 s hold. What it still cannot do is change a running
-session's mode or model (phase 3).
+inside the child's 90 s hold. Since phase 3 it can also change what the session
+*is*: `set_model` and `set_permission_mode` retarget a running child without
+respawning it, and each reports what the child says rather than what the caller
+sent.
 
 `spawn_session` still defaults to a permissive mode so gates never fire, and it
 stays a default rather than a requirement: pass `permission_mode: "default"` to

@@ -68,6 +68,10 @@ func (s *scriptedSupervisor) PollAnswer(context.Context, string) (PendingAnswer,
 	return PendingAnswer{}, nil
 }
 
+func (s *scriptedSupervisor) SetPermissionMode(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
 func (s *scriptedSupervisor) Stop(context.Context, string) error { return nil }
 
 // Send records the write and immediately emits the turn it closes, which is
@@ -293,6 +297,36 @@ var _ = ginkgo.Describe("LookupMacro", func() {
 			for _, step := range macro.Steps {
 				gomega.Expect(step).NotTo(gomega.BeEmpty(), macro.Name)
 			}
+		}
+	})
+})
+
+var _ = ginkgo.Describe("ModelChangeMacro", func() {
+	ginkgo.It("writes the model command, then one probe turn", func() {
+		macro := ModelChangeMacro("claude-sonnet-5-5")
+		gomega.Expect(macro.Steps).To(gomega.Equal([]string{
+			"/model claude-sonnet-5-5",
+			modelProbeTurn,
+		}))
+	})
+
+	// DoD 5 of the phase-3 task: the change call must not join the
+	// production-touching set. If it did, every model change would demand a
+	// confirmation and the one capability this phase adds would be unusable
+	// through the macro machinery it is built on.
+	ginkgo.It("requires no confirmation, unlike the commands that rewrite a context", func() {
+		gomega.Expect(ModelChangeMacro("claude-sonnet-5-5").RequiresConfirmation()).
+			To(gomega.BeFalse())
+		for _, command := range []string{"/compact", "/clear", "/exit"} {
+			gomega.Expect(productionTouchingCommands.Contains(command)).
+				To(gomega.BeTrue(), command+" must stay production-touching")
+		}
+		gomega.Expect(productionTouchingCommands.Contains("/model claude-sonnet-5-5")).
+			To(gomega.BeFalse())
+		for _, name := range []string{"compact", "terminal"} {
+			macro, err := LookupMacro(name)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(macro.RequiresConfirmation()).To(gomega.BeTrue(), name)
 		}
 	})
 })

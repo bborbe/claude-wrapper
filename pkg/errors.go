@@ -30,6 +30,15 @@ var (
 	// be expressed as a child command, so the request is refused before any child
 	// or temp file exists.
 	ErrInvalidSpawnOptions = stderrors.New("invalid spawn options")
+	// ErrInvalidSessionChange is returned when a change to a running session is
+	// refused before anything is written — an unknown permission mode, an empty
+	// or malformed model name.
+	//
+	// It is a separate sentinel from ErrInvalidSpawnOptions on purpose: the two
+	// describe different moments, and a caller that reads "invalid spawn
+	// options" from a change call is being told about a spawn that never
+	// happened.
+	ErrInvalidSessionChange = stderrors.New("invalid session change")
 	// ErrUnknownMacro is returned for a macro name the wrapper does not define.
 	ErrUnknownMacro = stderrors.New("unknown macro")
 	// ErrConfirmationRequired is returned when a macro contains a
