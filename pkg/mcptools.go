@@ -8,7 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -48,14 +52,40 @@ const (
 	defaultPermissionMode = "bypassPermissions"
 )
 
+// ToolName is the name of one MCP tool. The set is closed: AvailableToolNames
+// is the single list, and the dispatch switch is checked against it.
+type ToolName string
+
 // Tool names as they appear to an MCP client.
 const (
-	ToolSpawnSession = "spawn_session"
-	ToolSendMessage  = "send_message"
-	ToolListSessions = "list_sessions"
-	ToolGetSession   = "get_session"
-	ToolKillSession  = "kill_session"
+	ToolSpawnSession ToolName = "spawn_session"
+	ToolSendMessage  ToolName = "send_message"
+	ToolListSessions ToolName = "list_sessions"
+	ToolGetSession   ToolName = "get_session"
+	ToolKillSession  ToolName = "kill_session"
 )
+
+// AvailableToolNames is every tool this server exposes, in listing order.
+func AvailableToolNames() []ToolName {
+	return []ToolName{
+		ToolSpawnSession,
+		ToolSendMessage,
+		ToolListSessions,
+		ToolGetSession,
+		ToolKillSession,
+	}
+}
+
+// permissionModes is the set of --permission-mode values a child accepts. A
+// client-supplied mode is checked against it: an unrecognised value handed to
+// Spawn would start a child that behaves differently from what the caller asked
+// for, with nothing reporting the typo.
+var permissionModes = map[string]bool{
+	"default":           true,
+	"acceptEdits":       true,
+	"bypassPermissions": true,
+	"plan":              true,
+}
 
 // rpcError is a JSON-RPC protocol-level error.
 //
@@ -70,8 +100,30 @@ type rpcError struct {
 
 // ServeHTTP serves one streamable-HTTP MCP endpoint.
 func (s *MCPToolServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+	// Fail fast and visibly. Without this a server constructed without its
+	// collaborators answers tools/list happily and then panics on the first
+	// send_message, which reads as a client bug rather than a wiring bug.
+	if s.Supervisor == nil || s.Locks == nil {
+		resp.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	// Rejected BEFORE any parsing. A localhost HTTP server is reachable by any
+	// page in the operator's browser through DNS rebinding: the attacker's
+	// hostname is re-resolved to 127.0.0.1, the request is then same-origin, and
+	// a text/plain POST is a CORS "simple request" that skips preflight
+	// entirely. Without this check such a page could call spawn_session — a
+	// child with every permission gate disabled and an arbitrary cwd — which is
+	// remote code execution as the daemon user.
+	if !originAllowed(req) {
+		resp.WriteHeader(http.StatusForbidden)
+		return
+	}
 	switch req.Method {
 	case http.MethodPost:
+		if !isJSONRequest(req) {
+			resp.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
 		s.handlePost(resp, req)
 	case http.MethodDelete:
 		resp.WriteHeader(http.StatusOK)
@@ -81,8 +133,67 @@ func (s *MCPToolServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// originAllowed rejects a request whose Host is not loopback, and one whose
+// Origin names a non-loopback host.
+//
+// An absent Origin is allowed on purpose: a non-browser client — Codex, curl —
+// sends none, and the Host check already bounds the request to this machine.
+// A present Origin must be loopback, which is what stops a rebinding page: its
+// Origin is the attacker's hostname even though the socket reached 127.0.0.1.
+func originAllowed(req *http.Request) bool {
+	if !isLoopbackHost(req.Host) {
+		return false
+	}
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(parsed.Host)
+}
+
+// isLoopbackHost reports whether host is a loopback name, with or without a port.
+func isLoopbackHost(host string) bool {
+	name := host
+	if withoutPort, _, err := net.SplitHostPort(host); err == nil {
+		name = withoutPort
+	}
+	switch strings.ToLower(strings.Trim(name, "[]")) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
+}
+
+// isJSONRequest reports whether the body is declared as JSON.
+//
+// An absent Content-Type is REJECTED rather than tolerated: a POST with no
+// Content-Type is also a CORS simple request, so accepting it would reopen the
+// preflight bypass this check exists to close.
+func isJSONRequest(req *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	return err == nil && mediaType == "application/json"
+}
+
 func (s *MCPToolServer) handlePost(resp http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
+	// The turn deadline is cleared for the duration: send_message may legitimately
+	// wait out its whole TurnTimeout, which outlasts the server's 60-second
+	// WriteTimeout, and a response written after that deadline never reaches the
+	// client — the documented timeout error would be undeliverable. Same reason,
+	// same idiom, as the /commands route.
+	//
+	// Best effort: a recorder under test does not implement deadlines.
+	if err := http.NewResponseController(resp).SetWriteDeadline(time.Time{}); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) {
+		writeRPC(resp, nil, nil,
+			&rpcError{Code: -32603, Message: "clear write deadline failed"})
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, maxMCPBody))
 	if err != nil {
 		writeRPC(resp, nil, nil, &rpcError{Code: -32700, Message: "read body failed"})
@@ -158,7 +269,7 @@ func (s *MCPToolServer) callTool(ctx context.Context, params json.RawMessage) (a
 }
 
 func (s *MCPToolServer) invoke(ctx context.Context, name string, args json.RawMessage) (string, error) {
-	switch name {
+	switch ToolName(name) {
 	case ToolSpawnSession:
 		return s.spawn(ctx, args)
 	case ToolSendMessage:
@@ -189,13 +300,16 @@ func (s *MCPToolServer) spawn(ctx context.Context, args json.RawMessage) (string
 	if mode == "" {
 		mode = defaultPermissionMode
 	}
+	if !permissionModes[mode] {
+		return "", errors.Errorf(ctx, "unknown permission_mode %q", mode)
+	}
 	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
 		Cwd:            body.Cwd,
 		Model:          body.Model,
 		PermissionMode: mode,
 	})
 	if err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "spawn session failed")
 	}
 	return marshalJSON(ctx, session)
 }
@@ -230,7 +344,7 @@ func (s *MCPToolServer) send(ctx context.Context, args json.RawMessage) (string,
 
 	replay, live, cancel, err := s.Supervisor.Subscribe(ctx, body.SessionID)
 	if err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "subscribe to session %q failed", body.SessionID)
 	}
 	defer cancel()
 
@@ -239,11 +353,11 @@ func (s *MCPToolServer) send(ctx context.Context, args json.RawMessage) (string,
 	// otherwise be missed and the turn would wait out its whole timeout.
 	expected := expectedTurn(replay)
 	if err := s.Supervisor.Send(ctx, body.SessionID, body.Text); err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "send turn to session %q failed", body.SessionID)
 	}
 	event, err := s.awaitTurn(ctx, live, expected)
 	if err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "wait for turn %d failed", expected)
 	}
 	text, _ := event["result"].(string)
 	if failed, _ := event["is_error"].(bool); failed {
@@ -283,7 +397,7 @@ func (s *MCPToolServer) awaitTurn(ctx context.Context, live <-chan Event, expect
 func (s *MCPToolServer) list(ctx context.Context) (string, error) {
 	sessions, err := s.Supervisor.List(ctx)
 	if err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "list sessions failed")
 	}
 	return marshalJSON(ctx, sessions)
 }
@@ -302,7 +416,7 @@ func (s *MCPToolServer) get(ctx context.Context, args json.RawMessage) (string, 
 	}
 	session, err := s.Supervisor.Get(ctx, body.SessionID)
 	if err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "get session %q failed", body.SessionID)
 	}
 	return marshalJSON(ctx, session)
 }
@@ -316,7 +430,7 @@ func (s *MCPToolServer) kill(ctx context.Context, args json.RawMessage) (string,
 		return "", errors.Errorf(ctx, "session_id is required")
 	}
 	if err := s.Supervisor.Stop(ctx, body.SessionID); err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "stop session %q failed", body.SessionID)
 	}
 	return marshalJSON(ctx, map[string]string{"status": "killed", "id": body.SessionID})
 }
@@ -377,7 +491,7 @@ func toolDefinitions() []any {
 	}
 }
 
-func toolDef(name string, description string, props map[string]any, required ...string) map[string]any {
+func toolDef(name ToolName, description string, props map[string]any, required ...string) map[string]any {
 	schema := map[string]any{"type": "object", "properties": props}
 	if len(required) > 0 {
 		schema["required"] = required

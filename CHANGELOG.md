@@ -16,7 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `result` event. The REST `POST …/message` route answers `202 {"status":"sent"}` and carries no
   answer, so this is the one tool that cannot delegate to it.
 - feat: a turn that never closes returns a tool error naming the timeout (`--mcp-turn-timeout`,
-  default 120s) rather than a success.
+  default 120s) rather than a success. The write deadline is cleared for the duration of a call,
+  because the turn deadline deliberately outlasts the server's 60s `WriteTimeout` and a response
+  written after it would never reach the client.
+- fix: `/mcp` rejects a non-loopback `Host` or `Origin`, and a body that is not declared
+  `application/json`. A localhost HTTP server is otherwise reachable by any browser page through
+  DNS rebinding, which with `spawn_session` on the other end is remote code execution as the
+  daemon user.
 
 ## v0.2.0
 

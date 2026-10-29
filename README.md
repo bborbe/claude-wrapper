@@ -68,6 +68,27 @@ waits for the child's `result` event and returns that event's `result` field. A
 turn that never closes returns a tool error naming the timeout
 (`--mcp-turn-timeout`, default 120s) rather than a success.
 
+### Who may call it
+
+`/mcp` is unauthenticated, so it is guarded structurally instead:
+
+- **`Host` must be loopback** (`localhost`, `127.0.0.1`, `::1`), and a present
+  `Origin` must be loopback too. This is not decoration — a localhost HTTP server
+  is reachable by any page in the operator's browser through **DNS rebinding**:
+  the attacker's hostname re-resolves to `127.0.0.1`, the request becomes
+  same-origin, and the page can then read the replies. With `spawn_session` on
+  the other end that is remote code execution as the daemon user. An absent
+  `Origin` is allowed, because a non-browser client (Codex, curl) sends none.
+- **The body must be `application/json`.** A `text/plain` POST is a CORS "simple
+  request" and skips preflight entirely, so the declared type is checked rather
+  than assumed. An absent `Content-Type` is rejected for the same reason.
+- **`permission_mode` must be one of** `default`, `acceptEdits`,
+  `bypassPermissions`, `plan`. An unrecognised value is refused rather than
+  handed to the child.
+
+This bounds the blast radius to a local caller. It is not authentication, and
+"auth beyond the localhost bind" stays out of phase-1 scope.
+
 ### The permissive-spawn crutch
 
 `spawn_session` defaults `permission_mode` to `bypassPermissions`. That is a

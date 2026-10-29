@@ -20,15 +20,20 @@ import (
 // toolSupervisor answers each Send with a `result` event carrying the reply,
 // so a spec observes the tool's return rule without a real child.
 type toolSupervisor struct {
-	mutex      sync.Mutex
-	live       chan Event
-	emitted    []Event
-	sent       []string
-	reply      string
-	neverClose bool
+	mutex       sync.Mutex
+	live        chan Event
+	emitted     []Event
+	sent        []string
+	reply       string
+	neverClose  bool
+	errorReply  bool
+	spawnedMode string
 }
 
 func (s *toolSupervisor) Spawn(_ context.Context, options SpawnOptions) (*Session, error) {
+	s.mutex.Lock()
+	s.spawnedMode = options.PermissionMode
+	s.mutex.Unlock()
 	return &Session{ID: "s1", State: StateStarting, Model: options.Model}, nil
 }
 
@@ -59,7 +64,12 @@ func (s *toolSupervisor) Send(_ context.Context, _ string, text string) error {
 	if s.neverClose {
 		return nil
 	}
-	s.emit(Event{"type": "result", "result_index": float64(index), "result": s.reply})
+	s.emit(Event{
+		"type":         "result",
+		"result_index": float64(index),
+		"result":       s.reply,
+		"is_error":     s.errorReply,
+	})
 	return nil
 }
 
@@ -78,11 +88,17 @@ func (s *toolSupervisor) Subscribe(context.Context, string) ([]Event, <-chan Eve
 	return replay, s.live, func() {}, nil
 }
 
+// loopbackHost is what a real client sends. httptest.NewRequest defaults Host to
+// "example.com", which the loopback guard rejects by design.
+const loopbackHost = "127.0.0.1:18090"
+
 // post drives one JSON-RPC message through the real HTTP handler, so the spec
 // exercises the wire shape rather than an internal method.
 func post(server *MCPToolServer, body string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	request.Host = loopbackHost
+	request.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(recorder, request)
 	return recorder
 }
@@ -127,11 +143,11 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 			names = append(names, name)
 		}
 		gomega.Expect(names).To(gomega.Equal([]string{
-			ToolSpawnSession,
-			ToolSendMessage,
-			ToolListSessions,
-			ToolGetSession,
-			ToolKillSession,
+			string(ToolSpawnSession),
+			string(ToolSendMessage),
+			string(ToolListSessions),
+			string(ToolGetSession),
+			string(ToolKillSession),
 		}))
 	})
 
@@ -197,5 +213,125 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 		rpcErr, ok := payload["error"].(map[string]any)
 		gomega.Expect(ok).To(gomega.BeTrue())
 		gomega.Expect(rpcErr["code"]).To(gomega.BeNumerically("==", -32601))
+	})
+	// spawn must carry the permissive phase-1 default through to the child; the
+	// crutch is the whole reason plain turns stay plain.
+	ginkgo.It("spawns with the permissive phase-1 default", func() {
+		post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+			"params":{"name":"spawn_session","arguments":{"cwd":"/tmp"}}}`)
+
+		gomega.Expect(supervisor.spawnedMode).To(gomega.Equal(defaultPermissionMode))
+	})
+
+	// A typo'd mode handed to Spawn unchecked would start a child that behaves
+	// differently from what the caller asked for, silently.
+	ginkgo.It("rejects an unknown permission_mode", func() {
+		recorder := post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+			"params":{"name":"spawn_session","arguments":{"permission_mode":"nonsense"}}}`)
+
+		result, ok := decode(recorder)["result"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(result["isError"]).To(gomega.BeTrue())
+		gomega.Expect(supervisor.spawnedMode).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("lists, gets and kills a session", func() {
+		for _, call := range []string{
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_session","arguments":{"session_id":"s1"}}}`,
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kill_session","arguments":{"session_id":"s1"}}}`,
+		} {
+			result, ok := decode(post(server, call))["result"].(map[string]any)
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(result["isError"]).To(gomega.BeFalse())
+		}
+	})
+
+	// A turn written while a sequence holds the child would have its result read
+	// as the current step's close, firing the next step early.
+	ginkgo.It("refuses a turn while a sequence holds the session", func() {
+		release, ok := server.Locks.TryAcquire("s1")
+		gomega.Expect(ok).To(gomega.BeTrue())
+		defer release()
+
+		recorder := post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+			"params":{"name":"send_message","arguments":{"session_id":"s1","text":"x"}}}`)
+
+		result, ok := decode(recorder)["result"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(result["isError"]).To(gomega.BeTrue())
+	})
+
+	// A child that reports its turn as failed must not read as an answer.
+	ginkgo.It("reports a failed turn as a tool error", func() {
+		supervisor.errorReply = true
+
+		recorder := post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+			"params":{"name":"send_message","arguments":{"session_id":"s1","text":"x"}}}`)
+
+		result, ok := decode(recorder)["result"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(result["isError"]).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("reports an unknown tool name as a tool error", func() {
+		recorder := post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+			"params":{"name":"no_such_tool","arguments":{}}}`)
+
+		result, ok := decode(recorder)["result"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(result["isError"]).To(gomega.BeTrue())
+	})
+
+	// DNS rebinding: the attacker's page resolves to 127.0.0.1 and its Origin is
+	// its own hostname. Rejecting a non-loopback Origin is what stops it driving
+	// spawn_session with every gate disabled.
+	ginkgo.It("rejects a non-loopback Origin", func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		request.Host = loopbackHost
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", "http://attacker.example")
+		server.ServeHTTP(recorder, request)
+
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusForbidden))
+	})
+
+	// A text/plain POST is a CORS simple request and skips preflight, so the
+	// body type must be checked rather than assumed.
+	ginkgo.It("rejects a non-JSON Content-Type", func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		request.Host = loopbackHost
+		request.Header.Set("Content-Type", "text/plain")
+		server.ServeHTTP(recorder, request)
+
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusUnsupportedMediaType))
+	})
+
+	ginkgo.It("answers GET with 405 and DELETE with 200", func() {
+		for _, method := range []string{http.MethodGet, http.MethodDelete} {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(method, "/mcp", nil)
+			request.Host = loopbackHost
+			server.ServeHTTP(recorder, request)
+			want := http.StatusMethodNotAllowed
+			if method == http.MethodDelete {
+				want = http.StatusOK
+			}
+			gomega.Expect(recorder.Code).To(gomega.Equal(want))
+		}
+	})
+
+	// A server wired without its collaborators must say so, not panic on the
+	// first send_message.
+	ginkgo.It("answers 503 when not fully wired", func() {
+		recorder := httptest.NewRecorder()
+		(&MCPToolServer{}).ServeHTTP(recorder,
+			httptest.NewRequest(http.MethodPost, "/mcp", nil))
+
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusServiceUnavailable))
 	})
 })
