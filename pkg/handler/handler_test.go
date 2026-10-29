@@ -5,9 +5,11 @@
 package handler_test
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -252,6 +254,15 @@ var _ = Describe("handler", func() {
 	// `TypeError: terminated`) and a perfectly healthy child is recorded as a dead worker.
 	// A recorder cannot express this (it reports ErrNotSupported), so the spec runs a real
 	// server with a short WriteTimeout and writes an event after the deadline has passed.
+	//
+	// ⚠️ It speaks HTTP over a raw connection rather than `http.Get`, and that is
+	// load-bearing. `http.Get` resolves on the response HEADERS, so a spec that waits for it
+	// before sending the frame deadlocks the moment the header flush is removed: the frame
+	// is the only thing that would flush the headers, and the frame is only sent after
+	// `http.Get` returns. That is not a failure, it is a hang — and it was measured here,
+	// wedging the whole package until the test timeout. A raw conn has no such dependency:
+	// the frame is written on a timer, and the assertion is on the bytes that actually
+	// arrived.
 	It("keeps the stream open past the server's WriteTimeout", func() {
 		live := make(chan pkg.Event, 1)
 		sup := &openSupervisor{live: live}
@@ -260,9 +271,40 @@ var _ = Describe("handler", func() {
 		srv.Start()
 		defer srv.Close()
 
-		// Every blocking step is bounded. A spec that waits on a socket that never answers
-		// does not fail — it hangs until the 10-minute package timeout, which reads as an
-		// infrastructure problem rather than as the defect under test.
+		conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = conn.Close() }()
+
+		_, err = fmt.Fprintf(conn, "GET /api/1.0/sessions/a/events HTTP/1.1\r\nHost: probe\r\n\r\n")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Well past the write timeout. Without the cleared deadline this event's write
+		// fails, the handler returns, and the connection ends without carrying the frame.
+		time.Sleep(300 * time.Millisecond)
+		live <- pkg.Event{"type": "assistant", "late": true}
+
+		// Bounded read: with the fix the stream stays open and the read times out holding
+		// the frame; without it the server has already closed and this returns early.
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		body, _ := io.ReadAll(conn)
+
+		Expect(string(body)).To(ContainSubstring(`data: {"late":true,"type":"assistant"}`))
+	})
+
+	// The spec above pins the late frame, and on its own it says nothing about the header
+	// flush: a raw connection buffers whatever arrives, so deleting `flusher.Flush()` would
+	// leave it green. This one sends NO event at all — a child with an empty replay and
+	// nothing to say — so the flush is the only thing that can make `http.Get` resolve.
+	It("flushes the response headers before the first event arrives", func() {
+		live := make(chan pkg.Event, 1) // never written to
+		sup := &openSupervisor{live: live}
+		srv := httptest.NewUnstartedServer(handler.Session(sup, nil, pkg.NewSessionLocks()))
+		srv.Start()
+		// Order matters: deferred LIFO, so connections are torn down BEFORE Close waits on
+		// them. Without the first defer a failed run hangs in Close instead of reporting.
+		defer srv.Close()
+		defer srv.CloseClientConnections()
+
 		type response struct {
 			resp *http.Response
 			err  error
@@ -274,25 +316,13 @@ var _ = Describe("handler", func() {
 		}()
 
 		var open response
-		Eventually(opened, 3*time.Second).Should(Receive(&open))
+		// Well inside the bound, and no event is ever sent — only the header flush can
+		// satisfy this.
+		Eventually(opened, 2*time.Second).Should(Receive(&open))
 		Expect(open.err).NotTo(HaveOccurred())
 		defer func() { _ = open.resp.Body.Close() }()
 		Expect(open.resp.StatusCode).To(Equal(http.StatusOK))
-
-		// Well past the write timeout. Without the cleared deadline this event's write
-		// fails, the handler returns, and the body ends instead of carrying the frame.
-		time.Sleep(300 * time.Millisecond)
-		live <- pkg.Event{"type": "assistant", "late": true}
-
-		frames := make(chan string, 1)
-		go func() {
-			line, _ := bufio.NewReader(open.resp.Body).ReadString('\n')
-			frames <- line
-		}()
-
-		var line string
-		Eventually(frames, 3*time.Second).Should(Receive(&line))
-		Expect(line).To(ContainSubstring(`{"late":true,"type":"assistant"}`))
+		Expect(open.resp.Header.Get("Content-Type")).To(Equal("text/event-stream"))
 	})
 
 	It("refuses a non-GET on the events route", func() {
