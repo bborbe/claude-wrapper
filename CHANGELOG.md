@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.4.1
 
 - fix: **the event stream no longer dies at the server's 60 s `WriteTimeout`.** `GET
   …/sessions/{id}/events` is an SSE response that can legitimately write nothing for
