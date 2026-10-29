@@ -7,8 +7,11 @@ package pkg
 import (
 	"context"
 	stderrors "errors"
+	"os"
+	"path/filepath"
 	"testing"
 
+	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
@@ -136,5 +139,66 @@ var _ = ginkgo.Describe("validateEnv", func() {
 	ginkgo.It("refuses a key containing an equals sign", func() {
 		err := validateEnv(context.Background(), map[string]string{"A=B": "x"})
 		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
+	})
+
+	// A NUL reaches os/exec and fails at cmd.Start with EINVAL, which surfaces as
+	// a 500 for what is plainly a caller error.
+	ginkgo.It("refuses a value containing a NUL byte", func() {
+		err := validateEnv(context.Background(), map[string]string{"A": "x\x00y"})
+		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
+	})
+})
+
+var _ = ginkgo.Describe("validateArgv", func() {
+	ginkgo.It("accepts ordinary config paths and a UUID resume", func() {
+		gomega.Expect(validateArgv(context.Background(), SpawnOptions{
+			MCPConfigs: []string{"/tmp/launcher.json", "relative.json"},
+			Resume:     "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		})).To(gomega.Succeed())
+	})
+
+	ginkgo.It("accepts no extra configs and no resume", func() {
+		gomega.Expect(validateArgv(context.Background(), SpawnOptions{})).To(gomega.Succeed())
+	})
+
+	// --mcp-config is variadic, so a flag-shaped entry is parsed as a flag rather
+	// than a path. This is the whole reason the check exists: an entry such as
+	// --dangerously-skip-permissions would change the child's posture silently.
+	ginkgo.It("refuses an mcp config that begins with a dash", func() {
+		err := validateArgv(context.Background(), SpawnOptions{
+			MCPConfigs: []string{"--dangerously-skip-permissions"},
+		})
+		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("refuses an empty mcp config entry", func() {
+		err := validateArgv(context.Background(), SpawnOptions{MCPConfigs: []string{""}})
+		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("refuses a resume that is not a UUID", func() {
+		err := validateArgv(context.Background(), SpawnOptions{Resume: "--continue"})
+		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
+	})
+})
+
+var _ = ginkgo.Describe("startChild", func() {
+	// The claim this pins is the ORDERING, not the error: validation runs before
+	// writeMCPConfig, so a refused spawn leaves no temp file behind. Nothing in
+	// the returned error shows that, and a later refactor that moved the write
+	// above the check would pass every other test in this file.
+	ginkgo.It("leaves no mcp temp file when the env is refused", func() {
+		const id = "99999999-8888-4777-8666-555555555555"
+		s := &supervisor{
+			ctx:       context.Background(),
+			claudeBin: "/bin/true",
+			now:       libtime.NewCurrentDateTime(),
+		}
+		_, err := s.startChild(context.Background(), id, SpawnOptions{Env: map[string]string{"": "x"}})
+		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
+
+		left, globErr := filepath.Glob(filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.json"))
+		gomega.Expect(globErr).NotTo(gomega.HaveOccurred())
+		gomega.Expect(left).To(gomega.BeEmpty())
 	})
 })

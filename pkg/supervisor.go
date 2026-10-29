@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -233,6 +234,9 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err := validateEnv(ctx, options.Env); err != nil {
 		return nil, err
 	}
+	if err := validateArgv(ctx, options); err != nil {
+		return nil, err
+	}
 	mcpConfig, err := writeMCPConfig(ctx, id)
 	if err != nil {
 		return nil, err
@@ -369,11 +373,52 @@ func buildArgs(id string, options SpawnOptions, mcpConfig string) []string {
 // Refused rather than filtered, on the same reasoning the option itself exists
 // for: a key silently dropped is a value the child does not have, and a child
 // missing one value looks exactly like one that was never given it.
+//
+// A NUL in the VALUE is refused too, and not for symmetry: execve treats each
+// entry as an opaque NUL-terminated string, so a value containing one reaches
+// os/exec and fails at cmd.Start with EINVAL — which surfaces as a 500 for what
+// is plainly a caller error, the exact confusion the statusFor mapping exists to
+// avoid.
 func validateEnv(ctx context.Context, env map[string]string) error {
-	for key := range env {
+	for key, value := range env {
 		if key == "" || strings.ContainsAny(key, "=\x00") {
 			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "env key %q is not a valid environment name", key)
 		}
+		if strings.ContainsRune(value, 0) {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "env value for %q contains a NUL byte", key)
+		}
+	}
+	return nil
+}
+
+// uuidPattern is the shape `claude` accepts for a session id. newID mints one
+// and its doc records the CLI's refusal ("Invalid session ID. Must be a valid
+// UUID.") when the shape is wrong; `--resume` takes the same kind of value, so a
+// malformed one has to be refused here rather than left to exit before producing
+// a single event.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// validateArgv refuses values that would not reach the child as the argument
+// they look like.
+//
+// ⚠️ This is not cosmetic validation. `--mcp-config` is VARIADIC, so every entry
+// is appended straight into argv — an entry beginning with `-` is parsed as a
+// FLAG rather than a path, and `mcp_configs: ["--dangerously-skip-permissions"]`
+// would silently change the child's permission posture instead of being refused.
+// The same reasoning covers `resume`, which sits immediately after `--resume` and
+// would otherwise consume the next flag as its value.
+func validateArgv(ctx context.Context, options SpawnOptions) error {
+	for _, config := range options.MCPConfigs {
+		if config == "" {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "mcp_configs contains an empty entry")
+		}
+		if strings.HasPrefix(config, "-") {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions,
+				"mcp config %q begins with '-' and would be parsed as a flag", config)
+		}
+	}
+	if options.Resume != "" && !uuidPattern.MatchString(options.Resume) {
+		return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "resume %q is not a UUID", options.Resume)
 	}
 	return nil
 }
