@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.4.0
+## Unreleased
 
 - fix: **the event stream no longer dies at the server's 60 s `WriteTimeout`.** `GET
   …/sessions/{id}/events` is an SSE response that can legitimately write nothing for
@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `time_total=73.5 s` with `size` unchanged since the replay. Also: the response headers are
   now flushed before the first frame, so a subscriber to a child with an empty replay can
   tell "connected and quiet" from "not connected yet".
+
+## v0.4.0
+
 - feat: `pkg.Supervisor` gains `ForgetQuestion`, and `DELETE …/question/{request_id}` exposes it.
   This is an addition to an exported interface, so an out-of-tree implementer must add the method.
 - fix: a request whose hold expired is now dropped (`DELETE …/question/{request_id}`), instead of
