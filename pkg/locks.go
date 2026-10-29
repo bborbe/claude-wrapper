@@ -43,6 +43,22 @@ func (l *SessionLocks) Acquire(ctx context.Context, sessionID string) (func(), e
 	}
 }
 
+// TryAcquire takes the lock only if it is free.
+//
+// A route that must answer promptly — POST …/message — uses this instead of
+// Acquire: blocking behind a sequence would hold its response open for the
+// length of the run, past the server's write deadline, so the turn would be
+// delivered with no way to report it.
+func (l *SessionLocks) TryAcquire(sessionID string) (func(), bool) {
+	gauge := l.gaugeFor(sessionID)
+	select {
+	case gauge <- struct{}{}:
+		return func() { <-gauge }, true
+	default:
+		return nil, false
+	}
+}
+
 // gaugeFor returns the one-slot channel that guards a session.
 //
 // Entries are never pruned. Deleting on release would let a waiter holding the

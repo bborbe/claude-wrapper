@@ -127,10 +127,13 @@ func handleMessage(
 	}
 	// The same lock a sequence holds: a turn written between two steps would
 	// have its result read as the current step's close, firing the next step
-	// one turn early.
-	release, err := locks.Acquire(ctx, id)
-	if err != nil {
-		writeError(resp, http.StatusServiceUnavailable, err)
+	// one turn early. Fail fast rather than queue — waiting out a run would
+	// outlast the server's write deadline, delivering the turn with no way to
+	// report it.
+	release, ok := locks.TryAcquire(id)
+	if !ok {
+		writeError(resp, http.StatusConflict,
+			errors.Errorf(ctx, "session %q is running a sequence", id))
 		return
 	}
 	defer release()

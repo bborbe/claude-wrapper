@@ -573,6 +573,9 @@ func (c *child) reap() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.session.State = StateExited
+	// A child killed mid-turn closes nothing, so the counter would otherwise
+	// stay positive for the life of the process and misreport the field.
+	c.pendingTurns = 0
 	c.session.Question = nil
 	c.session.Controls = []Control{}
 	c.closeSubscribers()

@@ -251,6 +251,21 @@ var _ = Describe("handler", func() {
 		Expect(got.Steps[1].Status).To(Equal(pkg.StepNotRun))
 	})
 
+	// Fail fast rather than queue: a message waiting out a run would outlast the
+	// server's write deadline, delivering the turn with no way to report it.
+	It("refuses a message while a sequence holds the session", func() {
+		locks := pkg.NewSessionLocks()
+		release, held := locks.TryAcquire("a")
+		Expect(held).To(BeTrue())
+		defer release()
+
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"text":"/cost"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/message", body)
+		handler.Session(&fakeSupervisor{}, nil, locks).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
+	})
+
 	// A route with no sequencer wired answers 503 rather than panicking on a
 	// nil interface.
 	It("refuses to run when no sequencer is wired", func() {
