@@ -7,9 +7,13 @@ package handler_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 	. "github.com/onsi/ginkgo/v2"
@@ -123,6 +127,18 @@ func (f *fakeSupervisor) Subscribe(_ context.Context, _ string) ([]pkg.Event, <-
 	live := make(chan pkg.Event)
 	close(live)
 	return f.events, live, func() {}, nil
+}
+
+// openSupervisor hands the events route a LIVE channel instead of fakeSupervisor's
+// closed one, so a spec can write to the stream after the server's write deadline has
+// passed. Nothing else about it matters.
+type openSupervisor struct {
+	fakeSupervisor
+	live chan pkg.Event
+}
+
+func (f *openSupervisor) Subscribe(_ context.Context, _ string) ([]pkg.Event, <-chan pkg.Event, func(), error) {
+	return nil, f.live, func() {}, nil
 }
 
 var _ = Describe("handler", func() {
@@ -258,6 +274,85 @@ var _ = Describe("handler", func() {
 		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"assistant"}`))
 		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"result"}`))
 		Expect(rec.Body.String()).To(ContainSubstring("event: end"))
+	})
+
+	// ⚠️ The regression this spec exists for. `main.go` sets `WriteTimeout: 60s`, and Go
+	// turns that into a deadline on the connection when the request is read. A deadline
+	// closes nothing — it makes the NEXT WRITE fail — so a stream that writes nothing for a
+	// minute looks healthy right up to its next event, and that write then ends the
+	// response. The subscriber sees the body cut mid-stream (a Node client reports
+	// `TypeError: terminated`) and a perfectly healthy child is recorded as a dead worker.
+	// A recorder cannot express this (it reports ErrNotSupported), so the spec runs a real
+	// server with a short WriteTimeout and writes an event after the deadline has passed.
+	//
+	// ⚠️ It speaks HTTP over a raw connection rather than `http.Get`, and that is
+	// load-bearing. `http.Get` resolves on the response HEADERS, so a spec that waits for it
+	// before sending the frame deadlocks the moment the header flush is removed: the frame
+	// is the only thing that would flush the headers, and the frame is only sent after
+	// `http.Get` returns. That is not a failure, it is a hang — and it was measured here,
+	// wedging the whole package until the test timeout. A raw conn has no such dependency:
+	// the frame is written on a timer, and the assertion is on the bytes that actually
+	// arrived.
+	It("keeps the stream open past the server's WriteTimeout", func() {
+		live := make(chan pkg.Event, 1)
+		sup := &openSupervisor{live: live}
+		srv := httptest.NewUnstartedServer(handler.Session(sup, nil, pkg.NewSessionLocks()))
+		srv.Config.WriteTimeout = 100 * time.Millisecond
+		srv.Start()
+		defer srv.Close()
+
+		conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = conn.Close() }()
+
+		_, err = fmt.Fprintf(conn, "GET /api/1.0/sessions/a/events HTTP/1.1\r\nHost: probe\r\n\r\n")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Well past the write timeout. Without the cleared deadline this event's write
+		// fails, the handler returns, and the connection ends without carrying the frame.
+		time.Sleep(300 * time.Millisecond)
+		live <- pkg.Event{"type": "assistant", "late": true}
+
+		// Bounded read: with the fix the stream stays open and the read times out holding
+		// the frame; without it the server has already closed and this returns early.
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		body, _ := io.ReadAll(conn)
+
+		Expect(string(body)).To(ContainSubstring(`data: {"late":true,"type":"assistant"}`))
+	})
+
+	// The spec above pins the late frame, and on its own it says nothing about the header
+	// flush: a raw connection buffers whatever arrives, so deleting `flusher.Flush()` would
+	// leave it green. This one sends NO event at all — a child with an empty replay and
+	// nothing to say — so the flush is the only thing that can make `http.Get` resolve.
+	It("flushes the response headers before the first event arrives", func() {
+		live := make(chan pkg.Event, 1) // never written to
+		sup := &openSupervisor{live: live}
+		srv := httptest.NewUnstartedServer(handler.Session(sup, nil, pkg.NewSessionLocks()))
+		srv.Start()
+		// Order matters: deferred LIFO, so connections are torn down BEFORE Close waits on
+		// them. Without the first defer a failed run hangs in Close instead of reporting.
+		defer srv.Close()
+		defer srv.CloseClientConnections()
+
+		type response struct {
+			resp *http.Response
+			err  error
+		}
+		opened := make(chan response, 1)
+		go func() {
+			resp, err := http.Get(srv.URL + "/api/1.0/sessions/a/events")
+			opened <- response{resp, err}
+		}()
+
+		var open response
+		// Well inside the bound, and no event is ever sent — only the header flush can
+		// satisfy this.
+		Eventually(opened, 2*time.Second).Should(Receive(&open))
+		Expect(open.err).NotTo(HaveOccurred())
+		defer func() { _ = open.resp.Body.Close() }()
+		Expect(open.resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(open.resp.Header.Get("Content-Type")).To(Equal("text/event-stream"))
 	})
 
 	It("refuses a non-GET on the events route", func() {
