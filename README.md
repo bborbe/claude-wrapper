@@ -95,15 +95,28 @@ because these macros can rewrite a context or end a child.
 than started. This endpoint is a remote kill switch; it is never
 fire-and-forget.
 
+**The child must be idle.** A run started mid-turn is refused with `409`: the
+in-flight turn's `result` would be read as step 1's close, so every later step
+would fire one turn early. Runs are also serialized per session, so two
+concurrent calls cannot consume each other's turns.
+
 **The call blocks until the run finishes** and answers with every step, so the
 response is the only report:
 
 ```json
 {"macro": "compact", "aborted": false, "steps": [
   {"index": 1, "command": "/vault-cli:prepare-compact", "status": "done",
-   "wrote_at": "2026-10-29T08:12:01Z", "closed_at": "2026-10-29T08:12:44Z"}
+   "wrote_at": "2026-10-29T08:12:01Z", "closed_at": "2026-10-29T08:12:44Z"},
+  {"index": 2, "command": "/compact", "status": "done",
+   "wrote_at": "2026-10-29T08:12:44Z", "closed_at": "2026-10-29T08:15:10Z"},
+  {"index": 3, "command": "/vault-cli:post-compact", "status": "done",
+   "wrote_at": "2026-10-29T08:15:10Z", "closed_at": "2026-10-29T08:15:52Z"}
 ]}
 ```
+
+Note the gaps: each step's `wrote_at` lands within milliseconds of the previous
+step's `closed_at`, while the turns themselves take 43 s and 146 s. That is the
+advance rule visible in the response.
 
 `status` is `done`, `running`, `not_run` or `aborted`. A run that stops early
 sets `aborted` with a `reason`, and the steps it never reached stay `not_run`.
@@ -124,7 +137,7 @@ Kills the child. `204` on success.
 |---|---|
 | `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
-| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm` |
+| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle |
 | `410` | child exited — it is gone and accepts no control |
 | `503` | child unreachable — the process exists but its stream is not responding |
 

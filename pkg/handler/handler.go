@@ -379,6 +379,8 @@ func statusFor(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, pkg.ErrConfirmationRequired):
 		return http.StatusConflict
+	case errors.Is(err, pkg.ErrSessionNotIdle):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

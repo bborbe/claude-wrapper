@@ -24,6 +24,11 @@ type scriptedSupervisor struct {
 	// closeOnSend models a child that leaves: the stream ends instead of the
 	// turn closing.
 	closeOnSend bool
+	// state is what Get reports; empty means idle.
+	state State
+	// omitIndex models a child whose result envelope carries no result_index,
+	// which is the shape the fallback path has to handle.
+	omitIndex bool
 }
 
 func (s *scriptedSupervisor) Spawn(context.Context, SpawnOptions) (*Session, error) {
@@ -32,7 +37,13 @@ func (s *scriptedSupervisor) Spawn(context.Context, SpawnOptions) (*Session, err
 
 func (s *scriptedSupervisor) List(context.Context) ([]Session, error) { return nil, nil }
 
-func (s *scriptedSupervisor) Get(context.Context, string) (*Session, error) { return nil, nil }
+func (s *scriptedSupervisor) Get(context.Context, string) (*Session, error) {
+	state := s.state
+	if state == "" {
+		state = StateIdle
+	}
+	return &Session{ID: "s1", State: state}, nil
+}
 
 func (s *scriptedSupervisor) Answer(context.Context, string, string, string) error { return nil }
 
@@ -58,6 +69,10 @@ func (s *scriptedSupervisor) Send(_ context.Context, _ string, text string) erro
 		return nil
 	}
 	s.live <- Event{"type": "assistant"}
+	if s.omitIndex {
+		s.live <- Event{"type": "result"}
+		return nil
+	}
 	s.live <- Event{"type": "result", "result_index": float64(index)}
 	return nil
 }
@@ -78,11 +93,11 @@ var _ = ginkgo.Describe("Sequencer", func() {
 	})
 
 	ginkgo.It("writes every step, in order, and closes each turn", func() {
-		result, err := sequencer.Run(context.Background(), "s1", Macros[0])
+		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
 
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(result.Aborted).To(gomega.BeFalse())
-		gomega.Expect(supervisor.sent).To(gomega.Equal(Macros[0].Steps))
+		gomega.Expect(supervisor.sent).To(gomega.Equal(AvailableMacros()[0].Steps))
 		for _, step := range result.Steps {
 			gomega.Expect(step.Status).To(gomega.Equal(StepDone))
 			gomega.Expect(step.WroteAt).NotTo(gomega.BeNil())
@@ -95,7 +110,7 @@ var _ = ginkgo.Describe("Sequencer", func() {
 	ginkgo.It("aborts and names the un-run steps when the child leaves", func() {
 		supervisor.closeOnSend = true
 
-		result, err := sequencer.Run(context.Background(), "s1", Macros[0])
+		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
 
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(errors.Is(err, ErrSessionExited)).To(gomega.BeTrue())
@@ -106,10 +121,37 @@ var _ = ginkgo.Describe("Sequencer", func() {
 		gomega.Expect(result.Steps[2].Status).To(gomega.Equal(StepNotRun))
 	})
 
+	// Admission control: a run started mid-turn would read the in-flight turn's
+	// result as step 1's close and fire every later step one turn early.
+	ginkgo.It("refuses a child that is not idle", func() {
+		supervisor.state = StateGenerating
+
+		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
+
+		gomega.Expect(errors.Is(err, ErrSessionNotIdle)).To(gomega.BeTrue())
+		gomega.Expect(result).To(gomega.BeNil())
+		gomega.Expect(supervisor.sent).To(gomega.BeEmpty())
+	})
+
+	// The fallback path: a child whose result envelope carries no result_index
+	// still closes a turn, which is safe only because the run started idle.
+	ginkgo.It("closes a turn when the child omits result_index", func() {
+		supervisor.omitIndex = true
+
+		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Aborted).To(gomega.BeFalse())
+		gomega.Expect(supervisor.sent).To(gomega.Equal(AvailableMacros()[0].Steps))
+		for _, step := range result.Steps {
+			gomega.Expect(step.Status).To(gomega.Equal(StepDone))
+		}
+	})
+
 	// An advance latency far below the timeout is the whole point: the next
 	// write follows the previous turn's close, not a fixed interval.
 	ginkgo.It("advances with a gap far below the step timeout", func() {
-		result, err := sequencer.Run(context.Background(), "s1", Macros[0])
+		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
 
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		for index := 0; index+1 < len(result.Steps); index++ {
@@ -139,13 +181,13 @@ var _ = ginkgo.Describe("LookupMacro", func() {
 	// Every macro the wrapper ships can rewrite a context or end a child, so
 	// none of them may run fire-and-forget.
 	ginkgo.It("requires confirmation for every defined macro", func() {
-		for _, macro := range Macros {
+		for _, macro := range AvailableMacros() {
 			gomega.Expect(macro.RequiresConfirmation()).To(gomega.BeTrue(), macro.Name)
 		}
 	})
 
 	ginkgo.It("defines no empty step", func() {
-		for _, macro := range Macros {
+		for _, macro := range AvailableMacros() {
 			for _, step := range macro.Steps {
 				gomega.Expect(step).NotTo(gomega.BeEmpty(), macro.Name)
 			}

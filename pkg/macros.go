@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -31,7 +32,7 @@ type Macro struct {
 // A macro that can rewrite a context or end a child is a remote kill switch,
 // so it may not be started fire-and-forget.
 func (m Macro) RequiresConfirmation() bool {
-	return slices.ContainsFunc(m.Steps, ProductionTouchingCommands.Contains)
+	return slices.ContainsFunc(m.Steps, productionTouchingCommands.Contains)
 }
 
 // StringList is an ordered set of strings.
@@ -42,15 +43,29 @@ func (l StringList) Contains(value string) bool {
 	return slices.Contains(l, value)
 }
 
-// ProductionTouchingCommands are the steps that change what a live child will
+// productionTouchingCommands are the steps that change what a live child will
 // do next, rather than merely asking it a question.
-var ProductionTouchingCommands = StringList{"/compact", "/clear", "/exit"}
+var productionTouchingCommands = StringList{"/compact", "/clear", "/exit"}
 
-// Macros is every sequence the wrapper will run, in definition order.
+// AvailableMacros returns every sequence the wrapper will run, in definition
+// order, with each macro's steps copied.
+//
+// The table itself stays unexported: it is what decides which commands the
+// endpoint can drive, so an importer able to rewrite it would defeat the
+// reviewable-as-a-diff property the whole design rests on.
+func AvailableMacros() []Macro {
+	available := make([]Macro, 0, len(macros))
+	for _, macro := range macros {
+		available = append(available, Macro{Name: macro.Name, Steps: slices.Clone(macro.Steps)})
+	}
+	return available
+}
+
+// macros is every sequence the wrapper will run, in definition order.
 //
 // A slice rather than a map: a map would lose the order the steps are declared
 // in, and a macro whose steps are unordered is not a macro.
-var Macros = []Macro{
+var macros = []Macro{
 	{
 		Name:  "compact",
 		Steps: []string{"/vault-cli:prepare-compact", "/compact", "/vault-cli:post-compact"},
@@ -63,9 +78,9 @@ var Macros = []Macro{
 
 // LookupMacro returns the macro with the given name.
 func LookupMacro(name string) (Macro, error) {
-	for _, macro := range Macros {
+	for _, macro := range macros {
 		if macro.Name == name {
-			return macro, nil
+			return Macro{Name: macro.Name, Steps: slices.Clone(macro.Steps)}, nil
 		}
 	}
 	return Macro{}, ErrUnknownMacro
@@ -131,13 +146,37 @@ func NewSequencer(
 	now libtime.CurrentDateTimeGetter,
 	stepTimeout time.Duration,
 ) Sequencer {
-	return &sequencer{supervisor: supervisor, now: now, stepTimeout: stepTimeout}
+	return &sequencer{
+		supervisor:  supervisor,
+		now:         now,
+		stepTimeout: stepTimeout,
+		locks:       map[string]*sync.Mutex{},
+	}
 }
 
 type sequencer struct {
 	supervisor  Supervisor
 	now         libtime.CurrentDateTimeGetter
 	stepTimeout time.Duration
+	// mutex guards locks, which holds one lock per session id.
+	mutex sync.Mutex
+	// locks serializes runs on the same session. Without it two runs each
+	// subscribe their own channel, both receive every event, and each consumes
+	// the other's result as its own step close — duplicating a production-
+	// touching command.
+	locks map[string]*sync.Mutex
+}
+
+// lockFor returns the lock that serializes runs on one session.
+func (s *sequencer) lockFor(sessionID string) *sync.Mutex {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	lock, ok := s.locks[sessionID]
+	if !ok {
+		lock = &sync.Mutex{}
+		s.locks[sessionID] = lock
+	}
+	return lock
 }
 
 // Run writes each step in turn, waiting for the previous turn to close.
@@ -146,6 +185,23 @@ func (s *sequencer) Run(
 	sessionID string,
 	macro Macro,
 ) (*SequenceResult, error) {
+	lock := s.lockFor(sessionID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Idle before the first write, checked under the lock so no second run can
+	// slip in between the check and the send. A run started mid-turn would
+	// consume the in-flight turn's result as step 1's close and fire every
+	// later step one turn early — including /compact and /exit.
+	session, err := s.supervisor.Get(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session.State != StateIdle {
+		return nil, errors.Wrapf(
+			ctx, ErrSessionNotIdle, "session %q is %s, not idle", sessionID, session.State)
+	}
+
 	replay, live, cancel, err := s.supervisor.Subscribe(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -155,9 +211,9 @@ func (s *sequencer) Run(
 	result := newSequenceResult(macro)
 	expected := countResults(replay)
 	for index := range macro.Steps {
-		// Between steps, not inside one: a cancelled request must not write the
-		// next command, but a step already in flight is left to its own timeout
-		// so a half-written turn is never abandoned silently.
+		// Checked between steps, not inside one. The wait itself derives from
+		// this context, so a cancelled request also abandons a step already in
+		// flight; this check is what stops the NEXT write.
 		if err := ctx.Err(); err != nil {
 			result.abort(index, err)
 			return result, err

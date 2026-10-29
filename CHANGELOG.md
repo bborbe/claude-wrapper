@@ -1,8 +1,13 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## Unreleased
 
-- Run a named macro — a fixed, ordered list of user turns — against one child, writing each step
+- feat: run a named macro — a fixed, ordered list of user turns — against one child, writing each step
   only after the previous turn's `result` event arrives. Until now the wrapper could send one turn
   and watch, so a sequence like `/vault-cli:prepare-compact` → `/compact` →
   `/vault-cli:post-compact` had to be driven by hand: a timer cannot do it, because a compaction's

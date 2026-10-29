@@ -19,6 +19,19 @@ import (
 	"github.com/bborbe/claude-wrapper/pkg/handler"
 )
 
+// fakeSequencer returns a canned run so the handler's success and abort paths
+// are exercised without a child.
+type fakeSequencer struct {
+	result *pkg.SequenceResult
+	err    error
+}
+
+func (f *fakeSequencer) Run(
+	context.Context, string, pkg.Macro,
+) (*pkg.SequenceResult, error) {
+	return f.result, f.err
+}
+
 type fakeSupervisor struct {
 	sessions []pkg.Session
 	getErr   error
@@ -187,5 +200,63 @@ var _ = Describe("handler", func() {
 		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/commands", nil)
 		handler.Session(sup, nil).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
+	})
+
+	// The success path: every step is in the body, so a caller reads the whole
+	// run from the one response.
+	It("returns every step of a completed run", func() {
+		seq := &fakeSequencer{result: &pkg.SequenceResult{
+			Macro: "compact",
+			Steps: []pkg.StepResult{
+				{Index: 1, Command: "/a", Status: pkg.StepDone},
+				{Index: 2, Command: "/b", Status: pkg.StepDone},
+			},
+		}}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(&fakeSupervisor{}, seq).ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var got pkg.SequenceResult
+		Expect(json.Unmarshal(rec.Body.Bytes(), &got)).To(Succeed())
+		Expect(got.Macro).To(Equal("compact"))
+		Expect(got.Steps).To(HaveLen(2))
+	})
+
+	// A run that stops early answers 200 with the abort in the body: the call
+	// happened, and the response is where the caller learns which steps ran.
+	It("reports an aborted run in the body, not as an error status", func() {
+		seq := &fakeSequencer{
+			result: &pkg.SequenceResult{
+				Macro:   "compact",
+				Aborted: true,
+				Reason:  "session exited",
+				Steps: []pkg.StepResult{
+					{Index: 1, Command: "/a", Status: pkg.StepAborted},
+					{Index: 2, Command: "/b", Status: pkg.StepNotRun},
+				},
+			},
+			err: pkg.ErrSessionExited,
+		}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(&fakeSupervisor{}, seq).ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var got pkg.SequenceResult
+		Expect(json.Unmarshal(rec.Body.Bytes(), &got)).To(Succeed())
+		Expect(got.Aborted).To(BeTrue())
+		Expect(got.Steps[1].Status).To(Equal(pkg.StepNotRun))
+	})
+
+	It("maps a non-idle refusal to 409", func() {
+		seq := &fakeSequencer{err: pkg.ErrSessionNotIdle}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(&fakeSupervisor{}, seq).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
 	})
 })
