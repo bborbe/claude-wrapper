@@ -57,7 +57,7 @@ func (f *fakeSupervisor) Get(_ context.Context, id string) (*pkg.Session, error)
 	return &pkg.Session{ID: id, State: pkg.StateIdle}, nil
 }
 
-func (f *fakeSupervisor) Answer(_ context.Context, _, _, _ string) error {
+func (f *fakeSupervisor) Answer(_ context.Context, _, _ string, _ pkg.Answer) error {
 	return f.getErr
 }
 
@@ -69,8 +69,8 @@ func (f *fakeSupervisor) RegisterQuestion(_ context.Context, _ string, _ pkg.Que
 	return f.getErr
 }
 
-func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (string, bool, error) {
-	return "", false, f.getErr
+func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (pkg.PendingAnswer, error) {
+	return pkg.PendingAnswer{}, f.getErr
 }
 
 func (f *fakeSupervisor) Stop(_ context.Context, _ string) error {
@@ -144,6 +144,27 @@ var _ = Describe("handler", func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
 		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	It("decodes a question answer body", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"request_id":"r1","answers":{"Pick one":"a"}}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	// A shape mismatch is a caller error, not the unknown-request case: 422
+	// keeps it distinguishable from the 409 the same route returns for a request
+	// that does not exist.
+	It("maps a shape mismatch to 422", func() {
+		sup := &fakeSupervisor{getErr: pkg.ErrAnswerShapeMismatch}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"request_id":"r1","answers":{"Pick one":"a"}}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusUnprocessableEntity))
 	})
 
 	// The replay is the whole point of the route: a subscriber that arrives

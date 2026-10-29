@@ -164,9 +164,9 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 			return s.verdictFor(s.defaultBehavior())
 		default:
 		}
-		behavior, answered, err := s.poll(ctx, requestID)
+		answer, answered, err := s.poll(ctx, requestID)
 		if err == nil && answered {
-			return s.verdictFor(behavior)
+			return s.verdictForAnswer(answer)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -175,10 +175,33 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 }
 
 func (s *MCPServer) register(ctx context.Context, requestID string, params json.RawMessage) error {
+	var call struct {
+		Arguments struct {
+			ToolName  string          `json:"tool_name"`
+			ToolUseID string          `json:"tool_use_id"`
+			Input     json.RawMessage `json:"input"`
+		} `json:"arguments"`
+	}
+	if err := json.Unmarshal(params, &call); err != nil {
+		return errors.Wrapf(ctx, err, "decode tool call failed")
+	}
+	var input map[string]any
+	if len(call.Arguments.Input) > 0 {
+		if err := json.Unmarshal(call.Arguments.Input, &input); err != nil {
+			return errors.Wrapf(ctx, err, "decode tool input failed")
+		}
+	}
+	// The tool name is forwarded verbatim rather than hardcoded: AskUserQuestion
+	// arrives through this same channel, and the name is what tells the two
+	// shapes apart on the wrapper side.
 	body := map[string]any{
-		"request_id": requestID,
-		"tool_name":  "permission",
-		"input":      json.RawMessage(params),
+		"request_id":  requestID,
+		"tool_name":   call.Arguments.ToolName,
+		"tool_use_id": call.Arguments.ToolUseID,
+		"input":       input,
+	}
+	if questions, ok := input["questions"]; ok {
+		body["questions"] = questions
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -201,25 +224,34 @@ func (s *MCPServer) register(ctx context.Context, requestID string, params json.
 	return nil
 }
 
-func (s *MCPServer) poll(ctx context.Context, requestID string) (string, bool, error) {
+// pollResult is one read of the wrapper's answer for a pending request.
+type pollResult struct {
+	Kind     string
+	Behavior string
+	Answers  map[string]string
+}
+
+func (s *MCPServer) poll(ctx context.Context, requestID string) (pollResult, bool, error) {
 	url := s.WrapperURL + "/api/1.0/sessions/" + s.SessionID + "/question/" + requestID
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", false, errors.Wrapf(ctx, err, "build poll request failed")
+		return pollResult{}, false, errors.Wrapf(ctx, err, "build poll request failed")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", false, errors.Wrapf(ctx, err, "poll question failed")
+		return pollResult{}, false, errors.Wrapf(ctx, err, "poll question failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var body struct {
-		Answered bool   `json:"answered"`
-		Behavior string `json:"behavior"`
+		Answered bool              `json:"answered"`
+		Kind     string            `json:"kind"`
+		Behavior string            `json:"behavior"`
+		Answers  map[string]string `json:"answers"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", false, errors.Wrapf(ctx, err, "decode poll failed")
+		return pollResult{}, false, errors.Wrapf(ctx, err, "decode poll failed")
 	}
-	return body.Behavior, body.Answered, nil
+	return pollResult{Kind: body.Kind, Behavior: body.Behavior, Answers: body.Answers}, body.Answered, nil
 }
 
 func (s *MCPServer) defaultBehavior() string {
@@ -234,4 +266,31 @@ func (s *MCPServer) verdictFor(behavior string) string {
 		return `{"behavior":"deny","message":"denied by claude-wrapper"}`
 	}
 	return `{"behavior":"allow"}`
+}
+
+// verdictForAnswer renders the tool's return value for one recorded answer.
+func (s *MCPServer) verdictForAnswer(answer pollResult) string {
+	if AnswerKind(answer.Kind) == AnswerKindQuestion {
+		return questionVerdict(answer.Answers)
+	}
+	return s.verdictFor(answer.Behavior)
+}
+
+// questionVerdict is the permission-prompt tool's return value for an
+// AskUserQuestion.
+//
+// ⚠️ The exact shape the child expects back is unverified as of 2026-10-29 —
+// the return schema is undocumented, and this is candidate A: `updatedInput`
+// carrying the selections, which is the permission-prompt-tool contract for
+// replacing a tool's input. SC5b's proof settles it; if the child ignores this,
+// this function is the one place to change.
+func questionVerdict(answers map[string]string) string {
+	encoded, err := json.Marshal(map[string]any{
+		"behavior":     "allow",
+		"updatedInput": map[string]any{"answers": answers},
+	})
+	if err != nil {
+		return `{"behavior":"deny","message":"claude-wrapper could not encode the answer"}`
+	}
+	return string(encoded)
 }

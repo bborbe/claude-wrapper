@@ -19,6 +19,13 @@ var (
 	ErrSessionExited = stderrors.New("session exited")
 	// ErrAnswerUnsupported is returned when a session declares no answer control.
 	ErrAnswerUnsupported = stderrors.New("answer not supported")
+	// ErrAnswerShapeMismatch is returned when an answer's shape does not match
+	// the pending request it is aimed at — a selection aimed at a permission
+	// request, or a behavior aimed at a question. It is deliberately distinct
+	// from ErrAnswerUnsupported, which stays the unknown-or-already-answered
+	// case, so a caller can tell "wrong answer for this request" (422) from
+	// "no such request" (409).
+	ErrAnswerShapeMismatch = stderrors.New("answer shape mismatch")
 	// ErrInvalidSpawnOptions is returned when the caller's spawn options cannot
 	// be expressed as a child command, so the request is refused before any child
 	// or temp file exists.

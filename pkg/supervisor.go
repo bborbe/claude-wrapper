@@ -63,9 +63,9 @@ type Supervisor interface {
 	List(ctx context.Context) ([]Session, error)
 	Get(ctx context.Context, id string) (*Session, error)
 	Send(ctx context.Context, id string, text string) error
-	Answer(ctx context.Context, id string, requestID string, behavior string) error
+	Answer(ctx context.Context, id string, requestID string, answer Answer) error
 	RegisterQuestion(ctx context.Context, id string, question Question) error
-	PollAnswer(ctx context.Context, requestID string) (string, bool, error)
+	PollAnswer(ctx context.Context, requestID string) (PendingAnswer, error)
 	Stop(ctx context.Context, id string) error
 	Subscribe(ctx context.Context, id string) ([]Event, <-chan Event, func(), error)
 }
@@ -152,14 +152,14 @@ func (s *supervisor) Subscribe(ctx context.Context, id string) ([]Event, <-chan 
 	return replay, live, cancel, nil
 }
 
-func (s *supervisor) Answer(ctx context.Context, id string, requestID string, behavior string) error {
+func (s *supervisor) Answer(ctx context.Context, id string, requestID string, answer Answer) error {
 	s.mutex.RLock()
 	c, ok := s.sessions[id]
 	s.mutex.RUnlock()
 	if !ok {
 		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
 	}
-	if err := s.pending.Resolve(ctx, requestID, behavior); err != nil {
+	if err := s.pending.Resolve(ctx, requestID, answer); err != nil {
 		return err
 	}
 	c.clearQuestion(requestID)
@@ -192,13 +192,13 @@ func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Q
 	if c.isExited() {
 		return errors.Wrapf(ctx, ErrSessionExited, "session %q exited", id)
 	}
-	s.pending.Register(question.RequestID)
+	s.pending.Register(question.RequestID, question)
 	c.setQuestion(question)
 	return nil
 }
 
 // PollAnswer reports whether the pending request has been answered yet.
-func (s *supervisor) PollAnswer(ctx context.Context, requestID string) (string, bool, error) {
+func (s *supervisor) PollAnswer(ctx context.Context, requestID string) (PendingAnswer, error) {
 	return s.pending.Peek(requestID)
 }
 

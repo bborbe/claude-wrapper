@@ -11,16 +11,36 @@ import (
 	"github.com/bborbe/errors"
 )
 
-// Pending holds the permission requests a child has raised and is blocked on.
+// Answer is a decision for a pending request, discriminated by the kind of the
+// request it answers.
+//
+// Behavior carries the permission verdict; Answers carries a question's
+// selection, keyed by the question text. Which field a caller fills is decided
+// by the pending request's kind, and a mismatch is refused rather than coerced.
+type Answer struct {
+	Kind     AnswerKind
+	Behavior string
+	Answers  map[string]string
+}
+
+// PendingAnswer is the registry's read view of one request: what the child is
+// parked on, and the decision once one has been recorded.
+type PendingAnswer struct {
+	Question Question
+	Answer   Answer
+	Answered bool
+}
+
+// Pending holds the requests a child has raised and is blocked on.
 //
 // It lives in the wrapper process, not in the MCP tool process: the tool is a
 // child of claude, so it reaches this registry over the wrapper's own HTTP
 // surface. That indirection is why the question is visible to a REST caller at
 // all — the tool is the only thing claude talks to, and it forwards.
 type Pending interface {
-	Register(requestID string)
-	Resolve(ctx context.Context, requestID string, behavior string) error
-	Peek(requestID string) (string, bool, error)
+	Register(requestID string, question Question)
+	Resolve(ctx context.Context, requestID string, answer Answer) error
+	Peek(requestID string) (PendingAnswer, error)
 	Forget(requestID string)
 }
 
@@ -35,23 +55,29 @@ type pending struct {
 }
 
 type waiter struct {
-	behavior string
+	question Question
+	answer   Answer
 	answered bool
 }
 
-// Register records a request. Registering an id twice is a no-op so a retried
-// tool call cannot reset a decision already made.
-func (p *pending) Register(requestID string) {
+// Register records a request with its payload. Registering an id twice is a
+// no-op so a retried tool call cannot reset a decision already made.
+func (p *pending) Register(requestID string, question Question) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	if _, ok := p.waiters[requestID]; ok {
 		return
 	}
-	p.waiters[requestID] = &waiter{}
+	question.RequestID = requestID
+	p.waiters[requestID] = &waiter{question: question}
 }
 
 // Resolve records an answer for a request.
-func (p *pending) Resolve(ctx context.Context, requestID string, behavior string) error {
+//
+// An answer whose kind does not match the pending request is refused with
+// ErrAnswerShapeMismatch and leaves the request unanswered: recording it would
+// report success for a decision the child can never consume.
+func (p *pending) Resolve(ctx context.Context, requestID string, answer Answer) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	entry, ok := p.waiters[requestID]
@@ -61,23 +87,38 @@ func (p *pending) Resolve(ctx context.Context, requestID string, behavior string
 	if entry.answered {
 		return errors.Wrapf(ctx, ErrAnswerUnsupported, "request %q already answered", requestID)
 	}
-	entry.behavior = behavior
+	if entry.question.Kind != answer.Kind {
+		return errors.Wrapf(
+			ctx,
+			ErrAnswerShapeMismatch,
+			"answer kind %q does not match pending kind %q for request %q",
+			answer.Kind,
+			entry.question.Kind,
+			requestID,
+		)
+	}
+	entry.answer = answer
 	entry.answered = true
 	return nil
 }
 
-// Peek reports whether the request has been answered, without blocking.
+// Peek reports the pending request and whether it has been answered, without
+// blocking.
 //
 // Non-blocking on purpose: the MCP tool polls this over HTTP, and a blocking
 // long-poll would tie up a server goroutine per pending prompt.
-func (p *pending) Peek(requestID string) (string, bool, error) {
+func (p *pending) Peek(requestID string) (PendingAnswer, error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	entry, ok := p.waiters[requestID]
 	if !ok {
-		return "", false, nil
+		return PendingAnswer{}, nil
 	}
-	return entry.behavior, entry.answered, nil
+	return PendingAnswer{
+		Question: entry.question,
+		Answer:   entry.answer,
+		Answered: entry.answered,
+	}, nil
 }
 
 // Forget drops a request without answering it.

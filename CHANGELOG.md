@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: the pending registry carries a kind-discriminated payload instead of a bare allow/deny
+  string. A permission request keeps its tool name and input; an `AskUserQuestion` keeps its
+  `questions[]` list — each prompt with its own `options[]`, `header` and `multiSelect` — so a
+  selection can be recorded rather than coerced into a verdict. Both shapes arrive through the same
+  child-facing `permission_prompt` tool; the tool name is what tells them apart.
+- feat: `POST /api/1.0/sessions/{id}/answer` accepts `{"request_id","answers":{…}}` for a question
+  alongside the existing `{"request_id","behavior"}` for a permission, and
+  `GET …/question/{request_id}` returns the full payload with the recorded answer.
+- feat: an answer whose shape does not match the pending request returns **422 Unprocessable
+  Entity** through a new `ErrAnswerShapeMismatch`, distinct from the existing 409 for an unknown or
+  already-answered request, and leaves the request unanswered.
+
 ## v0.3.0
 
 - feat: serve a client-facing MCP face at `/mcp` on the daemon's own mux, over streamable HTTP, so an

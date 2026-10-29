@@ -47,12 +47,12 @@ func (s *toolSupervisor) Get(context.Context, string) (*Session, error) {
 	return &Session{ID: "s1", State: s.state, PendingTurns: s.pendingTurns}, nil
 }
 
-func (s *toolSupervisor) Answer(context.Context, string, string, string) error { return nil }
+func (s *toolSupervisor) Answer(context.Context, string, string, Answer) error { return nil }
 
 func (s *toolSupervisor) RegisterQuestion(context.Context, string, Question) error { return nil }
 
-func (s *toolSupervisor) PollAnswer(context.Context, string) (string, bool, error) {
-	return "", false, nil
+func (s *toolSupervisor) PollAnswer(context.Context, string) (PendingAnswer, error) {
+	return PendingAnswer{}, nil
 }
 
 func (s *toolSupervisor) Stop(context.Context, string) error { return nil }
