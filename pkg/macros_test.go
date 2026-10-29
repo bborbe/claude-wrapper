@@ -21,6 +21,10 @@ type scriptedSupervisor struct {
 	mutex sync.Mutex
 	sent  []string
 	live  chan Event
+	// emitted is the replay a real Subscribe hands back. Without it a second
+	// run would restart its turn counter at zero while the child is already
+	// three turns in.
+	emitted []Event
 	// closeOnSend models a child that leaves: the stream ends instead of the
 	// turn closing.
 	closeOnSend bool
@@ -29,6 +33,9 @@ type scriptedSupervisor struct {
 	// omitIndex models a child whose result envelope carries no result_index,
 	// which is the shape the fallback path has to handle.
 	omitIndex bool
+	// neverClose models a child whose turn never ends, which is what the step
+	// timeout exists for.
+	neverClose bool
 }
 
 func (s *scriptedSupervisor) Spawn(context.Context, SpawnOptions) (*Session, error) {
@@ -68,19 +75,34 @@ func (s *scriptedSupervisor) Send(_ context.Context, _ string, text string) erro
 		close(s.live)
 		return nil
 	}
-	s.live <- Event{"type": "assistant"}
-	if s.omitIndex {
-		s.live <- Event{"type": "result"}
+	s.emit(Event{"type": "assistant"})
+	if s.neverClose {
 		return nil
 	}
-	s.live <- Event{"type": "result", "result_index": float64(index)}
+	if s.omitIndex {
+		s.emit(Event{"type": "result"})
+		return nil
+	}
+	s.emit(Event{"type": "result", "result_index": float64(index)})
 	return nil
+}
+
+// emit publishes one event to the live channel and keeps it for replay.
+func (s *scriptedSupervisor) emit(event Event) {
+	s.mutex.Lock()
+	s.emitted = append(s.emitted, event)
+	s.mutex.Unlock()
+	s.live <- event
 }
 
 func (s *scriptedSupervisor) Subscribe(
 	context.Context, string,
 ) ([]Event, <-chan Event, func(), error) {
-	return nil, s.live, func() {}, nil
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	replay := make([]Event, len(s.emitted))
+	copy(replay, s.emitted)
+	return replay, s.live, func() {}, nil
 }
 
 var _ = ginkgo.Describe("Sequencer", func() {
@@ -89,7 +111,7 @@ var _ = ginkgo.Describe("Sequencer", func() {
 
 	ginkgo.BeforeEach(func() {
 		supervisor = &scriptedSupervisor{live: make(chan Event, 64)}
-		sequencer = NewSequencer(supervisor, libtime.NewCurrentDateTime(), 5*time.Second)
+		sequencer = NewSequencer(supervisor, libtime.NewCurrentDateTime(), NewSessionLocks(), 5*time.Second)
 	})
 
 	ginkgo.It("writes every step, in order, and closes each turn", func() {
@@ -146,6 +168,43 @@ var _ = ginkgo.Describe("Sequencer", func() {
 		for _, step := range result.Steps {
 			gomega.Expect(step.Status).To(gomega.Equal(StepDone))
 		}
+	})
+
+	// A turn that never closes must abort rather than hold the run forever.
+	ginkgo.It("aborts a step whose turn never closes", func() {
+		supervisor.neverClose = true
+		short := NewSequencer(
+			supervisor, libtime.NewCurrentDateTime(), NewSessionLocks(), 50*time.Millisecond)
+
+		result, err := short.Run(context.Background(), "s1", AvailableMacros()[0])
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(result.Aborted).To(gomega.BeTrue())
+		gomega.Expect(result.Steps[0].Status).To(gomega.Equal(StepAborted))
+		gomega.Expect(result.Steps[1].Status).To(gomega.Equal(StepNotRun))
+	})
+
+	// The per-session lock: two runs on one session must serialize, so their
+	// steps never interleave into a duplicated production-touching command.
+	ginkgo.It("serializes two runs on the same session", func() {
+		steps := AvailableMacros()[0].Steps
+		var wait sync.WaitGroup
+		for range 2 {
+			wait.Add(1)
+			go func() {
+				defer ginkgo.GinkgoRecover()
+				defer wait.Done()
+				_, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			}()
+		}
+		wait.Wait()
+
+		supervisor.mutex.Lock()
+		defer supervisor.mutex.Unlock()
+		gomega.Expect(supervisor.sent).To(gomega.HaveLen(2 * len(steps)))
+		gomega.Expect(supervisor.sent[:len(steps)]).To(gomega.Equal(steps))
+		gomega.Expect(supervisor.sent[len(steps):]).To(gomega.Equal(steps))
 	})
 
 	// An advance latency far below the timeout is the whole point: the next

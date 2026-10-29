@@ -97,8 +97,17 @@ fire-and-forget.
 
 **The child must be idle.** A run started mid-turn is refused with `409`: the
 in-flight turn's `result` would be read as step 1's close, so every later step
-would fire one turn early. Runs are also serialized per session, so two
-concurrent calls cannot consume each other's turns.
+would fire one turn early.
+
+**Writes are serialized per session.** The run and `POST …/message` share one
+lock, so a plain message cannot land between two steps and be consumed as the
+current step's close.
+
+**A step that raises a permission question cannot be answered by the macro.** A
+pending question does not change the child's state, so the step waits until
+`stepTimeout` and the run aborts. That is deliberate — the sequence has no
+authority to answer a gate — but it means a macro containing a tool that can
+prompt should be run on a child whose permissions are already settled.
 
 **The call blocks until the run finishes** and answers with every step, so the
 response is the only report:

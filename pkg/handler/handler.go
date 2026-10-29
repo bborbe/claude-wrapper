@@ -60,7 +60,11 @@ func Sessions(supervisor pkg.Supervisor) http.Handler {
 
 // Session serves one child: GET, DELETE, and the POST …/answer, …/message,
 // …/question and …/commands sub-resources.
-func Session(supervisor pkg.Supervisor, sequencer pkg.Sequencer) http.Handler {
+func Session(
+	supervisor pkg.Supervisor,
+	sequencer pkg.Sequencer,
+	locks *pkg.SessionLocks,
+) http.Handler {
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
 		rest := strings.TrimPrefix(req.URL.Path, "/api/1.0/sessions/")
@@ -82,7 +86,7 @@ func Session(supervisor pkg.Supervisor, sequencer pkg.Sequencer) http.Handler {
 		case "answer":
 			handleAnswer(ctx, resp, req, supervisor, id)
 		case "message":
-			handleMessage(ctx, resp, req, supervisor, id)
+			handleMessage(ctx, resp, req, supervisor, locks, id)
 		case "question":
 			handleQuestion(ctx, resp, req, supervisor, id, requestID)
 		case "events":
@@ -104,6 +108,7 @@ func handleMessage(
 	resp http.ResponseWriter,
 	req *http.Request,
 	supervisor pkg.Supervisor,
+	locks *pkg.SessionLocks,
 	id string,
 ) {
 	if req.Method != http.MethodPost {
@@ -120,6 +125,15 @@ func handleMessage(
 		writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "text is required"))
 		return
 	}
+	// The same lock a sequence holds: a turn written between two steps would
+	// have its result read as the current step's close, firing the next step
+	// one turn early.
+	release, err := locks.Acquire(ctx, id)
+	if err != nil {
+		writeError(resp, http.StatusServiceUnavailable, err)
+		return
+	}
+	defer release()
 	if err := supervisor.Send(ctx, id, body.Text); err != nil {
 		writeError(resp, statusFor(err), err)
 		return
@@ -164,6 +178,11 @@ func handleCommands(
 	if macro.RequiresConfirmation() && body.Confirm == "" {
 		writeError(resp, http.StatusConflict, errors.Wrapf(
 			ctx, pkg.ErrConfirmationRequired, "macro %q needs a confirmation", macro.Name))
+		return
+	}
+	if sequencer == nil {
+		writeError(resp, http.StatusServiceUnavailable,
+			errors.Errorf(ctx, "no sequencer is wired"))
 		return
 	}
 	// Best effort: a recorder under test does not implement deadlines, and

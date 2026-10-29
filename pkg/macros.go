@@ -7,7 +7,6 @@ package pkg
 import (
 	"context"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -144,13 +143,14 @@ type Sequencer interface {
 func NewSequencer(
 	supervisor Supervisor,
 	now libtime.CurrentDateTimeGetter,
+	locks *SessionLocks,
 	stepTimeout time.Duration,
 ) Sequencer {
 	return &sequencer{
 		supervisor:  supervisor,
 		now:         now,
+		locks:       locks,
 		stepTimeout: stepTimeout,
-		locks:       map[string]*sync.Mutex{},
 	}
 }
 
@@ -158,25 +158,10 @@ type sequencer struct {
 	supervisor  Supervisor
 	now         libtime.CurrentDateTimeGetter
 	stepTimeout time.Duration
-	// mutex guards locks, which holds one lock per session id.
-	mutex sync.Mutex
-	// locks serializes runs on the same session. Without it two runs each
-	// subscribe their own channel, both receive every event, and each consumes
-	// the other's result as its own step close — duplicating a production-
-	// touching command.
-	locks map[string]*sync.Mutex
-}
-
-// lockFor returns the lock that serializes runs on one session.
-func (s *sequencer) lockFor(sessionID string) *sync.Mutex {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	lock, ok := s.locks[sessionID]
-	if !ok {
-		lock = &sync.Mutex{}
-		s.locks[sessionID] = lock
-	}
-	return lock
+	// locks is shared with every other route that can write a turn. A lock
+	// private to the sequencer would still race POST …/message, whose turn's
+	// result would be consumed as the current step's close.
+	locks *SessionLocks
 }
 
 // Run writes each step in turn, waiting for the previous turn to close.
@@ -185,12 +170,14 @@ func (s *sequencer) Run(
 	sessionID string,
 	macro Macro,
 ) (*SequenceResult, error) {
-	lock := s.lockFor(sessionID)
-	lock.Lock()
-	defer lock.Unlock()
+	release, err := s.locks.Acquire(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
-	// Idle before the first write, checked under the lock so no second run can
-	// slip in between the check and the send. A run started mid-turn would
+	// Idle before the first write, checked under the lock so no other writer
+	// can slip in between the check and the send. A run started mid-turn would
 	// consume the in-flight turn's result as step 1's close and fire every
 	// later step one turn early — including /compact and /exit.
 	session, err := s.supervisor.Get(ctx, sessionID)
@@ -295,6 +282,13 @@ func isTurnClosed(event Event, expected int) bool {
 }
 
 // eventIndex reads the child's own turn counter, when it sent one.
+//
+// Measured 2026-10-29 against the installed CLI: a `--output-format stream-json`
+// child's `result` line carries `"result_index":0` and increments per turn, so
+// this is the production path rather than a hypothetical. The fallback below
+// exists for a child that omits it, and is only safe because a run starts on an
+// idle child under the session lock — there, the next `result` is necessarily
+// the step's own.
 func eventIndex(event Event) (int, bool) {
 	value, ok := event["result_index"]
 	if !ok {
