@@ -186,6 +186,13 @@ var _ = ginkgo.Describe("validateArgv", func() {
 		err := validateArgv(context.Background(), SpawnOptions{Resume: "--continue"})
 		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
 	})
+
+	// Same failure as a NUL in an env value: os/exec rejects it at cmd.Start and
+	// the caller sees a 500 for their own bad input.
+	ginkgo.It("refuses an mcp config containing a NUL byte", func() {
+		err := validateArgv(context.Background(), SpawnOptions{MCPConfigs: []string{"a\x00b.json"}})
+		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
+	})
 })
 
 var _ = ginkgo.Describe("startChild", func() {
@@ -206,5 +213,45 @@ var _ = ginkgo.Describe("startChild", func() {
 		left, globErr := filepath.Glob(filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.json"))
 		gomega.Expect(globErr).NotTo(gomega.HaveOccurred())
 		gomega.Expect(left).To(gomega.BeEmpty())
+	})
+
+	// The feature's core claim, asserted on a REAL process rather than on childEnv
+	// in isolation: a regression that dropped the cmd.Env assignment would leave
+	// every other test in this file green while the child silently stopped
+	// receiving the environment its caller resolved.
+	ginkgo.It("gives the child process the caller's environment", func() {
+		const id = "77777777-6666-4555-8444-333333333333"
+		dir := ginkgo.GinkgoT().TempDir()
+		seen := filepath.Join(dir, "seen.txt")
+		fake := filepath.Join(dir, "fake-claude.sh")
+		// The fake ignores the argv the wrapper builds — this asserts the process
+		// ENVIRONMENT, not argument handling, and a real `claude` would need a
+		// model call to prove the same thing.
+		script := "#!/bin/sh\nprintf '%s' \"$WRAPPER_TEST_VAR\" > '" + seen + "'\n"
+		gomega.Expect(os.WriteFile(fake, []byte(script), 0o700)).To(gomega.Succeed())
+		ginkgo.DeferCleanup(func() {
+			left, _ := filepath.Glob(filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.json"))
+			for _, path := range left {
+				_ = os.Remove(path)
+			}
+		})
+
+		s := &supervisor{
+			ctx:       context.Background(),
+			claudeBin: fake,
+			now:       libtime.NewCurrentDateTime(),
+		}
+		_, err := s.startChild(context.Background(), id, SpawnOptions{
+			Cwd: dir,
+			Env: map[string]string{"WRAPPER_TEST_VAR": "seen"},
+		})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Eventually(func() string {
+			content, readErr := os.ReadFile(seen)
+			if readErr != nil {
+				return ""
+			}
+			return string(content)
+		}, "5s").Should(gomega.Equal("seen"))
 	})
 })

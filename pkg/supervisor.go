@@ -416,6 +416,12 @@ func validateArgv(ctx context.Context, options SpawnOptions) error {
 			return errors.Wrapf(ctx, ErrInvalidSpawnOptions,
 				"mcp config %q begins with '-' and would be parsed as a flag", config)
 		}
+		// Same reason as the env-value check: a NUL survives JSON, is rejected by
+		// os/exec at cmd.Start, and surfaces as a 500 for what is plainly a caller
+		// error. `resume` cannot carry one — uuidPattern already excludes it.
+		if strings.ContainsRune(config, 0) {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "mcp config %q contains a NUL byte", config)
+		}
 	}
 	if options.Resume != "" && !uuidPattern.MatchString(options.Resume) {
 		return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "resume %q is not a UUID", options.Resume)
