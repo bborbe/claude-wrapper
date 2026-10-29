@@ -108,9 +108,14 @@ This bounds the blast radius to a local caller. It is not authentication, and
 
 `spawn_session` defaults `permission_mode` to `bypassPermissions`. That is a
 deliberate phase-1 choice, not a safe default: a real session hits a gate on its
-first file write, and this phase exists to prove plain turns. It is removed in
-**phase 2**, where the client sees the prompt and answers it instead of skipping
-it.
+first file write, and phase 1 exists to prove plain turns.
+
+**Phase 2 landed and the default did not change.** A client can now see and
+answer the gate (`get_pending` / `answer_pending`), so the crutch is no longer
+needed to drive a session — but it is still the default, and that is now a
+compatibility decision rather than a limitation. Pass `permission_mode:
+"default"` to let the gates fire, and `set_permission_mode` to raise or lower
+the mode on a session already running.
 
 ## REST
 
@@ -384,8 +389,10 @@ too, from two sources: the child's `control_response`, stored the moment it
 arrives, and its `system`/`init` event, re-emitted on every turn. A change is
 therefore visible in `GET` immediately, without waiting for the next turn.
 
-The change takes the same per-session lock a sequence does, so it cannot land
-between two steps of a run.
+The change takes the same per-session lock a sequence does, and **fails fast**
+(`409`) rather than waiting for it: a compaction can hold that lock for minutes,
+which outlasts the server's write deadline — the response would be truncated
+after the mode had already changed.
 
 ### DELETE /api/1.0/sessions/{id}
 
