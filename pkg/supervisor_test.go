@@ -9,21 +9,11 @@ import (
 	stderrors "errors"
 	"os"
 	"path/filepath"
-	"testing"
 
 	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
-
-// Qualified ginkgo and gomega, not dot-imports. Ginkgo exports a `Pending`
-// decorator, which collides with this package's own `Pending` type the moment
-// the spec is compiled in-package — and it has to be in-package, because
-// buildArgs, childEnv and validateEnv are unexported.
-func TestPkg(t *testing.T) {
-	gomega.RegisterFailHandler(ginkgo.Fail)
-	ginkgo.RunSpecs(t, "Pkg Suite")
-}
 
 // indexOf is the position of the first matching element, or -1. Used instead of
 // a bare ContainElement where the ORDER is the property under test: a flag that
@@ -77,6 +67,22 @@ var _ = ginkgo.Describe("buildArgs", func() {
 		args := buildArgs(id, SpawnOptions{MCPConfigs: []string{"/tmp/launcher.json"}}, "/tmp/generated.json")
 		gomega.Expect(indexOf(args, "--permission-prompt-tool")).To(
 			gomega.BeNumerically(">", indexOf(args, "--mcp-config")))
+	})
+
+	// The two options are independent axes, and a reviewer asked for a case that
+	// exercises both at once: a resume spawn that also loads extra configs must
+	// still emit exactly one identity and every config path, in order.
+	ginkgo.It("combines resume with extra mcp configs", func() {
+		args := buildArgs(id, SpawnOptions{
+			Resume:     resumed,
+			MCPConfigs: []string{"/tmp/launcher.json"},
+		}, "/tmp/generated.json")
+		gomega.Expect(args).NotTo(gomega.ContainElement("--session-id"))
+		gomega.Expect(args).NotTo(gomega.ContainElement(id))
+		gomega.Expect(indexOf(args, "--resume") + 1).To(gomega.Equal(indexOf(args, resumed)))
+		at := indexOf(args, "--mcp-config")
+		gomega.Expect(args[at+1]).To(gomega.Equal("/tmp/generated.json"))
+		gomega.Expect(args[at+2]).To(gomega.Equal("/tmp/launcher.json"))
 	})
 
 	ginkgo.It("still passes the model and permission mode", func() {
