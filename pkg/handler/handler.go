@@ -153,13 +153,6 @@ type commandsRequest struct {
 	Confirm string `json:"confirm"`
 }
 
-// handleCommands runs a named macro against one child.
-//
-// It blocks until the run finishes and answers with every step, so a caller
-// cannot start a sequence and walk away: the response is the only report, and
-// a run that stopped early names the steps it never reached. The write
-// deadline is cleared for the duration because a compaction takes minutes,
-// far past the server's 60-second default.
 // handleModel changes the model of a running session.
 //
 // The change is the child's own `/model` command followed by one probe turn,
@@ -188,8 +181,8 @@ func handleModel(
 		writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
 		return
 	}
-	if body.Model == "" {
-		writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "model is required"))
+	if err := pkg.ValidateModelName(ctx, body.Model); err != nil {
+		writeError(resp, statusFor(err), err)
 		return
 	}
 	before, err := supervisor.Get(ctx, id)
@@ -260,6 +253,13 @@ func handlePermissionMode(
 	})
 }
 
+// handleCommands runs a named macro against one child.
+//
+// It blocks until the run finishes and answers with every step, so a caller
+// cannot start a sequence and walk away: the response is the only report, and
+// a run that stopped early names the steps it never reached. The write
+// deadline is cleared for the duration because a compaction takes minutes,
+// far past the server's 60-second default.
 func handleCommands(
 	ctx context.Context,
 	resp http.ResponseWriter,
@@ -572,6 +572,8 @@ func statusFor(err error) int {
 	case errors.Is(err, pkg.ErrAnswerShapeMismatch):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, pkg.ErrInvalidSpawnOptions):
+		return http.StatusBadRequest
+	case errors.Is(err, pkg.ErrInvalidSessionChange):
 		return http.StatusBadRequest
 	case errors.Is(err, pkg.ErrUnknownMacro):
 		return http.StatusBadRequest

@@ -8,6 +8,7 @@ import (
 	"context"
 	"slices"
 	"time"
+	"unicode"
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
@@ -90,6 +91,26 @@ var macros = []Macro{
 			"/cost",
 		},
 	},
+}
+
+// ValidateModelName refuses a model name that cannot be delivered safely as the
+// child's own `/model` command.
+//
+// The name is interpolated into a user turn, so a control character is the only
+// thing that could change what the child reads — everything else is ordinary
+// text, and the turn is JSON-encoded either way. Refused rather than sanitised:
+// a silently rewritten name would report a model the caller never asked for.
+func ValidateModelName(ctx context.Context, model string) error {
+	if model == "" {
+		return errors.Wrapf(ctx, ErrInvalidSessionChange, "model must not be empty")
+	}
+	for _, r := range model {
+		if unicode.IsControl(r) {
+			return errors.Wrapf(ctx, ErrInvalidSessionChange,
+				"model %q contains a control character", model)
+		}
+	}
+	return nil
 }
 
 // ModelChangeMacro returns the sequence a model change runs.

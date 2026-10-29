@@ -239,7 +239,7 @@ func (s *supervisor) SetPermissionMode(
 	mode string,
 ) (string, error) {
 	if !isPermissionMode(mode) {
-		return "", errors.Wrapf(ctx, ErrInvalidSpawnOptions,
+		return "", errors.Wrapf(ctx, ErrInvalidSessionChange,
 			"permission mode %q is not one of %v", mode, AvailablePermissionModes())
 	}
 	s.mutex.RLock()

@@ -645,8 +645,8 @@ func (s *MCPToolServer) setModel(ctx context.Context, args json.RawMessage) (str
 	if err := json.Unmarshal(args, &body); err != nil {
 		return "", errors.Wrapf(ctx, err, "decode arguments failed")
 	}
-	if body.Model == "" {
-		return "", errors.Errorf(ctx, "model is required")
+	if err := ValidateModelName(ctx, body.Model); err != nil {
+		return "", err
 	}
 	if s.Sequencer == nil {
 		return "", errors.Errorf(ctx, "model change is not wired")
