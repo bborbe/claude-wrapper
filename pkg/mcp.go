@@ -148,12 +148,15 @@ func (s *MCPServer) record(params json.RawMessage) {
 // forever — an unanswered prompt must never wedge a session.
 func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 	if s.WrapperURL == "" || s.SessionID == "" {
-		return s.verdictFor(s.defaultBehavior())
+		return s.unansweredVerdict("", params)
 	}
 	requestID := strconv.FormatInt(s.Now.Now().Time().UnixNano(), 36)
 	if err := s.register(ctx, requestID, params); err != nil {
+		// The registration may still have landed — the POST can be delivered and
+		// the response lost — so the id is forgotten here too rather than left
+		// behind as a request nothing waits on.
 		log.Printf("mcp: register question failed: %v", err)
-		return s.verdictFor(s.defaultBehavior())
+		return s.unansweredVerdict(requestID, params)
 	}
 	deadline := s.Now.Now().Time().Add(s.Hold)
 	for s.Now.Now().Time().Before(deadline) {
@@ -161,7 +164,7 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 		// context has gone away and the verdict can no longer reach it.
 		select {
 		case <-ctx.Done():
-			return s.verdictFor(s.defaultBehavior())
+			return s.unansweredVerdict(requestID, params)
 		default:
 		}
 		answer, answered, err := s.poll(ctx, requestID)
@@ -171,17 +174,26 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 		time.Sleep(250 * time.Millisecond)
 	}
 	log.Printf("mcp: request %s unanswered after %s, defaulting", requestID, s.Hold)
-	// Drop the request before answering: nothing is waiting on it any more, and
-	// a registry that keeps reporting it makes every later read say "parked" and
-	// every later send return this stale request instead of awaiting its turn.
-	if err := s.forget(ctx, requestID); err != nil {
-		log.Printf("mcp: forget %s failed: %v", requestID, err)
+	return s.unansweredVerdict(requestID, params)
+}
+
+// unansweredVerdict is what the tool returns when it cannot or will not wait any
+// longer: every exit that stops waiting goes through here.
+//
+// Two things happen, and both matter. The request is dropped, because nothing is
+// waiting on it any more and a registry that keeps reporting it makes every
+// later read say "parked" and every later send return this stale request instead
+// of awaiting its own turn. And a question is DENIED rather than defaulted: the
+// child would otherwise carry on with the tool "permitted" and no answers at
+// all, silently — the failure class this phase exists to remove.
+func (s *MCPServer) unansweredVerdict(requestID string, params json.RawMessage) string {
+	if requestID != "" {
+		if err := s.forget(requestID); err != nil {
+			log.Printf("mcp: forget %s failed: %v", requestID, err)
+		}
 	}
-	// A question that expired must NOT default to allow. The child would carry on
-	// with the tool "permitted" and no answers at all — silently. A deny puts the
-	// expiry into the child's own next turn, where it is visible.
 	if toolNameOf(params) == askUserQuestionToolName {
-		return `{"behavior":"deny","message":"claude-wrapper: the question expired unanswered"}`
+		return `{"behavior":"deny","message":"claude-wrapper: the question was not answered in time"}`
 	}
 	return s.verdictFor(s.defaultBehavior())
 }
@@ -203,7 +215,14 @@ func toolNameOf(params json.RawMessage) string {
 }
 
 // forget tells the wrapper nothing is waiting on the request any more.
-func (s *MCPServer) forget(ctx context.Context, requestID string) error {
+//
+// Its own bounded context, deliberately: the caller's is often the one that just
+// expired or was cancelled, and a forget that inherited it would fail exactly
+// when it is needed. The timeout keeps a wedged wrapper from holding the child's
+// verdict open — an unanswered prompt must never wedge a session.
+func (s *MCPServer) forget(requestID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	url := s.WrapperURL + "/api/1.0/sessions/" + s.SessionID + "/question/" + requestID
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
@@ -347,9 +366,14 @@ func questionVerdict(params json.RawMessage, answers map[string]string) string {
 	}
 
 	updatedInput := map[string]any{"answers": answers}
-	if len(call.Arguments.Input.Questions) > 0 {
-		updatedInput["questions"] = call.Arguments.Input.Questions
+	if len(call.Arguments.Input.Questions) == 0 {
+		// A payload that parsed but carries no `questions` is the same failure as
+		// malformed JSON: an `updatedInput` without them fails the child's schema
+		// check, so the child would stay parked while the wrapper reported
+		// success. Refuse visibly instead of answering unreadably.
+		return `{"behavior":"deny","message":"claude-wrapper could not echo the question it is answering"}`
 	}
+	updatedInput["questions"] = call.Arguments.Input.Questions
 	encoded, err := json.Marshal(map[string]any{
 		"behavior":     "allow",
 		"updatedInput": updatedInput,

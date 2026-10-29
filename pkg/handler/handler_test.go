@@ -37,6 +37,10 @@ type fakeSupervisor struct {
 	getErr   error
 	spawnErr error
 	events   []pkg.Event
+	// forgot records every ForgetQuestion call as {session id, request id}, so a
+	// spec can assert the route passed the ids through rather than only that it
+	// answered 204.
+	forgot [][2]string
 }
 
 func (f *fakeSupervisor) Spawn(_ context.Context, _ pkg.SpawnOptions) (*pkg.Session, error) {
@@ -69,7 +73,8 @@ func (f *fakeSupervisor) RegisterQuestion(_ context.Context, _ string, _ pkg.Que
 	return f.getErr
 }
 
-func (f *fakeSupervisor) ForgetQuestion(_ context.Context, _, _ string) error {
+func (f *fakeSupervisor) ForgetQuestion(_ context.Context, id, requestID string) error {
+	f.forgot = append(f.forgot, [2]string{id, requestID})
 	return f.getErr
 }
 
@@ -172,12 +177,25 @@ var _ = Describe("handler", func() {
 	})
 
 	// The hold expired unanswered, so nothing waits on the request any more.
-	It("forgets a request on DELETE", func() {
+	// The ids must actually reach the supervisor — a handler that answered 204
+	// without dropping anything would otherwise pass.
+	It("forgets the named request on DELETE", func() {
 		sup := &fakeSupervisor{}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodDelete, "/api/1.0/sessions/a/question/r1", nil)
 		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusNoContent))
+		Expect(sup.forgot).To(Equal([][2]string{{"a", "r1"}}))
+	})
+
+	// 204 here would report success for a request that was never dropped.
+	It("refuses a DELETE with no request id", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/1.0/sessions/a/question/", nil)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+		Expect(sup.forgot).To(BeEmpty())
 	})
 
 	// A shape mismatch is a caller error, not the unknown-request case: 422

@@ -219,6 +219,16 @@ its own `options[]`, `header` and `multiSelect`. A payload whose shape does not
 match the pending request is refused with `422` and leaves the request
 unanswered — see *Failure modes*.
 
+### DELETE /api/1.0/sessions/{id}/question/{request_id}
+
+Drops a request nothing is waiting on any more — the child-facing tool calls this
+when its hold expires unanswered. `204` on success, `400` without a
+`request_id`.
+
+Without it a session keeps reporting an abandoned request: every later
+`get_pending` says "parked" and every later `send_message` returns that stale
+request instead of awaiting its own turn.
+
 ### POST /api/1.0/sessions/{id}/commands
 
 Runs a named macro — a fixed, ordered list of user turns — against one child,
@@ -297,7 +307,7 @@ Kills the child. `204` on success.
 
 | Status | Meaning |
 |---|---|
-| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands` |
+| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
 | `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle |
 | `410` | child exited — it is gone and accepts no control |

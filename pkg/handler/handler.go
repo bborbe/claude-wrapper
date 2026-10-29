@@ -226,11 +226,11 @@ type questionRequest struct {
 // AskUserQuestion is the only tool whose answer is a selection. A stated kind is
 // validated: an out-of-set value would create a request no answer shape can ever
 // match, so it would 422 forever while the child sat until its hold expired.
-func answerKindFor(kind string, toolName string) (pkg.AnswerKind, error) {
+func answerKindFor(ctx context.Context, kind string, toolName string) (pkg.AnswerKind, error) {
 	if kind != "" {
 		stated := pkg.AnswerKind(kind)
 		if err := stated.Validate(); err != nil {
-			return "", errors.Wrapf(context.Background(), err, "invalid kind %q", kind)
+			return "", errors.Wrapf(ctx, err, "invalid kind %q", kind)
 		}
 		return stated, nil
 	}
@@ -258,7 +258,7 @@ func handleQuestion(
 			writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
 			return
 		}
-		kind, kindErr := answerKindFor(body.Kind, body.ToolName)
+		kind, kindErr := answerKindFor(ctx, body.Kind, body.ToolName)
 		if kindErr != nil {
 			writeError(resp, http.StatusBadRequest, kindErr)
 			return
@@ -293,6 +293,14 @@ func handleQuestion(
 		// The child's hold expired unanswered, so nothing is waiting on this
 		// request any more. Without this the session keeps reporting it as
 		// pending, and every later read says "parked" forever.
+		//
+		// An empty id is refused rather than treated as a no-op: answering 204
+		// would report success for a request that was never dropped.
+		if requestID == "" {
+			writeError(resp, http.StatusBadRequest,
+				errors.Errorf(ctx, "request_id is required to forget a question"))
+			return
+		}
 		if err := supervisor.ForgetQuestion(ctx, id, requestID); err != nil {
 			writeError(resp, statusFor(err), err)
 			return

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- feat: `pkg.Supervisor` gains `ForgetQuestion`, and `DELETE …/question/{request_id}` exposes it.
+  This is an addition to an exported interface, so an out-of-tree implementer must add the method.
 - fix: a request whose hold expired is now dropped (`DELETE …/question/{request_id}`), instead of
   being reported as pending for the life of the child. Without it every later `get_pending` said
   "parked" and every later `send_message` returned that stale request instead of awaiting its own
