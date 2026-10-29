@@ -476,6 +476,12 @@ type child struct {
 	// that only exists so cancel can find its own entry.
 	subscribers map[int]chan Event
 	nextSubID   int
+	// pendingTurns counts turns written here that the child has not closed.
+	//
+	// It is the only signal that covers the gap between our write and the
+	// child's own message_start: State still reads idle in that window, so a
+	// caller that wrote a turn would be invisible to anything reading State.
+	pendingTurns int
 }
 
 func (c *child) snapshot() *Session {
@@ -487,6 +493,7 @@ func (c *child) snapshot() *Session {
 		clone.Question = &question
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
+	clone.PendingTurns = c.pendingTurns
 	if !c.lastEventAt.IsZero() {
 		age := int(c.now.Now().Time().Sub(c.lastEventAt).Seconds())
 		clone.LastEventAgeSeconds = &age
@@ -525,10 +532,25 @@ func (c *child) send(ctx context.Context, text string) error {
 	if err != nil {
 		return errors.Wrapf(ctx, err, "marshal message failed")
 	}
+	// Count the turn BEFORE the write, not after it.
+	//
+	// apply() takes only c.mutex, so a result applied between the write
+	// returning and a later increment would find the counter at zero, skip its
+	// decrement, and leave the count stuck at one for the child's lifetime —
+	// refusing every subsequent run on a child that is actually idle. Counting
+	// first makes the window impossible; a failed write rolls it back.
+	c.mutex.Lock()
+	c.pendingTurns++
+	c.mutex.Unlock()
+
 	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if _, err := c.stdin.Write(append(encoded, '\n')); err != nil {
-		return errors.Wrapf(ctx, err, "write message to session %q failed", c.id)
+	_, writeErr := c.stdin.Write(append(encoded, '\n'))
+	c.writeMu.Unlock()
+	if writeErr != nil {
+		c.mutex.Lock()
+		c.pendingTurns--
+		c.mutex.Unlock()
+		return errors.Wrapf(ctx, writeErr, "write message to session %q failed", c.id)
 	}
 	return nil
 }
@@ -560,6 +582,9 @@ func (c *child) reap() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.session.State = StateExited
+	// A child killed mid-turn closes nothing, so the counter would otherwise
+	// stay positive for the life of the process and misreport the field.
+	c.pendingTurns = 0
 	c.session.Question = nil
 	c.session.Controls = []Control{}
 	c.closeSubscribers()
@@ -604,6 +629,9 @@ func (c *child) apply(event map[string]any) {
 		c.applyStreamEvent(event)
 	case "result":
 		c.session.State = StateIdle
+		if c.pendingTurns > 0 {
+			c.pendingTurns--
+		}
 	}
 	c.publish(Event(event))
 }

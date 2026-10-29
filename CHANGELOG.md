@@ -1,5 +1,22 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## Unreleased
+
+- feat: run a named macro — a fixed, ordered list of user turns — against one child, writing each step
+  only after the previous turn's `result` event arrives. Until now the wrapper could send one turn
+  and watch, so a sequence like `/vault-cli:prepare-compact` → `/compact` →
+  `/vault-cli:post-compact` had to be driven by hand: a timer cannot do it, because a compaction's
+  duration is unpredictable and a delay short enough to be safe fires the next command mid-turn.
+  The endpoint takes a macro name rather than a command list (`compact`, `terminal`) because it can
+  drive `/exit`, so what it is able to run stays reviewable as a diff. Both macros contain a
+  production-touching step and are refused with 409 without `confirm`; the call blocks and answers
+  with every step, naming the ones a stopped run never reached.
+
 ## v0.1.0
 
 - feat: let a spawn hand the child its own environment, resume an existing conversation, and load

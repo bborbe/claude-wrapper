@@ -23,4 +23,13 @@ var (
 	// be expressed as a child command, so the request is refused before any child
 	// or temp file exists.
 	ErrInvalidSpawnOptions = stderrors.New("invalid spawn options")
+	// ErrUnknownMacro is returned for a macro name the wrapper does not define.
+	ErrUnknownMacro = stderrors.New("unknown macro")
+	// ErrConfirmationRequired is returned when a macro contains a
+	// production-touching step and the caller supplied no confirmation.
+	ErrConfirmationRequired = stderrors.New("confirmation required")
+	// ErrSessionNotIdle is returned when a sequence is asked to start on a
+	// child that is mid-turn, where the in-flight turn's close would be read as
+	// the first step's.
+	ErrSessionNotIdle = stderrors.New("session not idle")
 )

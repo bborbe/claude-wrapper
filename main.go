@@ -45,11 +45,16 @@ func main() {
 	}
 
 	supervisor := pkg.NewSupervisor(context.Background(), *claudeBin, libtime.NewCurrentDateTime())
+	// One lock set for every route that can write a turn: a sequence and a
+	// plain message on the same child must not interleave.
+	locks := pkg.NewSessionLocks()
+	sequencer := pkg.NewSequencer(
+		supervisor, libtime.NewCurrentDateTime(), locks, 30*time.Minute)
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", handler.Healthz())
 	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
-	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor))
+	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer, locks))
 
 	server := &http.Server{
 		Addr:              *listen,

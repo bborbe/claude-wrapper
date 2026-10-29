@@ -19,6 +19,19 @@ import (
 	"github.com/bborbe/claude-wrapper/pkg/handler"
 )
 
+// fakeSequencer returns a canned run so the handler's success and abort paths
+// are exercised without a child.
+type fakeSequencer struct {
+	result *pkg.SequenceResult
+	err    error
+}
+
+func (f *fakeSequencer) Run(
+	context.Context, string, pkg.Macro,
+) (*pkg.SequenceResult, error) {
+	return f.result, f.err
+}
+
 type fakeSupervisor struct {
 	sessions []pkg.Session
 	getErr   error
@@ -120,7 +133,7 @@ var _ = Describe("handler", func() {
 		sup := &fakeSupervisor{getErr: pkg.ErrSessionNotFound}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/nope", nil)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusNotFound))
 	})
 
@@ -129,7 +142,7 @@ var _ = Describe("handler", func() {
 		rec := httptest.NewRecorder()
 		body := strings.NewReader(`{"request_id":"r1","behavior":"allow"}`)
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
 	})
 
@@ -142,7 +155,7 @@ var _ = Describe("handler", func() {
 		}}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
 		Expect(rec.Header().Get("Content-Type")).To(Equal("text/event-stream"))
 		// Assert the payloads, not a frame count: the closing `event: end` frame
@@ -157,7 +170,118 @@ var _ = Describe("handler", func() {
 		sup := &fakeSupervisor{}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/events", nil)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
+	})
+
+	// A macro that can end a child is a remote kill switch: the request is
+	// refused outright rather than started and reported on later.
+	It("refuses a production-touching macro with no confirmation", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
+	})
+
+	It("refuses an unknown macro", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"nope","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("refuses a non-POST on the commands route", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/commands", nil)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
+	})
+
+	// The success path: every step is in the body, so a caller reads the whole
+	// run from the one response.
+	It("returns every step of a completed run", func() {
+		seq := &fakeSequencer{result: &pkg.SequenceResult{
+			Macro: "compact",
+			Steps: []pkg.StepResult{
+				{Index: 1, Command: "/a", Status: pkg.StepDone},
+				{Index: 2, Command: "/b", Status: pkg.StepDone},
+			},
+		}}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(&fakeSupervisor{}, seq, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var got pkg.SequenceResult
+		Expect(json.Unmarshal(rec.Body.Bytes(), &got)).To(Succeed())
+		Expect(got.Macro).To(Equal("compact"))
+		Expect(got.Steps).To(HaveLen(2))
+	})
+
+	// A run that stops early answers 200 with the abort in the body: the call
+	// happened, and the response is where the caller learns which steps ran.
+	It("reports an aborted run in the body, not as an error status", func() {
+		seq := &fakeSequencer{
+			result: &pkg.SequenceResult{
+				Macro:   "compact",
+				Aborted: true,
+				Reason:  "session exited",
+				Steps: []pkg.StepResult{
+					{Index: 1, Command: "/a", Status: pkg.StepAborted},
+					{Index: 2, Command: "/b", Status: pkg.StepNotRun},
+				},
+			},
+			err: pkg.ErrSessionExited,
+		}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(&fakeSupervisor{}, seq, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var got pkg.SequenceResult
+		Expect(json.Unmarshal(rec.Body.Bytes(), &got)).To(Succeed())
+		Expect(got.Aborted).To(BeTrue())
+		Expect(got.Steps[1].Status).To(Equal(pkg.StepNotRun))
+	})
+
+	// Fail fast rather than queue: a message waiting out a run would outlast the
+	// server's write deadline, delivering the turn with no way to report it.
+	It("refuses a message while a sequence holds the session", func() {
+		locks := pkg.NewSessionLocks()
+		release, held := locks.TryAcquire("a")
+		Expect(held).To(BeTrue())
+		defer release()
+
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"text":"/cost"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/message", body)
+		handler.Session(&fakeSupervisor{}, nil, locks).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
+	})
+
+	// A route with no sequencer wired answers 503 rather than panicking on a
+	// nil interface.
+	It("refuses to run when no sequencer is wired", func() {
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(&fakeSupervisor{}, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
+	})
+
+	It("maps a non-idle refusal to 409", func() {
+		seq := &fakeSequencer{err: pkg.ErrSessionNotIdle}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(&fakeSupervisor{}, seq, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
 	})
 })

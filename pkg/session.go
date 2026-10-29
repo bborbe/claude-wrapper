@@ -123,4 +123,11 @@ type Session struct {
 	// generating. State is never derived from this value — that inversion is
 	// the defect this field exists to make visible.
 	LastEventAgeSeconds *int `json:"last_event_age_seconds"`
+	// PendingTurns counts turns written to the child that have not closed yet.
+	//
+	// State alone cannot answer "is a turn in flight": it flips to generating
+	// only when the child's own message_start arrives, so between our write and
+	// that event the child still reads idle while a turn is on its way. A
+	// caller that must not write mid-turn reads this instead.
+	PendingTurns int `json:"pending_turns"`
 }

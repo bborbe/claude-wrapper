@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 
@@ -57,9 +58,13 @@ func Sessions(supervisor pkg.Supervisor) http.Handler {
 	})
 }
 
-// Session serves one child: GET, DELETE, and the POST …/answer, …/message and
-// …/question sub-resources.
-func Session(supervisor pkg.Supervisor) http.Handler {
+// Session serves one child: GET, DELETE, and the POST …/answer, …/message,
+// …/question and …/commands sub-resources.
+func Session(
+	supervisor pkg.Supervisor,
+	sequencer pkg.Sequencer,
+	locks *pkg.SessionLocks,
+) http.Handler {
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
 		rest := strings.TrimPrefix(req.URL.Path, "/api/1.0/sessions/")
@@ -81,11 +86,13 @@ func Session(supervisor pkg.Supervisor) http.Handler {
 		case "answer":
 			handleAnswer(ctx, resp, req, supervisor, id)
 		case "message":
-			handleMessage(ctx, resp, req, supervisor, id)
+			handleMessage(ctx, resp, req, supervisor, locks, id)
 		case "question":
 			handleQuestion(ctx, resp, req, supervisor, id, requestID)
 		case "events":
 			handleEvents(ctx, resp, req, supervisor, id)
+		case "commands":
+			handleCommands(ctx, resp, req, sequencer, id)
 		default:
 			handleSession(ctx, resp, req, supervisor, id)
 		}
@@ -101,6 +108,7 @@ func handleMessage(
 	resp http.ResponseWriter,
 	req *http.Request,
 	supervisor pkg.Supervisor,
+	locks *pkg.SessionLocks,
 	id string,
 ) {
 	if req.Method != http.MethodPost {
@@ -117,11 +125,84 @@ func handleMessage(
 		writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "text is required"))
 		return
 	}
+	// The same lock a sequence holds: a turn written between two steps would
+	// have its result read as the current step's close, firing the next step
+	// one turn early. Fail fast rather than queue — waiting out a run would
+	// outlast the server's write deadline, delivering the turn with no way to
+	// report it.
+	release, ok := locks.TryAcquire(id)
+	if !ok {
+		writeError(resp, http.StatusConflict,
+			errors.Errorf(ctx, "session %q is running a sequence", id))
+		return
+	}
+	defer release()
 	if err := supervisor.Send(ctx, id, body.Text); err != nil {
 		writeError(resp, statusFor(err), err)
 		return
 	}
 	writeJSON(resp, http.StatusAccepted, map[string]string{"status": "sent"})
+}
+
+type commandsRequest struct {
+	Macro   string `json:"macro"`
+	Confirm string `json:"confirm"`
+}
+
+// handleCommands runs a named macro against one child.
+//
+// It blocks until the run finishes and answers with every step, so a caller
+// cannot start a sequence and walk away: the response is the only report, and
+// a run that stopped early names the steps it never reached. The write
+// deadline is cleared for the duration because a compaction takes minutes,
+// far past the server's 60-second default.
+func handleCommands(
+	ctx context.Context,
+	resp http.ResponseWriter,
+	req *http.Request,
+	sequencer pkg.Sequencer,
+	id string,
+) {
+	if req.Method != http.MethodPost {
+		writeError(resp, http.StatusMethodNotAllowed,
+			errors.Errorf(ctx, "method %q not allowed", req.Method))
+		return
+	}
+	var body commandsRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
+		return
+	}
+	macro, err := pkg.LookupMacro(body.Macro)
+	if err != nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	if macro.RequiresConfirmation() && body.Confirm == "" {
+		writeError(resp, http.StatusConflict, errors.Wrapf(
+			ctx, pkg.ErrConfirmationRequired, "macro %q needs a confirmation", macro.Name))
+		return
+	}
+	if sequencer == nil {
+		writeError(resp, http.StatusServiceUnavailable,
+			errors.Errorf(ctx, "no sequencer is wired"))
+		return
+	}
+	// Best effort: a recorder under test does not implement deadlines, and
+	// refusing the run over an unsupported write deadline would make the route
+	// untestable for no gain.
+	if err := http.NewResponseController(resp).SetWriteDeadline(time.Time{}); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) {
+		writeError(resp, http.StatusInternalServerError,
+			errors.Wrapf(ctx, err, "clear write deadline failed"))
+		return
+	}
+	result, err := sequencer.Run(ctx, id, macro)
+	if err != nil && result == nil {
+		writeError(resp, statusFor(err), err)
+		return
+	}
+	writeJSON(resp, http.StatusOK, result)
 }
 
 type questionRequest struct {
@@ -316,6 +397,12 @@ func statusFor(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, pkg.ErrInvalidSpawnOptions):
 		return http.StatusBadRequest
+	case errors.Is(err, pkg.ErrUnknownMacro):
+		return http.StatusBadRequest
+	case errors.Is(err, pkg.ErrConfirmationRequired):
+		return http.StatusConflict
+	case errors.Is(err, pkg.ErrSessionNotIdle):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}
