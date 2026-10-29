@@ -226,3 +226,7 @@ cannot yet answer the permission prompt or `AskUserQuestion` a child raises
 (phase 2), and cannot change a running session's mode or model (phase 3). Until
 then `spawn_session` defaults to a permissive mode so gates never fire — see
 *The permissive-spawn crutch* above.
+
+## License
+
+BSD-style, see [LICENSE](LICENSE). Copyright (c) Benjamin Borbe.
