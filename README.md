@@ -326,6 +326,25 @@ reports `"<synthetic>"`, which names no model.
 that turn's `assistant` event. It is not the launcher's `init` value and not an
 echo of `requested`.
 
+**A change that lands but cannot be verified says so.** If the `/model` step is
+written and the probe turn then fails, the route still answers `200` — the change
+was applied — with `partial: true` and the run's own step report:
+
+```json
+{"requested": "deepseek-v4-flash-max",
+ "previous_model": "deepseek-v4-flash",
+ "served_model": "deepseek-v4-flash",
+ "changed": false,
+ "partial": true,
+ "steps": [{"index": 1, "command": "/model deepseek-v4-flash-max", "status": "done"},
+           {"index": 2, "command": "Reply with only the word OK.", "status": "aborted"}]}
+```
+
+`served_model` there is the last model known to have answered, **not** one
+observed after the switch. A `200` with `partial: true` is an applied-but-
+unverified change; reading it as a verified one is the mistake this field exists
+to prevent.
+
 ⚠️ **`init` is not the model.** The `system`/`init` event carries a `model` too,
 but that is the launcher's configuration and can differ from what served the
 request — measured 2026-10-28: init said `claude-opus-5-5` while the assistant
@@ -361,8 +380,9 @@ The child answers `{"type": "control_response", "response": {"subtype":
 "success", "request_id": "perm-mode-...", "response": {"mode": "acceptEdits"}}}`,
 and `permission_mode` in the response is **the mode the child reports for
 itself** — not the value the caller sent. `GET /api/1.0/sessions/{id}` reports it
-too, read from the child's `system`/`init` event, which is re-emitted on every
-turn and therefore reflects a change on the next one.
+too, from two sources: the child's `control_response`, stored the moment it
+arrives, and its `system`/`init` event, re-emitted on every turn. A change is
+therefore visible in `GET` immediately, without waiting for the next turn.
 
 The change takes the same per-session lock a sequence does, so it cannot land
 between two steps of a run.
