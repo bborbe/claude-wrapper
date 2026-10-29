@@ -86,7 +86,7 @@ var macros = []Macro{
 		Name: "probe-slow",
 		Steps: []string{
 			"/cost",
-			"Run `sleep 30` in a shell, then reply with the single word: done",
+			"Write the integers from 1 to 400 on one line, comma separated, then the word done.",
 			"/cost",
 		},
 	},
@@ -201,9 +201,13 @@ func (s *sequencer) Run(
 	if err != nil {
 		return nil, err
 	}
-	if session.State != StateIdle {
-		return nil, errors.Wrapf(
-			ctx, ErrSessionNotIdle, "session %q is %s, not idle", sessionID, session.State)
+	// `starting` is allowed: a freshly spawned child has no turn in flight and
+	// emits no init event until it is first written to, so requiring `idle`
+	// would refuse the very first run — the normal case. Only a child that is
+	// mid-turn, or gone, is refused.
+	if session.State != StateIdle && session.State != StateStarting {
+		return nil, errors.Wrapf(ctx, ErrSessionNotIdle,
+			"session %q is %s, not idle or unstarted", sessionID, session.State)
 	}
 
 	replay, live, cancel, err := s.supervisor.Subscribe(ctx, sessionID)
@@ -213,7 +217,7 @@ func (s *sequencer) Run(
 	defer cancel()
 
 	result := newSequenceResult(macro)
-	expected := countResults(replay)
+	expected := expectedTurn(replay)
 	for index := range macro.Steps {
 		// Checked between steps, not inside one. The wait itself derives from
 		// this context, so a cancelled request also abandons a step already in
@@ -318,13 +322,27 @@ func eventIndex(event Event) (int, bool) {
 	return int(number), true
 }
 
-// countResults counts the turns the child had already closed before a run.
-func countResults(events []Event) int {
-	count := 0
+// expectedTurn returns the index of the turn the child will close next.
+//
+// It reads the LAST retained result's own `result_index` rather than counting
+// results, because the replay is a bounded tail (maxRetainedEvents) and
+// `--include-partial-messages` emits an event per token delta — a long-lived
+// session drops its earliest results, so a count undercounts and every step
+// would wait for an index that has already passed until the step timeout. The
+// count is only the fallback, for a child that sends no index.
+func expectedTurn(events []Event) int {
+	last, count := -1, 0
 	for _, event := range events {
-		if event["type"] == "result" {
-			count++
+		if event["type"] != "result" {
+			continue
 		}
+		count++
+		if index, ok := eventIndex(event); ok {
+			last = index
+		}
+	}
+	if last >= 0 {
+		return last + 1
 	}
 	return count
 }

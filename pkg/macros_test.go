@@ -145,7 +145,7 @@ var _ = ginkgo.Describe("Sequencer", func() {
 
 	// Admission control: a run started mid-turn would read the in-flight turn's
 	// result as step 1's close and fire every later step one turn early.
-	ginkgo.It("refuses a child that is not idle", func() {
+	ginkgo.It("refuses a child that is mid-turn", func() {
 		supervisor.state = StateGenerating
 
 		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
@@ -153,6 +153,30 @@ var _ = ginkgo.Describe("Sequencer", func() {
 		gomega.Expect(errors.Is(err, ErrSessionNotIdle)).To(gomega.BeTrue())
 		gomega.Expect(result).To(gomega.BeNil())
 		gomega.Expect(supervisor.sent).To(gomega.BeEmpty())
+	})
+
+	// A truncated replay must not undercount: the last retained result's own
+	// index is the truth, because the earliest results are dropped once the
+	// buffer is full.
+	ginkgo.It("derives the next turn from the last retained result index", func() {
+		replay := []Event{
+			{"type": "result", "result_index": float64(5000)},
+			{"type": "result", "result_index": float64(5001)},
+		}
+
+		gomega.Expect(expectedTurn(replay)).To(gomega.Equal(5002))
+	})
+
+	// A freshly spawned child sits in `starting` until its first turn: it has
+	// no turn in flight, so refusing it would refuse the normal first run.
+	ginkgo.It("accepts a child that has not started a turn", func() {
+		supervisor.state = StateStarting
+
+		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Aborted).To(gomega.BeFalse())
+		gomega.Expect(supervisor.sent).To(gomega.Equal(AvailableMacros()[0].Steps))
 	})
 
 	// The fallback path: a child whose result envelope carries no result_index

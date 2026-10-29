@@ -90,7 +90,7 @@ because these macros can rewrite a context or end a child.
 | `compact` | `/vault-cli:prepare-compact` → `/compact` → `/vault-cli:post-compact` | required |
 | `terminal` | `/vault-cli:sync-progress` → `/vault-cli:session-close` → `/exit` | required |
 | `probe` | `/cost` → `/cost` → `/cost` | not needed |
-| `probe-slow` | `/cost` → *a prompt that runs `sleep 30`* → `/cost` | not needed |
+| `probe-slow` | `/cost` → *a long-generation prompt* → `/cost` | not needed |
 
 `probe` and `probe-slow` are the endpoint's own smoke test: no step is
 production-touching, so a sequence can be exercised against a real child
