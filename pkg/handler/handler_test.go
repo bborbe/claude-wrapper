@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 
+	"github.com/bborbe/errors"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -21,10 +22,14 @@ import (
 type fakeSupervisor struct {
 	sessions []pkg.Session
 	getErr   error
+	spawnErr error
 	events   []pkg.Event
 }
 
 func (f *fakeSupervisor) Spawn(_ context.Context, _ pkg.SpawnOptions) (*pkg.Session, error) {
+	if f.spawnErr != nil {
+		return nil, f.spawnErr
+	}
 	return &pkg.Session{ID: "spawned", State: pkg.StateStarting}, nil
 }
 
@@ -73,6 +78,24 @@ var _ = Describe("handler", func() {
 		rec := httptest.NewRecorder()
 		handler.Healthz().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	// Pins the mapping the README's status table advertises. Without this, a
+	// revert of `writeError(resp, statusFor(err), err)` to a hardcoded 500 keeps
+	// every other spec green while a refused spawn starts reporting itself as a
+	// server fault.
+	It("reports a refused spawn as 400", func() {
+		fake := &fakeSupervisor{
+			spawnErr: errors.Wrapf(context.Background(), pkg.ErrInvalidSpawnOptions, "bad env"),
+		}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"env":{"":"x"}}`)
+		handler.Sessions(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/1.0/sessions", body))
+
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+		var payload map[string]any
+		Expect(json.Unmarshal(rec.Body.Bytes(), &payload)).To(Succeed())
+		Expect(payload).To(HaveKey("error"))
 	})
 
 	It("lists every session", func() {

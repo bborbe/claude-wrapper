@@ -50,7 +50,9 @@ One session. `404` when the id is unknown.
 
 ### POST /api/1.0/sessions
 
-Spawns a child. Body is optional: `{"cwd": "...", "model": "...",
+Spawns a child. Every field in the body is optional, but the body itself must be
+present — an empty request is rejected as `400 decode body failed`:
+`{"cwd": "...", "model": "...",
 "permission_mode": "...", "permission_prompt": "...", "env": {...},
 "resume": "<session-id>", "mcp_configs": ["..."]}`. Returns `201` with the
 session.
