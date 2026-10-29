@@ -49,6 +49,10 @@ type fakeSupervisor struct {
 	// permissionModeErr forces the refusal path.
 	permissionModes   []string
 	permissionModeErr error
+	// permissionModeReply, when set, is what the fake reports back — a value
+	// deliberately different from the request, so a spec can tell the child's
+	// answer from an echo of the caller.
+	permissionModeReply string
 	// getModels is a queue Get pops one entry per call, so a spec can show that
 	// a model change reports what the session said AFTER the run rather than
 	// what it said before it.
@@ -112,6 +116,12 @@ func (f *fakeSupervisor) SetPermissionMode(
 	f.permissionModes = append(f.permissionModes, mode)
 	if f.permissionModeErr != nil {
 		return "", f.permissionModeErr
+	}
+	// Deliberately NOT an echo of the request: the route must report what the
+	// child answered, and a fake that returns its own input lets an
+	// implementation that echoes the caller pass identically.
+	if f.permissionModeReply != "" {
+		return f.permissionModeReply, nil
 	}
 	return mode, nil
 }
@@ -518,19 +528,64 @@ var _ = Describe("session change routes", func() {
 		Expect(rec.Code).To(Equal(http.StatusBadRequest))
 	})
 
+	// An unwired sequencer must read as "not configured", not as a panic: the
+	// MCP face and this route share the type, and a wiring slip is a 503.
+	It("answers 503 when no sequencer is wired", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/model",
+			strings.NewReader(`{"model":"deepseek-v4-flash"}`))
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
+	})
+
+	// The command landed but the probe did not, so the change is applied and
+	// unverified. A bare error would read as "nothing happened", which is the
+	// one thing it is not.
+	It("reports a partial change when the run aborts after its first step", func() {
+		sup := &fakeSupervisor{getModels: []string{"old-model", "old-model"}}
+		seq := &fakeSequencer{
+			result: &pkg.SequenceResult{
+				Macro: "set-model",
+				Steps: []pkg.StepResult{
+					{Index: 1, Command: "/model x", Status: pkg.StepDone},
+					{Index: 2, Command: "probe", Status: pkg.StepAborted},
+				},
+			},
+			err: errors.Errorf(context.Background(), "probe turn never closed"),
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/model",
+			strings.NewReader(`{"model":"deepseek-v4-flash"}`))
+		handler.Session(sup, seq, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var change pkg.ModelChange
+		Expect(json.Unmarshal(rec.Body.Bytes(), &change)).To(Succeed())
+		Expect(change.Partial).To(BeTrue())
+		Expect(change.Steps).To(HaveLen(2))
+	})
+
 	// The mode the child reports is the answer, not the mode the caller sent.
 	It("reports the mode the supervisor's read-back returned", func() {
-		sup := &fakeSupervisor{}
+		sup := &fakeSupervisor{permissionModeReply: "plan"}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/permission-mode",
 			strings.NewReader(`{"mode":"acceptEdits"}`))
 		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
 		Expect(sup.permissionModes).To(Equal([]string{"acceptEdits"}))
+		// The body must carry the child's answer, not the caller's request — an
+		// implementation that echoed the request would otherwise pass.
+		var body map[string]string
+		Expect(json.Unmarshal(rec.Body.Bytes(), &body)).To(Succeed())
+		Expect(body["permission_mode"]).To(Equal("plan"))
 	})
 
+	// The production sentinel, not a neighbour that maps to the same status: with
+	// ErrInvalidSpawnOptions injected, deleting the ErrInvalidSessionChange case
+	// from statusFor would leave this spec green.
 	It("maps an unsupported mode to 400", func() {
-		sup := &fakeSupervisor{permissionModeErr: pkg.ErrInvalidSpawnOptions}
+		sup := &fakeSupervisor{permissionModeErr: pkg.ErrInvalidSessionChange}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/permission-mode",
 			strings.NewReader(`{"mode":"nonsense"}`))

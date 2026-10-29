@@ -185,13 +185,34 @@ func handleModel(
 		writeError(resp, statusFor(err), err)
 		return
 	}
+	if sequencer == nil {
+		writeError(resp, http.StatusServiceUnavailable,
+			errors.Errorf(ctx, "no sequencer is wired"))
+		return
+	}
+	// A model change runs a real probe turn, so its response can legitimately
+	// outlive the server's 60 s WriteTimeout — the same reason handleCommands
+	// clears it. Best effort: a recorder under test does not implement
+	// deadlines, and refusing the change over that would make the route
+	// untestable for no gain.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
+	// Read before the run and after it. Both reads sit outside the sequencer's
+	// lock, so two model changes racing on one session can report each other's
+	// served model: the WRITES are serialized, the reported fields are
+	// best-effort. A single caller — the documented threat model — never sees
+	// it, and closing it would need the sequencer to hand back the state it
+	// observed, which it does not do.
 	before, err := supervisor.Get(ctx, id)
 	if err != nil {
 		writeError(resp, statusFor(err), err)
 		return
 	}
-	if _, err := sequencer.Run(ctx, id, pkg.ModelChangeMacro(body.Model)); err != nil {
-		writeError(resp, statusFor(err), err)
+	result, runErr := sequencer.Run(ctx, id, pkg.ModelChangeMacro(body.Model))
+	if runErr != nil && result == nil {
+		writeError(resp, statusFor(runErr), runErr)
 		return
 	}
 	after, err := supervisor.Get(ctx, id)
@@ -199,12 +220,22 @@ func handleModel(
 		writeError(resp, statusFor(err), err)
 		return
 	}
-	writeJSON(resp, http.StatusOK, pkg.ModelChange{
+	change := pkg.ModelChange{
 		Requested:     body.Model,
 		PreviousModel: before.Model,
 		ServedModel:   after.Model,
 		Changed:       after.Model != before.Model,
-	})
+	}
+	if runErr != nil {
+		// The command landed but the probe did not, so the change is applied and
+		// unverified. Reported rather than swallowed: an error alone would read
+		// as "nothing happened", which is the one thing this is not.
+		change.Partial = true
+		change.Steps = result.Steps
+		writeJSON(resp, http.StatusOK, change)
+		return
+	}
+	writeJSON(resp, http.StatusOK, change)
 }
 
 // handlePermissionMode changes the permission mode of a running session.
@@ -236,9 +267,14 @@ func handlePermissionMode(
 		writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "mode is required"))
 		return
 	}
-	release, err := locks.Acquire(ctx, id)
-	if err != nil {
-		writeError(resp, statusFor(err), err)
+	// The same lock a sequence holds, and fail fast rather than queue: a
+	// compaction can hold it for minutes, which outlasts the server's write
+	// deadline — the response would be truncated after the mode had already
+	// changed. handleMessage takes the same choice for the same reason.
+	release, ok := locks.TryAcquire(id)
+	if !ok {
+		writeError(resp, http.StatusConflict,
+			errors.Errorf(ctx, "session %q is running a sequence", id))
 		return
 	}
 	defer release()

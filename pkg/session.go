@@ -227,4 +227,14 @@ type ModelChange struct {
 	// serve, so a caller that asks for an alias sees the served name here and
 	// Changed=true with a different string — which is the truth, not a failure.
 	Changed bool `json:"changed"`
+	// Partial reports that the change command was written but the probe turn
+	// that reads it back failed, so ServedModel is the last model known to have
+	// answered rather than one observed after the switch.
+	//
+	// Without it an aborted run has to be reported as a bare error, which reads
+	// as "nothing happened" for a change that was in fact applied.
+	Partial bool `json:"partial,omitempty"`
+	// Steps carries the run's own per-step report when Partial is set, so a
+	// caller can see which step stopped.
+	Steps []StepResult `json:"steps,omitempty"`
 }
