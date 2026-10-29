@@ -476,6 +476,12 @@ type child struct {
 	// that only exists so cancel can find its own entry.
 	subscribers map[int]chan Event
 	nextSubID   int
+	// pendingTurns counts turns written here that the child has not closed.
+	//
+	// It is the only signal that covers the gap between our write and the
+	// child's own message_start: State still reads idle in that window, so a
+	// caller that wrote a turn would be invisible to anything reading State.
+	pendingTurns int
 }
 
 func (c *child) snapshot() *Session {
@@ -487,6 +493,7 @@ func (c *child) snapshot() *Session {
 		clone.Question = &question
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
+	clone.PendingTurns = c.pendingTurns
 	if !c.lastEventAt.IsZero() {
 		age := int(c.now.Now().Time().Sub(c.lastEventAt).Seconds())
 		clone.LastEventAgeSeconds = &age
@@ -530,6 +537,12 @@ func (c *child) send(ctx context.Context, text string) error {
 	if _, err := c.stdin.Write(append(encoded, '\n')); err != nil {
 		return errors.Wrapf(ctx, err, "write message to session %q failed", c.id)
 	}
+	// Mark the turn before returning: the child's own message_start arrives
+	// later, and until it does State still reads idle, so this counter is what
+	// makes a written turn visible to a caller that must not write mid-turn.
+	c.mutex.Lock()
+	c.pendingTurns++
+	c.mutex.Unlock()
 	return nil
 }
 
@@ -604,6 +617,9 @@ func (c *child) apply(event map[string]any) {
 		c.applyStreamEvent(event)
 	case "result":
 		c.session.State = StateIdle
+		if c.pendingTurns > 0 {
+			c.pendingTurns--
+		}
 	}
 	c.publish(Event(event))
 }

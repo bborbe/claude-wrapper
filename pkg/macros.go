@@ -205,9 +205,15 @@ func (s *sequencer) Run(
 	// emits no init event until it is first written to, so requiring `idle`
 	// would refuse the very first run — the normal case. Only a child that is
 	// mid-turn, or gone, is refused.
-	if session.State != StateIdle && session.State != StateStarting {
+	//
+	// PendingTurns is checked as well as State, and it is the half that matters:
+	// State flips to generating only when the child's own message_start
+	// arrives, so a turn written a moment ago still reads idle here.
+	if session.PendingTurns > 0 ||
+		(session.State != StateIdle && session.State != StateStarting) {
 		return nil, errors.Wrapf(ctx, ErrSessionNotIdle,
-			"session %q is %s, not idle or unstarted", sessionID, session.State)
+			"session %q is %s with %d turn(s) pending",
+			sessionID, session.State, session.PendingTurns)
 	}
 
 	replay, live, cancel, err := s.supervisor.Subscribe(ctx, sessionID)

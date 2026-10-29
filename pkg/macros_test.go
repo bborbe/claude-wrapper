@@ -30,6 +30,8 @@ type scriptedSupervisor struct {
 	closeOnSend bool
 	// state is what Get reports; empty means idle.
 	state State
+	// pendingTurns is what Get reports as in flight but not yet observed.
+	pendingTurns int
 	// omitIndex models a child whose result envelope carries no result_index,
 	// which is the shape the fallback path has to handle.
 	omitIndex bool
@@ -49,7 +51,7 @@ func (s *scriptedSupervisor) Get(context.Context, string) (*Session, error) {
 	if state == "" {
 		state = StateIdle
 	}
-	return &Session{ID: "s1", State: state}, nil
+	return &Session{ID: "s1", State: state, PendingTurns: s.pendingTurns}, nil
 }
 
 func (s *scriptedSupervisor) Answer(context.Context, string, string, string) error { return nil }
@@ -165,6 +167,18 @@ var _ = ginkgo.Describe("Sequencer", func() {
 		}
 
 		gomega.Expect(expectedTurn(replay)).To(gomega.Equal(5002))
+	})
+
+	// The window State cannot see: a turn written a moment ago still reads
+	// idle until the child's message_start arrives, so the counter decides.
+	ginkgo.It("refuses a child with a turn already pending", func() {
+		supervisor.pendingTurns = 1
+
+		result, err := sequencer.Run(context.Background(), "s1", AvailableMacros()[0])
+
+		gomega.Expect(errors.Is(err, ErrSessionNotIdle)).To(gomega.BeTrue())
+		gomega.Expect(result).To(gomega.BeNil())
+		gomega.Expect(supervisor.sent).To(gomega.BeEmpty())
 	})
 
 	// A freshly spawned child sits in `starting` until its first turn: it has
