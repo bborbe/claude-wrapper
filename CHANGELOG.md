@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: serve a client-facing MCP face at `/mcp` on the daemon's own mux, over streamable HTTP, so an
+  MCP client (Codex) can drive a Claude session instead of only REST. Five tools —
+  `spawn_session`, `send_message`, `list_sessions`, `get_session`, `kill_session`. This is the
+  opposite direction from `--mcp-stdio`, which is child-facing: that one gives a child a permission
+  tool, this one lets a client drive a child.
+- feat: `send_message` returns the assistant text that closed the turn, taken from the child's
+  `result` event. The REST `POST …/message` route answers `202 {"status":"sent"}` and carries no
+  answer, so this is the one tool that cannot delegate to it.
+- feat: a turn that never closes returns a tool error naming the timeout (`--mcp-turn-timeout`,
+  default 120s) rather than a success. The write deadline is cleared for the duration of a call,
+  because the turn deadline deliberately outlasts the server's 60s `WriteTimeout` and a response
+  written after it would never reach the client.
+- fix: `/mcp` rejects a non-loopback `Host` or `Origin`, a socket whose own local address is not
+  loopback, and a body that is not declared `application/json`. A localhost HTTP server is
+  otherwise reachable by any browser page through DNS rebinding, which with `spawn_session` on
+  the other end is remote code execution as the daemon user. An oversized body answers `413`
+  rather than being truncated into a parse error.
+- fix: `send_message` refuses a session whose child already has a turn open. The session lock
+  excludes other writers, but the timeout path releases it while the child is still generating —
+  writing then would open a second turn on top of the first and make the two results
+  indistinguishable.
+
 ## v0.2.0
 
 - feat: run a named macro — a fixed, ordered list of user turns — against one child, writing each step
