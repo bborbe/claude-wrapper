@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.0
 
 - feat: let a spawn hand the child its own environment, resume an existing conversation, and load
   extra MCP config files. Each closes a silent divergence: without `env` the child inherits the
