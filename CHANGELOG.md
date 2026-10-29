@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Let a spawn hand the child its own environment, resume an existing conversation, and load extra
+  MCP config files. Each closes a silent divergence: without `env` the child inherits the wrapper's
+  environment instead of the one its caller resolved; without `resume` a conversation cannot be
+  continued through the wrapper at all; without `mcp_configs` a launcher's own `--mcp-config` file
+  — a CLI flag, so no setting source can reach it — is absent and the child runs with fewer servers
+  than its hand-started twin.
+
 - Stream a session's events over `GET /api/1.0/sessions/{id}/events` (server-sent events),
   replaying what the child has already emitted before the live frames. Until now the wrapper
   folded every event into `state` and discarded it, so a supervisor could read a child's state
