@@ -395,9 +395,9 @@ Kills the child. `204` on success.
 
 | Status | Meaning |
 |---|---|
-| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id` |
+| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id`. On the change routes: an empty or control-character model name on `…/model`, and a mode outside `default`/`acceptEdits`/`bypassPermissions`/`plan` on `…/permission-mode` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
-| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle |
+| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle, or a `…/permission-mode` change found the per-session lock held by a running sequence |
 | `410` | child exited — it is gone and accepts no control |
 | `422` | the answer's shape does not match the pending request — `answers` aimed at a permission request, or `behavior` aimed at a question. Nothing was recorded and the request is still unanswered |
 | `503` | child unreachable — the process exists but its stream is not responding |
@@ -408,12 +408,14 @@ Wrapping TUI sessions; multi-host supervision; auth beyond the localhost bind;
 caller-supplied command lists; and any sequencing beyond a linear list — no
 branches, loops or retries between steps.
 
-The MCP face carries the same limits, with one exception since phase 2: a client
-**can** now answer the permission prompt or `AskUserQuestion` a child raises —
+The MCP face carries the same limits, with two exceptions now. Since phase 2 a
+client **can** answer the permission prompt or `AskUserQuestion` a child raises —
 `get_pending` reads the request with the options it carries, `answer_pending`
 answers it, and `send_message` returns a parked turn early so the answer lands
-inside the child's 90 s hold. What it still cannot do is change a running
-session's mode or model (phase 3).
+inside the child's 90 s hold. Since phase 3 it can also change what the session
+*is*: `set_model` and `set_permission_mode` retarget a running child without
+respawning it, and each reports what the child says rather than what the caller
+sent.
 
 `spawn_session` still defaults to a permissive mode so gates never fire, and it
 stays a default rather than a requirement: pass `permission_mode: "default"` to

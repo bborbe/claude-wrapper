@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: `POST /api/1.0/sessions/{id}/permission-mode` and the `set_permission_mode` MCP tool change
   a **running** session's permission mode over the SDK's own control channel, and report the mode
   the child answers with rather than the one the caller sent.
-- feat: `Session` gains `permission_mode`, read from the child's `system`/`init` event.
+- feat: `Session` gains `permission_mode`, read from the child's `system`/`init` event and stored from
+  the `control_response` the moment a change is answered, so `GET` reflects a change without waiting
+  for the next turn.
 - feat: `pkg.Supervisor` gains `SetPermissionMode`. This is an addition to an exported interface,
   so an out-of-tree implementer must add the method.
 - fix: an `assistant` event whose `message.model` is `"<synthetic>"` — the turn a local slash

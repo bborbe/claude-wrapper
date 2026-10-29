@@ -655,19 +655,28 @@ func (s *MCPToolServer) setModel(ctx context.Context, args json.RawMessage) (str
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.Sequencer.Run(ctx, body.SessionID, ModelChangeMacro(body.Model)); err != nil {
-		return "", err
+	result, runErr := s.Sequencer.Run(ctx, body.SessionID, ModelChangeMacro(body.Model))
+	if runErr != nil && result == nil {
+		return "", runErr
 	}
 	after, err := s.Supervisor.Get(ctx, body.SessionID)
 	if err != nil {
 		return "", err
 	}
-	encoded, err := json.Marshal(ModelChange{
+	change := ModelChange{
 		Requested:     body.Model,
 		PreviousModel: before.Model,
 		ServedModel:   after.Model,
 		Changed:       after.Model != before.Model,
-	})
+	}
+	if runErr != nil {
+		// Applied but unverified: the /model step landed and the probe did not.
+		// Returned as a result rather than an error, so the two faces cannot
+		// report the same run differently.
+		change.Partial = true
+		change.Steps = result.Steps
+	}
+	encoded, err := json.Marshal(change)
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "marshal model change failed")
 	}
@@ -695,9 +704,12 @@ func (s *MCPToolServer) setPermissionMode(
 	if s.Locks == nil {
 		return "", errors.Errorf(ctx, "permission mode change is not wired")
 	}
-	release, err := s.Locks.Acquire(ctx, body.SessionID)
-	if err != nil {
-		return "", err
+	// TryAcquire, not Acquire: a compaction can hold the lock for minutes, and
+	// the REST route fails fast with 409 for exactly that reason. The two faces
+	// must not disagree about whether a change queues or refuses.
+	release, ok := s.Locks.TryAcquire(body.SessionID)
+	if !ok {
+		return "", errors.Errorf(ctx, "session %q is running a sequence", body.SessionID)
 	}
 	defer release()
 	reported, err := s.Supervisor.SetPermissionMode(ctx, body.SessionID, body.Mode)
