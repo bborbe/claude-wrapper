@@ -73,6 +73,23 @@ var macros = []Macro{
 		Name:  "terminal",
 		Steps: []string{"/vault-cli:sync-progress", "/vault-cli:session-close", "/exit"},
 	},
+	// probe and probe-slow are the endpoint's own smoke test: a sequence with
+	// no production-touching step, so it can be run against a real child to
+	// show the advance rule without spending a session. probe-slow's middle
+	// step deliberately takes half a minute, which is what makes a timer-driven
+	// implementation distinguishable from this one.
+	{
+		Name:  "probe",
+		Steps: []string{"/cost", "/cost", "/cost"},
+	},
+	{
+		Name: "probe-slow",
+		Steps: []string{
+			"/cost",
+			"Run `sleep 30` in a shell, then reply with the single word: done",
+			"/cost",
+		},
+	},
 }
 
 // LookupMacro returns the macro with the given name.

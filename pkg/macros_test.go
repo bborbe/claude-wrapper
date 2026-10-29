@@ -237,11 +237,12 @@ var _ = ginkgo.Describe("LookupMacro", func() {
 		gomega.Expect(errors.Is(err, ErrUnknownMacro)).To(gomega.BeTrue())
 	})
 
-	// Every macro the wrapper ships can rewrite a context or end a child, so
-	// none of them may run fire-and-forget.
-	ginkgo.It("requires confirmation for every defined macro", func() {
+	// The production-touching macros may not run fire-and-forget; the probe
+	// macros carry no such step and are the endpoint's smoke test.
+	ginkgo.It("requires confirmation only for a macro with a touching step", func() {
 		for _, macro := range AvailableMacros() {
-			gomega.Expect(macro.RequiresConfirmation()).To(gomega.BeTrue(), macro.Name)
+			want := macro.Name == "compact" || macro.Name == "terminal"
+			gomega.Expect(macro.RequiresConfirmation()).To(gomega.Equal(want), macro.Name)
 		}
 	})
 

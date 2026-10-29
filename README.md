@@ -85,15 +85,23 @@ The endpoint takes a **macro name, never a command list**. What it can run is
 therefore reviewable as a diff rather than supplied at call time, which matters
 because these macros can rewrite a context or end a child.
 
-| Macro | Steps |
-|---|---|
-| `compact` | `/vault-cli:prepare-compact` → `/compact` → `/vault-cli:post-compact` |
-| `terminal` | `/vault-cli:sync-progress` → `/vault-cli:session-close` → `/exit` |
+| Macro | Steps | Confirm |
+|---|---|---|
+| `compact` | `/vault-cli:prepare-compact` → `/compact` → `/vault-cli:post-compact` | required |
+| `terminal` | `/vault-cli:sync-progress` → `/vault-cli:session-close` → `/exit` | required |
+| `probe` | `/cost` → `/cost` → `/cost` | not needed |
+| `probe-slow` | `/cost` → *a prompt that runs `sleep 30`* → `/cost` | not needed |
 
-**Confirmation is mandatory.** Every macro contains a production-touching step
-(`/compact`, `/exit`), so a call without `confirm` is refused with `409` rather
-than started. This endpoint is a remote kill switch; it is never
-fire-and-forget.
+`probe` and `probe-slow` are the endpoint's own smoke test: no step is
+production-touching, so a sequence can be exercised against a real child
+without spending a session. `probe-slow` exists to make a timer-driven
+implementation distinguishable — its middle turn takes half a minute, and a
+correct run still advances within milliseconds of that turn closing.
+
+**Confirmation is mandatory for a macro that can change or end a child.** A
+macro containing a production-touching step (`/compact`, `/clear`, `/exit`) is
+refused with `409` unless `confirm` is supplied. Those macros are a remote kill
+switch and are never fire-and-forget; the probe macros need no confirmation.
 
 **The child must be idle.** A run started mid-turn is refused with `409`: the
 in-flight turn's `result` would be read as step 1's close, so every later step
