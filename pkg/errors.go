@@ -23,4 +23,9 @@ var (
 	// be expressed as a child command, so the request is refused before any child
 	// or temp file exists.
 	ErrInvalidSpawnOptions = stderrors.New("invalid spawn options")
+	// ErrUnknownMacro is returned for a macro name the wrapper does not define.
+	ErrUnknownMacro = stderrors.New("unknown macro")
+	// ErrConfirmationRequired is returned when a macro contains a
+	// production-touching step and the caller supplied no confirmation.
+	ErrConfirmationRequired = stderrors.New("confirmation required")
 )

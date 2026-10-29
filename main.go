@@ -45,11 +45,13 @@ func main() {
 	}
 
 	supervisor := pkg.NewSupervisor(context.Background(), *claudeBin, libtime.NewCurrentDateTime())
+	sequencer := pkg.NewSequencer(
+		supervisor, libtime.NewCurrentDateTime(), 30*time.Minute)
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", handler.Healthz())
 	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
-	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor))
+	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer))
 
 	server := &http.Server{
 		Addr:              *listen,

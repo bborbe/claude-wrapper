@@ -74,6 +74,46 @@ Body: `{"request_id": "...", "behavior": "allow"}`. The answer is written to the
 same child that raised the request — the prompt is not reachable from anywhere
 else, so answering a store would answer nothing.
 
+### POST /api/1.0/sessions/{id}/commands
+
+Runs a named macro — a fixed, ordered list of user turns — against one child,
+writing each step only after the previous turn has closed.
+
+Body: `{"macro": "compact", "confirm": "<any non-empty value>"}`.
+
+The endpoint takes a **macro name, never a command list**. What it can run is
+therefore reviewable as a diff rather than supplied at call time, which matters
+because these macros can rewrite a context or end a child.
+
+| Macro | Steps |
+|---|---|
+| `compact` | `/vault-cli:prepare-compact` → `/compact` → `/vault-cli:post-compact` |
+| `terminal` | `/vault-cli:sync-progress` → `/vault-cli:session-close` → `/exit` |
+
+**Confirmation is mandatory.** Every macro contains a production-touching step
+(`/compact`, `/exit`), so a call without `confirm` is refused with `409` rather
+than started. This endpoint is a remote kill switch; it is never
+fire-and-forget.
+
+**The call blocks until the run finishes** and answers with every step, so the
+response is the only report:
+
+```json
+{"macro": "compact", "aborted": false, "steps": [
+  {"index": 1, "command": "/vault-cli:prepare-compact", "status": "done",
+   "wrote_at": "2026-10-29T08:12:01Z", "closed_at": "2026-10-29T08:12:44Z"}
+]}
+```
+
+`status` is `done`, `running`, `not_run` or `aborted`. A run that stops early
+sets `aborted` with a `reason`, and the steps it never reached stay `not_run`.
+
+**Advance is driven by the child, not a timer.** Step *N+1* is written when the
+child's `result` event for turn *N* arrives, never on an interval. The gap
+between a step's `closed_at` and the next step's `wrote_at` therefore stays near
+zero however long a turn takes — which is exactly what a sleep-driven sequence
+cannot produce.
+
 ### DELETE /api/1.0/sessions/{id}
 
 Kills the child. `204` on success.
@@ -82,13 +122,14 @@ Kills the child. `204` on success.
 
 | Status | Meaning |
 |---|---|
-| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind |
+| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
-| `409` | answered-already, or the session holds no open question to answer |
+| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm` |
 | `410` | child exited — it is gone and accepts no control |
 | `503` | child unreachable — the process exists but its stream is not responding |
 
 ## Not in phase 1
 
 Wrapping TUI sessions; multi-host supervision; auth beyond the localhost bind;
-any control beyond `answer`.
+caller-supplied command lists; and any sequencing beyond a linear list — no
+branches, loops or retries between steps.

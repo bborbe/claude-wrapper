@@ -120,7 +120,7 @@ var _ = Describe("handler", func() {
 		sup := &fakeSupervisor{getErr: pkg.ErrSessionNotFound}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/nope", nil)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusNotFound))
 	})
 
@@ -129,7 +129,7 @@ var _ = Describe("handler", func() {
 		rec := httptest.NewRecorder()
 		body := strings.NewReader(`{"request_id":"r1","behavior":"allow"}`)
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
 	})
 
@@ -142,7 +142,7 @@ var _ = Describe("handler", func() {
 		}}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
 		Expect(rec.Header().Get("Content-Type")).To(Equal("text/event-stream"))
 		// Assert the payloads, not a frame count: the closing `event: end` frame
@@ -157,7 +157,35 @@ var _ = Describe("handler", func() {
 		sup := &fakeSupervisor{}
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/events", nil)
-		handler.Session(sup).ServeHTTP(rec, req)
+		handler.Session(sup, nil).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
+	})
+
+	// A macro that can end a child is a remote kill switch: the request is
+	// refused outright rather than started and reported on later.
+	It("refuses a production-touching macro with no confirmation", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"compact"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(sup, nil).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
+	})
+
+	It("refuses an unknown macro", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"macro":"nope","confirm":"yes"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
+		handler.Session(sup, nil).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("refuses a non-POST on the commands route", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/commands", nil)
+		handler.Session(sup, nil).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
 	})
 })
