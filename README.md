@@ -57,16 +57,24 @@ server name is chosen at `mcp add` time, not here.
 | tool | what it does |
 |---|---|
 | `spawn_session` | start one child; `cwd`, `model`, `permission_mode` are optional |
-| `send_message` | write one user turn and return the assistant text that closed it |
+| `send_message` | write one user turn and return the assistant text that closed it — or, if the turn parks, the request it parked on |
 | `list_sessions` | every session this wrapper owns |
 | `get_session` | one session's state, model and pending question |
 | `kill_session` | stop one child |
+| `get_pending` | what a session is parked on, with the options its question carries; `null` when it is not waiting |
+| `answer_pending` | answer that request: `behavior` for a permission, `answers` for a question |
 
 `send_message` is the one tool that cannot delegate to REST: `POST
 …/message` answers `202 {"status":"sent"}` and carries no answer, so the tool
 waits for the child's `result` event and returns that event's `result` field. A
 turn that never closes returns a tool error naming the timeout
 (`--mcp-turn-timeout`, default 120s) rather than a success.
+
+**A parked turn returns early.** If the child registers a request mid-turn, the
+tool returns `parked: {…}` with the request inline instead of waiting for the
+turn to close — the child's permission hold is 90 s, so a caller that only
+learned of the question at turn-close could never answer inside it. Answer it
+with `answer_pending`; the child then continues the same turn.
 
 ### Who may call it
 
