@@ -85,7 +85,7 @@ var _ = ginkgo.Describe("buildArgs", func() {
 
 var _ = ginkgo.Describe("childEnv", func() {
 	ginkgo.It("returns the inherited environment unchanged when nothing is overridden", func() {
-		inherited := []string{"PATH=/usr/bin", "HOME=/Users/x"}
+		inherited := []string{"PATH=/usr/bin", "HOME=/tmp/home"}
 		gomega.Expect(childEnv(inherited, nil)).To(gomega.Equal(inherited))
 	})
 
