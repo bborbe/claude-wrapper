@@ -18,9 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently.
 - fix: a registration carrying an out-of-set `kind` is rejected with `400` instead of creating a
   request no answer shape can ever match.
-- fix: `--listen :18090` produced `http://:18090` for the child, which its HTTP client rejects
-  (`no Host in request URL`) — and a failed registration is only logged, so the gate defaulted to
-  allow.
 - feat: `get_pending` and `answer_pending` join the client-facing MCP face, so a caller can see
   what a session is parked on — including an `AskUserQuestion`'s options — and answer it without a
   second round-trip or a REST call.
@@ -30,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release exists to remove.
 - fix: every child was pointed at `http://localhost:18090` regardless of the daemon's own
   `--listen`. A wrapper on any other port handed its children the URL of a *different* process, so
-  registrations failed silently and the gate defaulted to allow.
+  registrations failed silently and the gate defaulted to allow. The URL is now derived from
+  `--listen` via `pkg.SelfURL`, which also maps a bare port (`:18090`) and a wildcard host
+  (`0.0.0.0`, `::`) to loopback — both are valid listen targets whose naive prefix the child's
+  HTTP client rejects.
 - fix: the permission tool's `updatedInput` for an `AskUserQuestion` must satisfy the tool's own
   input schema, so it now echoes the original `questions` back beside `answers`. Returning
   `answers` alone made the child reject the answer with `The required parameter "questions" is

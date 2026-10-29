@@ -8,7 +8,6 @@ import (
 	"context"
 	"flag"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"time"
@@ -51,7 +50,7 @@ func main() {
 		context.Background(),
 		*claudeBin,
 		libtime.NewCurrentDateTime(),
-		selfURL(*listen),
+		pkg.SelfURL(*listen),
 	)
 	// One lock set for every route that can write a turn: a sequence and a
 	// plain message on the same child must not interleave.
@@ -86,21 +85,4 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("listen failed: %v", err)
 	}
-}
-
-// selfURL is the base URL children use to reach this process.
-//
-// `--listen :18090` is a valid net.Listen target whose host is empty; prefixed
-// naively it yields "http://:18090", which the child's HTTP client rejects with
-// "no Host in request URL" — and a failed registration is only logged, so the
-// gate silently defaults to allow. The host is defaulted rather than concatenated.
-func selfURL(listen string) string {
-	host, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return "http://" + listen
-	}
-	if host == "" {
-		host = "localhost"
-	}
-	return "http://" + net.JoinHostPort(host, port)
 }
