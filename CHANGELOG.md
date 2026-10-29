@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.4.1
+## Unreleased
 
 - feat: `POST /api/1.0/sessions/{id}/model` and the `set_model` MCP tool change a **running**
   session's model without respawning it, and report the model that actually served the next turn.
@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: an `assistant` event whose `message.model` is `"<synthetic>"` — the turn a local slash
   command answers itself — no longer overwrites the session's model with a value that names no
   model at all.
+
+## v0.4.1
+
 - fix: **the event stream no longer dies at the server's 60 s `WriteTimeout`.** `GET
   …/sessions/{id}/events` is an SSE response that can legitimately write nothing for
   minutes — a child parked on a permission prompt says nothing until it is answered — but
