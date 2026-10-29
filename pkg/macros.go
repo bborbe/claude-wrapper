@@ -92,6 +92,22 @@ var macros = []Macro{
 	},
 }
 
+// ModelChangeMacro returns the sequence a model change runs.
+//
+// Two steps, not one: `/model <name>` is answered locally, so its own turn
+// reports no model at all. The second step is what makes the new model's first
+// real answer — and therefore the read-back — exist.
+//
+// It is built here rather than added to the macro table because it is not a
+// named sequence a caller may invoke by name: the model is a parameter, and a
+// table entry would have to be rewritten per call.
+func ModelChangeMacro(model string) Macro {
+	return Macro{
+		Name:  "set-model",
+		Steps: []string{"/model " + model, modelProbeTurn},
+	}
+}
+
 // LookupMacro returns the macro with the given name.
 func LookupMacro(name string) (Macro, error) {
 	for _, macro := range macros {

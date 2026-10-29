@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: `POST /api/1.0/sessions/{id}/model` and the `set_model` MCP tool change a **running**
+  session's model without respawning it, and report the model that actually served the next turn.
+- feat: `POST /api/1.0/sessions/{id}/permission-mode` and the `set_permission_mode` MCP tool change
+  a **running** session's permission mode over the SDK's own control channel, and report the mode
+  the child answers with rather than the one the caller sent.
+- feat: `Session` gains `permission_mode`, read from the child's `system`/`init` event.
+- feat: `pkg.Supervisor` gains `SetPermissionMode`. This is an addition to an exported interface,
+  so an out-of-tree implementer must add the method.
+- fix: an `assistant` event whose `message.model` is `"<synthetic>"` — the turn a local slash
+  command answers itself — no longer overwrites the session's model with a value that names no
+  model at all.
+
 ## v0.4.0
 
 - feat: `pkg.Supervisor` gains `ForgetQuestion`, and `DELETE …/question/{request_id}` exposes it.

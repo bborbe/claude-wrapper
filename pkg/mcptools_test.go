@@ -30,6 +30,8 @@ type toolSupervisor struct {
 	spawnedMode  string
 	state        State
 	pendingTurns int
+	// permissionModes records every mode a set_permission_mode call asked for.
+	permissionModes []string
 }
 
 func (s *toolSupervisor) Spawn(_ context.Context, options SpawnOptions) (*Session, error) {
@@ -58,6 +60,13 @@ func (s *toolSupervisor) PollAnswer(context.Context, string) (PendingAnswer, err
 }
 
 func (s *toolSupervisor) Stop(context.Context, string) error { return nil }
+
+func (s *toolSupervisor) SetPermissionMode(_ context.Context, _ string, mode string) (string, error) {
+	s.mutex.Lock()
+	s.permissionModes = append(s.permissionModes, mode)
+	s.mutex.Unlock()
+	return mode, nil
+}
 
 func (s *toolSupervisor) Send(_ context.Context, _ string, text string) error {
 	s.mutex.Lock()
@@ -155,6 +164,8 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 			string(ToolKillSession),
 			string(ToolGetPending),
 			string(ToolAnswerPending),
+			string(ToolSetModel),
+			string(ToolSetPermissionMode),
 		}))
 	})
 

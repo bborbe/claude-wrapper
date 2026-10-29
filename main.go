@@ -68,6 +68,7 @@ func main() {
 	// separate process.
 	mux.Handle("/mcp", &pkg.MCPToolServer{
 		Supervisor:  supervisor,
+		Sequencer:   sequencer,
 		Locks:       locks,
 		TurnTimeout: *mcpTurnTimeout,
 	})

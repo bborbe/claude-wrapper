@@ -41,6 +41,24 @@ type fakeSupervisor struct {
 	// spec can assert the route passed the ids through rather than only that it
 	// answered 204.
 	forgot [][2]string
+	// permissionModes records every mode the route asked for, and
+	// permissionModeErr forces the refusal path.
+	permissionModes   []string
+	permissionModeErr error
+	// getModels is a queue Get pops one entry per call, so a spec can show that
+	// a model change reports what the session said AFTER the run rather than
+	// what it said before it.
+	getModels []string
+}
+
+// popModel returns the next queued model, or "" once the queue is empty.
+func (f *fakeSupervisor) popModel() string {
+	if len(f.getModels) == 0 {
+		return ""
+	}
+	model := f.getModels[0]
+	f.getModels = f.getModels[1:]
+	return model
 }
 
 func (f *fakeSupervisor) Spawn(_ context.Context, _ pkg.SpawnOptions) (*pkg.Session, error) {
@@ -58,7 +76,7 @@ func (f *fakeSupervisor) Get(_ context.Context, id string) (*pkg.Session, error)
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	return &pkg.Session{ID: id, State: pkg.StateIdle}, nil
+	return &pkg.Session{ID: id, State: pkg.StateIdle, Model: f.popModel()}, nil
 }
 
 func (f *fakeSupervisor) Answer(_ context.Context, _, _ string, _ pkg.Answer) error {
@@ -80,6 +98,18 @@ func (f *fakeSupervisor) ForgetQuestion(_ context.Context, id, requestID string)
 
 func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (pkg.PendingAnswer, error) {
 	return pkg.PendingAnswer{}, f.getErr
+}
+
+func (f *fakeSupervisor) SetPermissionMode(
+	_ context.Context,
+	_ string,
+	mode string,
+) (string, error) {
+	f.permissionModes = append(f.permissionModes, mode)
+	if f.permissionModeErr != nil {
+		return "", f.permissionModeErr
+	}
+	return mode, nil
 }
 
 func (f *fakeSupervisor) Stop(_ context.Context, _ string) error {
@@ -347,5 +377,69 @@ var _ = Describe("handler", func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/commands", body)
 		handler.Session(&fakeSupervisor{}, seq, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusConflict))
+	})
+})
+
+var _ = Describe("session change routes", func() {
+	// The served model must come from the session AFTER the run, not from the
+	// request body: a route that echoed its own argument would pass a test that
+	// only compared against the requested name.
+	It("reports the model the session reports after the change", func() {
+		sup := &fakeSupervisor{getModels: []string{"old-model", "new-model"}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/model",
+			strings.NewReader(`{"model":"new-model"}`))
+		handler.Session(sup, &fakeSequencer{}, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var change pkg.ModelChange
+		Expect(json.Unmarshal(rec.Body.Bytes(), &change)).To(Succeed())
+		Expect(change.Requested).To(Equal("new-model"))
+		Expect(change.PreviousModel).To(Equal("old-model"))
+		Expect(change.ServedModel).To(Equal("new-model"))
+		Expect(change.Changed).To(BeTrue())
+	})
+
+	// A served name that matches what already ran is not a change, and saying
+	// otherwise would let a no-op tick a criterion about the model moving.
+	It("reports changed=false when the served model did not move", func() {
+		sup := &fakeSupervisor{getModels: []string{"same", "same"}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/model",
+			strings.NewReader(`{"model":"alias"}`))
+		handler.Session(sup, &fakeSequencer{}, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var change pkg.ModelChange
+		Expect(json.Unmarshal(rec.Body.Bytes(), &change)).To(Succeed())
+		Expect(change.ServedModel).To(Equal("same"))
+		Expect(change.Changed).To(BeFalse())
+	})
+
+	It("refuses a model change with no model", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/model",
+			strings.NewReader(`{}`))
+		handler.Session(sup, &fakeSequencer{}, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	// The mode the child reports is the answer, not the mode the caller sent.
+	It("reports the mode the supervisor's read-back returned", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/permission-mode",
+			strings.NewReader(`{"mode":"acceptEdits"}`))
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(sup.permissionModes).To(Equal([]string{"acceptEdits"}))
+	})
+
+	It("maps an unsupported mode to 400", func() {
+		sup := &fakeSupervisor{permissionModeErr: pkg.ErrInvalidSpawnOptions}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/permission-mode",
+			strings.NewReader(`{"mode":"nonsense"}`))
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
 	})
 })

@@ -49,7 +49,7 @@ codex mcp list          # confirm: transport streamable_http, status enabled
 ```
 
 Codex namespaces the tools it exposes as `mcp__<server_name>__<tool_name>`, so
-the five below appear as `mcp__claude_wrapper__spawn_session` and so on. The
+the nine below appear as `mcp__claude_wrapper__spawn_session` and so on. The
 server name is chosen at `mcp add` time, not here.
 
 ### Tools
@@ -63,6 +63,8 @@ server name is chosen at `mcp add` time, not here.
 | `kill_session` | stop one child |
 | `get_pending` | what a session is parked on, with the options its question carries; `null` when it is not waiting |
 | `answer_pending` | answer that request: `behavior` for a permission, `answers` for a question |
+| `set_model` | change a running session's model; returns the model that served the next turn |
+| `set_permission_mode` | change a running session's permission mode; returns the mode the child reports |
 
 `send_message` is the one tool that cannot delegate to REST: `POST
 …/message` answers `202 {"status":"sent"}` and carries no answer, so the tool
@@ -117,7 +119,8 @@ Every business route is under `/api/1.0/`. `/healthz` touches no child.
 ### GET /api/1.0/sessions
 
 Lists every child this process spawned. Each row carries `id`, `state`, `model`,
-`model_source`, `question`, `controls`, `cwd`, `started_at`, `exit_code`.
+`model_source`, `permission_mode`, `question`, `controls`, `cwd`, `started_at`,
+`exit_code`.
 
 `state` is derived from the child's own event stream — `generating` while an
 assistant turn is open, `idle` when it closes, `exited` when the child leaves.
@@ -298,6 +301,71 @@ child's `result` event for turn *N* arrives, never on an interval. The gap
 between a step's `closed_at` and the next step's `wrote_at` therefore stays near
 zero however long a turn takes — which is exactly what a sleep-driven sequence
 cannot produce.
+
+### POST /api/1.0/sessions/{id}/model
+
+Changes the model of a **running** session, without respawning it — the context
+survives.
+
+Body: `{"model": "deepseek-v4-flash-max"}`.
+
+The change is the child's own `/model` command, so it needs no new protocol. It
+runs as a two-step sequence through the same sequencer `…/commands` uses: the
+command itself, then one cheap probe turn. The probe is what makes the read-back
+possible — the `/model` turn is answered locally, so its `assistant` event
+reports `"<synthetic>"`, which names no model.
+
+```json
+{"requested": "deepseek-v4-flash-max",
+ "previous_model": "deepseek-v4-flash",
+ "served_model": "deepseek-v4-flash-max",
+ "changed": true}
+```
+
+**`served_model` is the model that actually answered the next turn**, taken from
+that turn's `assistant` event. It is not the launcher's `init` value and not an
+echo of `requested`.
+
+⚠️ **`init` is not the model.** The `system`/`init` event carries a `model` too,
+but that is the launcher's configuration and can differ from what served the
+request — measured 2026-10-28: init said `claude-opus-5-5` while the assistant
+event said `deepseek-v4-flash-max`. A model change is the same trap one step
+further: measured 2026-10-29, `/model claude-sonnet-5-5` made `init` report
+`claude-sonnet-5-5` while the next `assistant` event reported `deepseek-v4-flash`
+— the alias resolved to a different backend. `served_model` is what the child
+answered with, which is why `changed` can be `true` for a name that came back
+different from the one requested.
+
+### POST /api/1.0/sessions/{id}/permission-mode
+
+Changes the permission mode of a **running** session, so a session that started
+on the wrong mode no longer has to be respawned.
+
+Body: `{"mode": "acceptEdits"}` — one of `default`, `acceptEdits`,
+`bypassPermissions`, `plan`.
+
+```json
+{"status": "changed", "permission_mode": "acceptEdits"}
+```
+
+**This one is not a turn.** No slash command changes the permission mode —
+measured 2026-10-29 against a child advertising 219 of them — so the change
+travels as the SDK's own control request on the child's stdin:
+
+```json
+{"type": "control_request", "request_id": "perm-mode-...",
+ "request": {"subtype": "set_permission_mode", "mode": "acceptEdits"}}
+```
+
+The child answers `{"type": "control_response", "response": {"subtype":
+"success", "request_id": "perm-mode-...", "response": {"mode": "acceptEdits"}}}`,
+and `permission_mode` in the response is **the mode the child reports for
+itself** — not the value the caller sent. `GET /api/1.0/sessions/{id}` reports it
+too, read from the child's `system`/`init` event, which is re-emitted on every
+turn and therefore reflects a change on the next one.
+
+The change takes the same per-session lock a sequence does, so it cannot land
+between two steps of a run.
 
 ### DELETE /api/1.0/sessions/{id}
 

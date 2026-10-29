@@ -63,6 +63,12 @@ type Supervisor interface {
 	List(ctx context.Context) ([]Session, error)
 	Get(ctx context.Context, id string) (*Session, error)
 	Send(ctx context.Context, id string, text string) error
+	// SetPermissionMode changes the permission mode of a running child and
+	// returns the mode the child itself reports for it.
+	//
+	// The caller must hold the session lock: a control request written between
+	// two steps of a sequence would land in the middle of a run.
+	SetPermissionMode(ctx context.Context, id string, mode string) (string, error)
 	Answer(ctx context.Context, id string, requestID string, answer Answer) error
 	RegisterQuestion(ctx context.Context, id string, question Question) error
 	// ForgetQuestion drops a request the child has stopped waiting on.
@@ -188,6 +194,28 @@ func (s *supervisor) Answer(ctx context.Context, id string, requestID string, an
 	return nil
 }
 
+// syntheticModel is the message.model the child reports for a turn a local
+// slash command answered instead of a model.
+//
+// Measured 2026-10-29: `/model <name>` written as a user turn produces an
+// assistant event whose message.model is exactly this string. Storing it would
+// replace the last real model with a value that names no model at all, so every
+// later read would report it as the one that answered.
+const syntheticModel = "<synthetic>"
+
+// modelProbeTurn is written after a model change to obtain the new model's
+// first real answer.
+//
+// A change cannot read its own effect: the `/model` command's own turn is
+// synthetic. One cheap turn makes the read-back the next assistant event rather
+// than an inference from the caller's argument.
+const modelProbeTurn = "Reply with only the word OK."
+
+// controlRequestTimeout bounds one control exchange. The child answers a
+// set_permission_mode request immediately, so a silence here is a child that
+// will never answer and must surface rather than hang the caller.
+const controlRequestTimeout = 30 * time.Second
+
 // Send writes one user turn to the child's stdin.
 //
 // Without this the wrapper can start a child and watch it, but never make it
@@ -201,6 +229,26 @@ func (s *supervisor) Send(ctx context.Context, id string, text string) error {
 		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
 	}
 	return c.send(ctx, text)
+}
+
+// SetPermissionMode changes the permission mode of a running child and returns
+// the mode the child itself reports for it.
+func (s *supervisor) SetPermissionMode(
+	ctx context.Context,
+	id string,
+	mode string,
+) (string, error) {
+	if !isPermissionMode(mode) {
+		return "", errors.Wrapf(ctx, ErrInvalidSpawnOptions,
+			"permission mode %q is not one of %v", mode, AvailablePermissionModes())
+	}
+	s.mutex.RLock()
+	c, ok := s.sessions[id]
+	s.mutex.RUnlock()
+	if !ok {
+		return "", errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
+	}
+	return c.setPermissionMode(ctx, mode)
 }
 
 // RegisterQuestion records a permission request raised by the child's MCP tool.
@@ -590,6 +638,105 @@ func (c *child) send(ctx context.Context, text string) error {
 	return nil
 }
 
+// setPermissionMode writes the SDK's own control request and waits for the
+// child's answer.
+//
+// A permission mode is not reachable as a user turn: measured 2026-10-29, none
+// of the child's 219 slash commands changes it, and send wraps text into a user
+// message. The control channel is the only path, and the child answers it with
+// the mode it now holds — which is the read-back, since this process stores no
+// mode of its own.
+func (c *child) setPermissionMode(ctx context.Context, mode string) (string, error) {
+	if c.isExited() {
+		return "", errors.Wrapf(ctx, ErrSessionExited, "session %q exited", c.id)
+	}
+	_, live, cancel := c.subscribe()
+	defer cancel()
+
+	requestID := "perm-mode-" + newID()
+	if err := c.writeControl(ctx, requestID, map[string]any{
+		"subtype": "set_permission_mode",
+		"mode":    mode,
+	}); err != nil {
+		return "", err
+	}
+
+	waitCtx, cancelWait := context.WithTimeout(ctx, controlRequestTimeout)
+	defer cancelWait()
+	for {
+		select {
+		case <-waitCtx.Done():
+			return "", errors.Wrapf(ctx, waitCtx.Err(),
+				"waiting for the child to answer permission mode %q", mode)
+		case event, open := <-live:
+			if !open {
+				return "", errors.Wrapf(ctx, ErrSessionExited,
+					"stream closed before the child answered permission mode %q", mode)
+			}
+			reported, done, err := permissionModeAnswer(ctx, event, requestID, mode)
+			if err != nil {
+				return "", err
+			}
+			if done {
+				return reported, nil
+			}
+		}
+	}
+}
+
+// permissionModeAnswer reports whether one event answers the given request, and
+// with which mode.
+//
+// It is a function rather than an inline block so the response shape is testable
+// without a live child: the envelope is the SDK's, not this repo's, and a silent
+// shape change must fail a test rather than read as a timeout.
+func permissionModeAnswer(
+	ctx context.Context,
+	event Event,
+	requestID string,
+	mode string,
+) (string, bool, error) {
+	if event["type"] != "control_response" {
+		return "", false, nil
+	}
+	response, ok := event["response"].(map[string]any)
+	if !ok || response["request_id"] != requestID {
+		return "", false, nil
+	}
+	if subtype, _ := response["subtype"].(string); subtype != "success" {
+		return "", false, errors.Errorf(ctx, "child refused permission mode %q: %v", mode, response)
+	}
+	inner, _ := response["response"].(map[string]any)
+	reported, _ := inner["mode"].(string)
+	if reported == "" {
+		return "", false, errors.Errorf(ctx, "child answered %q without reporting a mode", requestID)
+	}
+	return reported, true, nil
+}
+
+// writeControl writes one SDK control request as JSONL.
+//
+// Unlike send it does not touch pendingTurns: a control request is not a turn
+// and the child never answers it with a result event, so counting it would leave
+// the counter one too high for the child's lifetime and refuse every later run.
+func (c *child) writeControl(ctx context.Context, requestID string, request map[string]any) error {
+	encoded, err := json.Marshal(map[string]any{
+		"type":       "control_request",
+		"request_id": requestID,
+		"request":    request,
+	})
+	if err != nil {
+		return errors.Wrapf(ctx, err, "marshal control request failed")
+	}
+	c.writeMu.Lock()
+	_, writeErr := c.stdin.Write(append(encoded, '\n'))
+	c.writeMu.Unlock()
+	if writeErr != nil {
+		return errors.Wrapf(ctx, writeErr, "write control request to session %q failed", c.id)
+	}
+	return nil
+}
+
 func (c *child) isExited() bool {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
@@ -655,13 +802,15 @@ func (c *child) apply(event map[string]any) {
 		}
 	case "assistant":
 		if message, ok := event["message"].(map[string]any); ok {
-			if model, ok := message["model"].(string); ok && model != "" {
+			if model, ok := message["model"].(string); ok && model != "" && model != syntheticModel {
 				c.session.Model = model
 				c.session.ModelSource = "assistant"
 			}
 		}
 	case "stream_event":
 		c.applyStreamEvent(event)
+	case "control_response":
+		c.applyControlResponse(event)
 	case "result":
 		c.session.State = StateIdle
 		if c.pendingTurns > 0 {
@@ -739,8 +888,42 @@ func (c *child) applyInit(event map[string]any) {
 		c.session.Model = model
 		c.session.ModelSource = "init"
 	}
+	// The mode is taken from init on every turn, not only the first: init is
+	// re-emitted for each turn, so a mode changed on a running child appears
+	// here on the next one. Reading it only at startup would pin the field to
+	// the spawn value and report a stale mode as current.
+	if mode, ok := event["permissionMode"].(string); ok && mode != "" {
+		c.session.PermissionMode = mode
+	}
 	if c.session.State == StateStarting {
 		c.session.State = StateIdle
+	}
+}
+
+// applyControlResponse stores the mode a set_permission_mode answer reports.
+//
+// Without this the change would be visible only in the HTTP response that asked
+// for it: GET would keep reporting whatever the last init event said, which is
+// the mode the child started with. Measured 2026-10-29 — a change answered
+// `acceptEdits` left the session reading `default` until the next turn's init.
+//
+// A `mode` field is the discriminator rather than a request id: no other control
+// response this wrapper reads carries one, and tracking ids here would duplicate
+// the waiter that already does.
+func (c *child) applyControlResponse(event map[string]any) {
+	response, ok := event["response"].(map[string]any)
+	if !ok {
+		return
+	}
+	if subtype, _ := response["subtype"].(string); subtype != "success" {
+		return
+	}
+	inner, ok := response["response"].(map[string]any)
+	if !ok {
+		return
+	}
+	if mode, ok := inner["mode"].(string); ok && mode != "" {
+		c.session.PermissionMode = mode
 	}
 }
 

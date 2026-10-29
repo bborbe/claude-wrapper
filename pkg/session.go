@@ -174,15 +174,23 @@ type Question struct {
 
 // Session is the REST view of one wrapped claude child.
 type Session struct {
-	ID          string    `json:"id"`
-	State       State     `json:"state"`
-	Model       string    `json:"model"`
-	ModelSource string    `json:"model_source"`
-	Question    *Question `json:"question"`
-	Controls    Controls  `json:"controls"`
-	Cwd         string    `json:"cwd"`
-	StartedAt   time.Time `json:"started_at"`
-	ExitCode    *int      `json:"exit_code"`
+	ID          string `json:"id"`
+	State       State  `json:"state"`
+	Model       string `json:"model"`
+	ModelSource string `json:"model_source"`
+	// PermissionMode is the mode the child reports for itself in its own
+	// system/init event.
+	//
+	// It is the child's statement about its own configuration, never a value
+	// this process remembers from spawn: a mode changed on a running child
+	// shows up here on the child's next init, which is what makes it evidence
+	// rather than bookkeeping.
+	PermissionMode string    `json:"permission_mode"`
+	Question       *Question `json:"question"`
+	Controls       Controls  `json:"controls"`
+	Cwd            string    `json:"cwd"`
+	StartedAt      time.Time `json:"started_at"`
+	ExitCode       *int      `json:"exit_code"`
 	// LastEventAgeSeconds is how long the child's stream has been silent.
 	//
 	// It is reported so a caller can tell a genuinely idle child from one that
@@ -197,4 +205,26 @@ type Session struct {
 	// that event the child still reads idle while a turn is on its way. A
 	// caller that must not write mid-turn reads this instead.
 	PendingTurns int `json:"pending_turns"`
+}
+
+// ModelChange is what a model change reports back.
+//
+// ServedModel is read from the assistant event of the turn the change ran, not
+// from the caller's argument and not from init: a change that echoed its own
+// request would report itself rather than the child, which is the recorded-but-
+// not-delivered defect this field exists to make impossible.
+type ModelChange struct {
+	// Requested is the model name the caller asked for.
+	Requested string `json:"requested"`
+	// PreviousModel is what served the session's last real turn before the
+	// change, so a caller can see that something actually moved.
+	PreviousModel string `json:"previous_model"`
+	// ServedModel is what served the first turn after the change.
+	ServedModel string `json:"served_model"`
+	// Changed reports whether ServedModel differs from PreviousModel.
+	//
+	// A name the backend does not serve verbatim resolves to whatever it does
+	// serve, so a caller that asks for an alias sees the served name here and
+	// Changed=true with a different string — which is the truth, not a failure.
+	Changed bool `json:"changed"`
 }

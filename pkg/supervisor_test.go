@@ -255,3 +255,147 @@ var _ = ginkgo.Describe("startChild", func() {
 		}, "5s").Should(gomega.Equal("seen"))
 	})
 })
+
+var _ = ginkgo.Describe("child.apply", func() {
+	newChild := func() *child {
+		return &child{
+			now:         libtime.NewCurrentDateTime(),
+			session:     Session{State: StateIdle},
+			subscribers: map[int]chan Event{},
+		}
+	}
+
+	// The synthetic turn a local slash command produces names no model. Storing
+	// it would make every later read report "<synthetic>" as the model that
+	// answered — worse than reporting the previous real one, because it names
+	// nothing at all.
+	ginkgo.It("ignores the synthetic model a slash command reports", func() {
+		c := newChild()
+		c.apply(map[string]any{
+			"type":    "assistant",
+			"message": map[string]any{"model": "deepseek-v4-flash-max"},
+		})
+		c.apply(map[string]any{
+			"type":    "assistant",
+			"message": map[string]any{"model": syntheticModel},
+		})
+		gomega.Expect(c.session.Model).To(gomega.Equal("deepseek-v4-flash-max"))
+		gomega.Expect(c.session.ModelSource).To(gomega.Equal("assistant"))
+	})
+
+	// init is re-emitted for every turn, so a mode changed on a running child
+	// appears on the next one. Reading it only at startup would pin the field to
+	// the spawn value and report a stale mode as current.
+	ginkgo.It("takes the permission mode from every init event", func() {
+		c := newChild()
+		c.apply(map[string]any{"type": "system", "subtype": "init", "permissionMode": "default"})
+		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("default"))
+		c.apply(map[string]any{"type": "system", "subtype": "init", "permissionMode": "acceptEdits"})
+		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("acceptEdits"))
+	})
+})
+
+var _ = ginkgo.Describe("permissionModeAnswer", func() {
+	ctx := context.Background()
+
+	ginkgo.It("reads the mode the child reports", func() {
+		event := Event{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "success",
+				"request_id": "perm-mode-1",
+				"response":   map[string]any{"mode": "acceptEdits"},
+			},
+		}
+		mode, done, err := permissionModeAnswer(ctx, event, "perm-mode-1", "acceptEdits")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(done).To(gomega.BeTrue())
+		gomega.Expect(mode).To(gomega.Equal("acceptEdits"))
+	})
+
+	ginkgo.It("ignores an event that is not a control response", func() {
+		_, done, err := permissionModeAnswer(ctx, Event{"type": "assistant"}, "perm-mode-1", "x")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(done).To(gomega.BeFalse())
+	})
+
+	ginkgo.It("ignores another request's answer", func() {
+		event := Event{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "success",
+				"request_id": "perm-mode-2",
+				"response":   map[string]any{"mode": "acceptEdits"},
+			},
+		}
+		_, done, err := permissionModeAnswer(ctx, event, "perm-mode-1", "acceptEdits")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(done).To(gomega.BeFalse())
+	})
+
+	// A refusal must surface as an error, never as a wait that runs to its
+	// timeout: a child that says no has answered, and reading it as silence
+	// would report the mode change as merely slow.
+	ginkgo.It("refuses a child that reports failure", func() {
+		event := Event{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "error",
+				"request_id": "perm-mode-1",
+			},
+		}
+		_, _, err := permissionModeAnswer(ctx, event, "perm-mode-1", "acceptEdits")
+		gomega.Expect(err).To(gomega.HaveOccurred())
+	})
+
+	ginkgo.It("refuses a success that carries no mode", func() {
+		event := Event{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "success",
+				"request_id": "perm-mode-1",
+				"response":   map[string]any{},
+			},
+		}
+		_, _, err := permissionModeAnswer(ctx, event, "perm-mode-1", "acceptEdits")
+		gomega.Expect(err).To(gomega.HaveOccurred())
+	})
+})
+
+var _ = ginkgo.Describe("child.applyControlResponse", func() {
+	newChild := func() *child {
+		return &child{
+			now:         libtime.NewCurrentDateTime(),
+			session:     Session{State: StateIdle},
+			subscribers: map[int]chan Event{},
+		}
+	}
+
+	// A change must be visible in GET immediately, not only in the response that
+	// asked for it. Measured 2026-10-29: without this, a change answered
+	// acceptEdits left the session reporting default until a later turn's init.
+	ginkgo.It("stores the mode a control response reports", func() {
+		c := newChild()
+		c.apply(map[string]any{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "success",
+				"request_id": "perm-mode-1",
+				"response":   map[string]any{"mode": "acceptEdits"},
+			},
+		})
+		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("acceptEdits"))
+	})
+
+	// The mode field is the discriminator, so a response without one must not
+	// clear what is already known.
+	ginkgo.It("leaves the mode alone when the response carries none", func() {
+		c := newChild()
+		c.session.PermissionMode = "default"
+		c.apply(map[string]any{
+			"type":     "control_response",
+			"response": map[string]any{"subtype": "success", "request_id": "x"},
+		})
+		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("default"))
+	})
+})

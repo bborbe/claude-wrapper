@@ -27,6 +27,10 @@ import (
 // boundary, same repo — which is why they live in separate files.
 type MCPToolServer struct {
 	Supervisor Supervisor
+	// Sequencer runs the model change's two steps. It is the same sequencer the
+	// REST route uses, so the two faces cannot drift in how a change is
+	// delivered or when it is refused.
+	Sequencer Sequencer
 	// Locks is the same lock set the REST message route uses. A turn written
 	// from MCP must not interleave with a sequence holding the child.
 	Locks *SessionLocks
@@ -68,6 +72,12 @@ const (
 	ToolGetPending ToolName = "get_pending"
 	// ToolAnswerPending answers the request get_pending returned.
 	ToolAnswerPending ToolName = "answer_pending"
+	// ToolSetModel changes the model of a running session and reports what
+	// actually served the next turn.
+	ToolSetModel ToolName = "set_model"
+	// ToolSetPermissionMode changes the permission mode of a running session and
+	// reports the mode the child itself answers with.
+	ToolSetPermissionMode ToolName = "set_permission_mode"
 )
 
 // AvailableToolNames is every tool this server exposes, in listing order.
@@ -80,6 +90,8 @@ func AvailableToolNames() []ToolName {
 		ToolKillSession,
 		ToolGetPending,
 		ToolAnswerPending,
+		ToolSetModel,
+		ToolSetPermissionMode,
 	}
 }
 
@@ -331,6 +343,10 @@ func (s *MCPToolServer) invoke(ctx context.Context, name string, args json.RawMe
 		return s.getPending(ctx, args)
 	case ToolAnswerPending:
 		return s.answerPending(ctx, args)
+	case ToolSetModel:
+		return s.setModel(ctx, args)
+	case ToolSetPermissionMode:
+		return s.setPermissionMode(ctx, args)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -617,6 +633,87 @@ func writeRPC(resp http.ResponseWriter, id json.RawMessage, result any, rpcErr *
 }
 
 // toolDefinitions describes the five tools to an MCP client.
+type setModelArgs struct {
+	SessionID string `json:"session_id"`
+	Model     string `json:"model"`
+}
+
+// setModel changes a running session's model through the same sequencer the
+// REST route uses, and reports what actually served the next turn.
+func (s *MCPToolServer) setModel(ctx context.Context, args json.RawMessage) (string, error) {
+	var body setModelArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.Model == "" {
+		return "", errors.Errorf(ctx, "model is required")
+	}
+	if s.Sequencer == nil {
+		return "", errors.Errorf(ctx, "model change is not wired")
+	}
+	before, err := s.Supervisor.Get(ctx, body.SessionID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.Sequencer.Run(ctx, body.SessionID, ModelChangeMacro(body.Model)); err != nil {
+		return "", err
+	}
+	after, err := s.Supervisor.Get(ctx, body.SessionID)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(ModelChange{
+		Requested:     body.Model,
+		PreviousModel: before.Model,
+		ServedModel:   after.Model,
+		Changed:       after.Model != before.Model,
+	})
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "marshal model change failed")
+	}
+	return string(encoded), nil
+}
+
+type setPermissionModeArgs struct {
+	SessionID string `json:"session_id"`
+	Mode      string `json:"mode"`
+}
+
+// setPermissionMode changes a running session's permission mode and reports the
+// mode the child itself answers with.
+func (s *MCPToolServer) setPermissionMode(
+	ctx context.Context,
+	args json.RawMessage,
+) (string, error) {
+	var body setPermissionModeArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.Mode == "" {
+		return "", errors.Errorf(ctx, "mode is required")
+	}
+	if s.Locks == nil {
+		return "", errors.Errorf(ctx, "permission mode change is not wired")
+	}
+	release, err := s.Locks.Acquire(ctx, body.SessionID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	reported, err := s.Supervisor.SetPermissionMode(ctx, body.SessionID, body.Mode)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(map[string]string{
+		"status":          "changed",
+		"permission_mode": reported,
+	})
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "marshal permission mode result failed")
+	}
+	return string(encoded), nil
+}
+
 func toolDefinitions() []any {
 	return []any{
 		toolDef(ToolSpawnSession,
@@ -657,6 +754,23 @@ func toolDefinitions() []any {
 				"answers":    map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 			},
 			"session_id", "request_id"),
+		toolDef(ToolSetModel,
+			"Change a running session's model and return what actually served the next turn. "+
+				"The served model is read from the child's own assistant event, so a name that "+
+				"resolves to a different backend reports the served name rather than echoing it.",
+			map[string]any{
+				"session_id": stringProp("id of the session to change"),
+				"model":      stringProp("model to switch the child to"),
+			},
+			"session_id", "model"),
+		toolDef(ToolSetPermissionMode,
+			"Change a running session's permission mode and return the mode the child itself "+
+				"reports. Modes: default, acceptEdits, bypassPermissions, plan.",
+			map[string]any{
+				"session_id": stringProp("id of the session to change"),
+				"mode":       stringProp("permission mode to switch the child to"),
+			},
+			"session_id", "mode"),
 	}
 }
 
