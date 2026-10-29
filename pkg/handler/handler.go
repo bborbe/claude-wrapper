@@ -205,10 +205,39 @@ func handleCommands(
 	writeJSON(resp, http.StatusOK, result)
 }
 
+// askUserQuestionTool is the child-side tool name whose answer is a selection
+// rather than a verdict. It arrives through the same permission_prompt channel
+// as every other gate, so the tool name is the only thing that tells the two
+// shapes apart on registration.
+const askUserQuestionTool = "AskUserQuestion"
+
 type questionRequest struct {
-	RequestID string         `json:"request_id"`
-	ToolName  string         `json:"tool_name"`
-	Input     map[string]any `json:"input"`
+	RequestID string               `json:"request_id"`
+	Kind      string               `json:"kind"`
+	ToolName  string               `json:"tool_name"`
+	ToolUseID string               `json:"tool_use_id"`
+	Input     map[string]any       `json:"input"`
+	Questions []pkg.QuestionPrompt `json:"questions"`
+}
+
+// answerKindFor resolves the kind a registration describes.
+//
+// The caller states it when it can; otherwise the tool name decides, because
+// AskUserQuestion is the only tool whose answer is a selection. A stated kind is
+// validated: an out-of-set value would create a request no answer shape can ever
+// match, so it would 422 forever while the child sat until its hold expired.
+func answerKindFor(ctx context.Context, kind string, toolName string) (pkg.AnswerKind, error) {
+	if kind != "" {
+		stated := pkg.AnswerKind(kind)
+		if err := stated.Validate(); err != nil {
+			return "", errors.Wrapf(ctx, err, "invalid kind %q", kind)
+		}
+		return stated, nil
+	}
+	if toolName == askUserQuestionTool {
+		return pkg.AnswerKindQuestion, nil
+	}
+	return pkg.AnswerKindPermission, nil
 }
 
 // handleQuestion is the two halves the MCP tool needs: POST registers a
@@ -229,11 +258,18 @@ func handleQuestion(
 			writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
 			return
 		}
+		kind, kindErr := answerKindFor(ctx, body.Kind, body.ToolName)
+		if kindErr != nil {
+			writeError(resp, http.StatusBadRequest, kindErr)
+			return
+		}
 		question := pkg.Question{
 			RequestID: body.RequestID,
+			Kind:      kind,
 			ToolName:  body.ToolName,
+			ToolUseID: body.ToolUseID,
 			Input:     body.Input,
-			Options:   []string{"allow", "deny"},
+			Questions: body.Questions,
 		}
 		if err := supervisor.RegisterQuestion(ctx, id, question); err != nil {
 			writeError(resp, statusFor(err), err)
@@ -241,15 +277,35 @@ func handleQuestion(
 		}
 		writeJSON(resp, http.StatusAccepted, question)
 	case http.MethodGet:
-		behavior, answered, err := supervisor.PollAnswer(ctx, requestID)
+		pending, err := supervisor.PollAnswer(ctx, requestID)
 		if err != nil {
 			writeError(resp, statusFor(err), err)
 			return
 		}
 		writeJSON(resp, http.StatusOK, map[string]any{
-			"answered": answered,
-			"behavior": behavior,
+			"answered": pending.Answered,
+			"question": pending.Question,
+			"kind":     pending.Answer.Kind,
+			"behavior": pending.Answer.Behavior,
+			"answers":  pending.Answer.Answers,
 		})
+	case http.MethodDelete:
+		// The child's hold expired unanswered, so nothing is waiting on this
+		// request any more. Without this the session keeps reporting it as
+		// pending, and every later read says "parked" forever.
+		//
+		// An empty id is refused rather than treated as a no-op: answering 204
+		// would report success for a request that was never dropped.
+		if requestID == "" {
+			writeError(resp, http.StatusBadRequest,
+				errors.Errorf(ctx, "request_id is required to forget a question"))
+			return
+		}
+		if err := supervisor.ForgetQuestion(ctx, id, requestID); err != nil {
+			writeError(resp, statusFor(err), err)
+			return
+		}
+		resp.WriteHeader(http.StatusNoContent)
 	default:
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))
@@ -355,8 +411,25 @@ func handleEvents(
 }
 
 type answerRequest struct {
-	RequestID string `json:"request_id"`
-	Behavior  string `json:"behavior"`
+	RequestID string            `json:"request_id"`
+	Behavior  string            `json:"behavior"`
+	Answers   map[string]string `json:"answers"`
+}
+
+// answerFrom reads the caller's body as one of the two answer shapes.
+//
+// The field the caller filled decides the kind; Resolve then refuses a kind that
+// does not match the pending request, so a selection aimed at a permission
+// request is a 422 rather than a silent default to allow.
+func answerFrom(body answerRequest) pkg.Answer {
+	if len(body.Answers) > 0 {
+		return pkg.Answer{Kind: pkg.AnswerKindQuestion, Answers: body.Answers}
+	}
+	behavior := body.Behavior
+	if behavior == "" {
+		behavior = "allow"
+	}
+	return pkg.Answer{Kind: pkg.AnswerKindPermission, Behavior: behavior}
 }
 
 func handleAnswer(
@@ -376,10 +449,7 @@ func handleAnswer(
 		writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
 		return
 	}
-	if body.Behavior == "" {
-		body.Behavior = "allow"
-	}
-	if err := supervisor.Answer(ctx, id, body.RequestID, body.Behavior); err != nil {
+	if err := supervisor.Answer(ctx, id, body.RequestID, answerFrom(body)); err != nil {
 		writeError(resp, statusFor(err), err)
 		return
 	}
@@ -395,6 +465,8 @@ func statusFor(err error) int {
 		return http.StatusGone
 	case errors.Is(err, pkg.ErrAnswerUnsupported):
 		return http.StatusConflict
+	case errors.Is(err, pkg.ErrAnswerShapeMismatch):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, pkg.ErrInvalidSpawnOptions):
 		return http.StatusBadRequest
 	case errors.Is(err, pkg.ErrUnknownMacro):

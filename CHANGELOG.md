@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: `pkg.Supervisor` gains `ForgetQuestion`, and `DELETE …/question/{request_id}` exposes it.
+  This is an addition to an exported interface, so an out-of-tree implementer must add the method.
+- fix: a request whose hold expired is now dropped (`DELETE …/question/{request_id}`), instead of
+  being reported as pending for the life of the child. Without it every later `get_pending` said
+  "parked" and every later `send_message` returned that stale request instead of awaiting its own
+  turn.
+- fix: an `AskUserQuestion` that expires unanswered now returns a deny naming the expiry, rather
+  than the permission default of allow — which let the child proceed with no answers at all,
+  silently.
+- fix: a registration carrying an out-of-set `kind` is rejected with `400` instead of creating a
+  request no answer shape can ever match.
+- feat: `get_pending` and `answer_pending` join the client-facing MCP face, so a caller can see
+  what a session is parked on — including an `AskUserQuestion`'s options — and answer it without a
+  second round-trip or a REST call.
+- fix: `send_message` returns as soon as the child registers a request, instead of waiting for the
+  turn to close. The child's permission hold is 90 s, so a caller that only learned of the question
+  at turn-close could never answer inside it — the recorded-but-never-delivered failure this
+  release exists to remove.
+- fix: every child was pointed at `http://localhost:18090` regardless of the daemon's own
+  `--listen`. A wrapper on any other port handed its children the URL of a *different* process, so
+  registrations failed silently and the gate defaulted to allow. The URL is now derived from
+  `--listen` via `pkg.SelfURL`, which also maps a bare port (`:18090`) and a wildcard host
+  (`0.0.0.0`, `::`) to loopback — both are valid listen targets whose naive prefix the child's
+  HTTP client rejects.
+- fix: the permission tool's `updatedInput` for an `AskUserQuestion` must satisfy the tool's own
+  input schema, so it now echoes the original `questions` back beside `answers`. Returning
+  `answers` alone made the child reject the answer with `The required parameter "questions" is
+  missing`.
+- feat: the pending registry carries a kind-discriminated payload instead of a bare allow/deny
+  string. A permission request keeps its tool name and input; an `AskUserQuestion` keeps its
+  `questions[]` list — each prompt with its own `options[]`, `header` and `multiSelect` — so a
+  selection can be recorded rather than coerced into a verdict. Both shapes arrive through the same
+  child-facing `permission_prompt` tool; the tool name is what tells them apart.
+- feat: `POST /api/1.0/sessions/{id}/answer` accepts `{"request_id","answers":{…}}` for a question
+  alongside the existing `{"request_id","behavior"}` for a permission, and
+  `GET …/question/{request_id}` returns the full payload with the recorded answer.
+- feat: an answer whose shape does not match the pending request returns **422 Unprocessable
+  Entity** through a new `ErrAnswerShapeMismatch`, distinct from the existing 409 for an unknown or
+  already-answered request, and leaves the request unanswered.
+
 ## v0.3.0
 
 - feat: serve a client-facing MCP face at `/mcp` on the daemon's own mux, over streamable HTTP, so an

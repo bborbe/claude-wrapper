@@ -37,6 +37,10 @@ type fakeSupervisor struct {
 	getErr   error
 	spawnErr error
 	events   []pkg.Event
+	// forgot records every ForgetQuestion call as {session id, request id}, so a
+	// spec can assert the route passed the ids through rather than only that it
+	// answered 204.
+	forgot [][2]string
 }
 
 func (f *fakeSupervisor) Spawn(_ context.Context, _ pkg.SpawnOptions) (*pkg.Session, error) {
@@ -57,7 +61,7 @@ func (f *fakeSupervisor) Get(_ context.Context, id string) (*pkg.Session, error)
 	return &pkg.Session{ID: id, State: pkg.StateIdle}, nil
 }
 
-func (f *fakeSupervisor) Answer(_ context.Context, _, _, _ string) error {
+func (f *fakeSupervisor) Answer(_ context.Context, _, _ string, _ pkg.Answer) error {
 	return f.getErr
 }
 
@@ -69,8 +73,13 @@ func (f *fakeSupervisor) RegisterQuestion(_ context.Context, _ string, _ pkg.Que
 	return f.getErr
 }
 
-func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (string, bool, error) {
-	return "", false, f.getErr
+func (f *fakeSupervisor) ForgetQuestion(_ context.Context, id, requestID string) error {
+	f.forgot = append(f.forgot, [2]string{id, requestID})
+	return f.getErr
+}
+
+func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (pkg.PendingAnswer, error) {
+	return pkg.PendingAnswer{}, f.getErr
 }
 
 func (f *fakeSupervisor) Stop(_ context.Context, _ string) error {
@@ -144,6 +153,61 @@ var _ = Describe("handler", func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
 		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	It("decodes a question answer body", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"request_id":"r1","answers":{"Pick one":"a"}}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	// A registration with an out-of-set kind would create a request no answer
+	// shape can ever match, so it would 422 forever while the child sat until
+	// its hold expired. Reject it at the door instead.
+	It("rejects an unknown question kind", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"request_id":"r1","kind":"bogus","tool_name":"Bash"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/question", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	// The hold expired unanswered, so nothing waits on the request any more.
+	// The ids must actually reach the supervisor — a handler that answered 204
+	// without dropping anything would otherwise pass.
+	It("forgets the named request on DELETE", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/1.0/sessions/a/question/r1", nil)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusNoContent))
+		Expect(sup.forgot).To(Equal([][2]string{{"a", "r1"}}))
+	})
+
+	// 204 here would report success for a request that was never dropped.
+	It("refuses a DELETE with no request id", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/1.0/sessions/a/question/", nil)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+		Expect(sup.forgot).To(BeEmpty())
+	})
+
+	// A shape mismatch is a caller error, not the unknown-request case: 422
+	// keeps it distinguishable from the 409 the same route returns for a request
+	// that does not exist.
+	It("maps a shape mismatch to 422", func() {
+		sup := &fakeSupervisor{getErr: pkg.ErrAnswerShapeMismatch}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"request_id":"r1","answers":{"Pick one":"a"}}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusUnprocessableEntity))
 	})
 
 	// The replay is the whole point of the route: a subscriber that arrives

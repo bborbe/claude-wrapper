@@ -54,14 +54,18 @@ func (s *scriptedSupervisor) Get(context.Context, string) (*Session, error) {
 	return &Session{ID: "s1", State: state, PendingTurns: s.pendingTurns}, nil
 }
 
-func (s *scriptedSupervisor) Answer(context.Context, string, string, string) error { return nil }
+func (s *scriptedSupervisor) Answer(context.Context, string, string, Answer) error { return nil }
 
 func (s *scriptedSupervisor) RegisterQuestion(context.Context, string, Question) error {
 	return nil
 }
 
-func (s *scriptedSupervisor) PollAnswer(context.Context, string) (string, bool, error) {
-	return "", false, nil
+func (s *scriptedSupervisor) ForgetQuestion(context.Context, string, string) error {
+	return nil
+}
+
+func (s *scriptedSupervisor) PollAnswer(context.Context, string) (PendingAnswer, error) {
+	return PendingAnswer{}, nil
 }
 
 func (s *scriptedSupervisor) Stop(context.Context, string) error { return nil }

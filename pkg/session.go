@@ -97,12 +97,79 @@ func (c Control) Validate() error {
 	return nil
 }
 
-// Question is the permission request a session is parked on.
+// AnswerKind discriminates the two shapes a child can be parked on.
+//
+// They are not interchangeable: a permission request takes allow or deny, while
+// an AskUserQuestion takes a selection among the options it carries. Answering
+// one with the other's shape is refused rather than coerced, because a coerced
+// answer is recorded and never delivered — the failure this model exists to
+// remove.
+type AnswerKind string
+
+const (
+	// AnswerKindPermission is a tool call the gate refused.
+	AnswerKindPermission AnswerKind = "permission"
+	// AnswerKindQuestion is an AskUserQuestion awaiting a selection.
+	AnswerKindQuestion AnswerKind = "question"
+)
+
+// AvailableAnswerKinds is every legal AnswerKind, for validation and iteration.
+var AvailableAnswerKinds = AnswerKinds{
+	AnswerKindPermission,
+	AnswerKindQuestion,
+}
+
+// AnswerKinds is a collection of AnswerKind values.
+type AnswerKinds []AnswerKind
+
+// Contains reports whether the collection holds the given kind.
+func (k AnswerKinds) Contains(kind AnswerKind) bool {
+	for _, candidate := range k {
+		if candidate == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate rejects a kind outside AvailableAnswerKinds.
+func (k AnswerKind) Validate() error {
+	if !AvailableAnswerKinds.Contains(k) {
+		return stderrors.New("invalid answer kind " + string(k))
+	}
+	return nil
+}
+
+// QuestionOption is one labelled choice an AskUserQuestion offers.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// QuestionPrompt is one question inside an AskUserQuestion call.
+//
+// A single call can carry several — three were observed on 2026-10-29 — so the
+// prompts are modelled as a list rather than flattened into one.
+type QuestionPrompt struct {
+	Question    string           `json:"question"`
+	Header      string           `json:"header"`
+	Options     []QuestionOption `json:"options"`
+	MultiSelect bool             `json:"multiSelect"`
+}
+
+// Question is the request a session is parked on.
+//
+// Kind selects which payload is populated: KindPermission fills ToolName, Input
+// and ToolUseID, KindQuestion fills Questions. It replaces the earlier model,
+// whose entire payload was an allow/deny string and which therefore had nowhere
+// to put "option 2 of 4".
 type Question struct {
-	RequestID string         `json:"request_id"`
-	ToolName  string         `json:"tool_name"`
-	Input     map[string]any `json:"input"`
-	Options   []string       `json:"options"`
+	RequestID string           `json:"request_id"`
+	Kind      AnswerKind       `json:"kind"`
+	ToolName  string           `json:"tool_name"`
+	ToolUseID string           `json:"tool_use_id,omitempty"`
+	Input     map[string]any   `json:"input,omitempty"`
+	Questions []QuestionPrompt `json:"questions,omitempty"`
 }
 
 // Session is the REST view of one wrapped claude child.

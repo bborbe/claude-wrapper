@@ -47,12 +47,14 @@ func (s *toolSupervisor) Get(context.Context, string) (*Session, error) {
 	return &Session{ID: "s1", State: s.state, PendingTurns: s.pendingTurns}, nil
 }
 
-func (s *toolSupervisor) Answer(context.Context, string, string, string) error { return nil }
+func (s *toolSupervisor) Answer(context.Context, string, string, Answer) error { return nil }
 
 func (s *toolSupervisor) RegisterQuestion(context.Context, string, Question) error { return nil }
 
-func (s *toolSupervisor) PollAnswer(context.Context, string) (string, bool, error) {
-	return "", false, nil
+func (s *toolSupervisor) ForgetQuestion(context.Context, string, string) error { return nil }
+
+func (s *toolSupervisor) PollAnswer(context.Context, string) (PendingAnswer, error) {
+	return PendingAnswer{}, nil
 }
 
 func (s *toolSupervisor) Stop(context.Context, string) error { return nil }
@@ -128,7 +130,7 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 		}
 	})
 
-	ginkgo.It("lists the five tools a Codex client needs", func() {
+	ginkgo.It("lists every tool a Codex client needs", func() {
 		recorder := post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 
 		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
@@ -151,6 +153,8 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 			string(ToolListSessions),
 			string(ToolGetSession),
 			string(ToolKillSession),
+			string(ToolGetPending),
+			string(ToolAnswerPending),
 		}))
 	})
 

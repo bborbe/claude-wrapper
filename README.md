@@ -57,16 +57,24 @@ server name is chosen at `mcp add` time, not here.
 | tool | what it does |
 |---|---|
 | `spawn_session` | start one child; `cwd`, `model`, `permission_mode` are optional |
-| `send_message` | write one user turn and return the assistant text that closed it |
+| `send_message` | write one user turn and return the assistant text that closed it — or, if the turn parks, the request it parked on |
 | `list_sessions` | every session this wrapper owns |
 | `get_session` | one session's state, model and pending question |
 | `kill_session` | stop one child |
+| `get_pending` | what a session is parked on, with the options its question carries; `null` when it is not waiting |
+| `answer_pending` | answer that request: `behavior` for a permission, `answers` for a question |
 
 `send_message` is the one tool that cannot delegate to REST: `POST
 …/message` answers `202 {"status":"sent"}` and carries no answer, so the tool
 waits for the child's `result` event and returns that event's `result` field. A
 turn that never closes returns a tool error naming the timeout
 (`--mcp-turn-timeout`, default 120s) rather than a success.
+
+**A parked turn returns early.** If the child registers a request mid-turn, the
+tool returns `parked: {…}` with the request inline instead of waiting for the
+turn to close — the child's permission hold is 90 s, so a caller that only
+learned of the question at turn-close could never answer inside it. Answer it
+with `answer_pending`; the child then continues the same turn.
 
 ### Who may call it
 
@@ -152,10 +160,74 @@ session.
 
 ### POST /api/1.0/sessions/{id}/answer
 
-Answers the permission request the session is parked on.
-Body: `{"request_id": "...", "behavior": "allow"}`. The answer is written to the
-same child that raised the request — the prompt is not reachable from anywhere
-else, so answering a store would answer nothing.
+Answers the request the session is parked on. The answer is written to the same
+child that raised the request — the prompt is not reachable from anywhere else,
+so answering a store would answer nothing.
+
+A child is parked on one of **two shapes**, and they are not interchangeable.
+Both arrive through the same child-facing `permission_prompt` tool; the tool
+name is what tells them apart.
+
+**Permission** — a tool call the gate refused. The answer is a verdict.
+
+```
+POST /api/1.0/sessions/8f2c/answer
+{"request_id": "dmhm90gfxysg", "behavior": "deny"}
+
+→ 200 {"status": "answered"}
+```
+
+The child then receives the verdict as its own tool result:
+
+```
+{"content": "denied by claude-wrapper", "is_error": true, "type": "tool_result"}
+```
+
+**Question** — an `AskUserQuestion`. The answer is a selection among the options
+the question carries, keyed by the question text.
+
+```
+POST /api/1.0/sessions/8f2c/answer
+{"request_id": "dmhmc9mc11z4", "answers": {"Which nonce?": "QUESTION-NONCE-9T2K"}}
+
+→ 200 {"status": "answered"}
+```
+
+The child then receives:
+
+```
+{"content": "Your questions have been answered: \"Which nonce?\"=\"QUESTION-NONCE-9T2K\". You can now continue with these answers in mind.", "type": "tool_result"}
+```
+
+`GET /api/1.0/sessions/{id}/question/{request_id}` reads the pending request —
+its `kind`, the payload the child sent, and the recorded answer once one exists:
+
+```
+{"answered": false, "kind": "", "behavior": "", "answers": null,
+ "question": {"request_id": "dmhmc9mc11z4", "kind": "question",
+              "tool_name": "AskUserQuestion",
+              "questions": [{"question": "Which nonce?", "header": "Nonce",
+                             "options": [{"label": "QUESTION-NONCE-9T2K",
+                                          "description": "Select the token QUESTION-NONCE-9T2K."},
+                                         {"label": "other",
+                                          "description": "Provide a different nonce."}],
+                             "multiSelect": false}]}}
+```
+
+`input.questions` is a **list**: one call can carry several questions, each with
+its own `options[]`, `header` and `multiSelect`. A payload whose shape does not
+match the pending request is refused with `422` and leaves the request
+unanswered — see *Failure modes*.
+
+### DELETE /api/1.0/sessions/{id}/question/{request_id}
+
+Drops a request nothing is waiting on any more — the child-facing tool calls this
+when its hold expires unanswered. `204` on success, `400` without a
+`request_id`.
+
+Without it a session keeps reporting an abandoned request: every later
+`get_pending` says "parked" and every later `send_message` returns that stale
+request instead of awaiting its own turn.
 
 ### POST /api/1.0/sessions/{id}/commands
 
@@ -235,10 +307,11 @@ Kills the child. `204` on success.
 
 | Status | Meaning |
 |---|---|
-| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands` |
+| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
 | `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle |
 | `410` | child exited — it is gone and accepts no control |
+| `422` | the answer's shape does not match the pending request — `answers` aimed at a permission request, or `behavior` aimed at a question. Nothing was recorded and the request is still unanswered |
 | `503` | child unreachable — the process exists but its stream is not responding |
 
 ## Not in phase 1
@@ -247,11 +320,22 @@ Wrapping TUI sessions; multi-host supervision; auth beyond the localhost bind;
 caller-supplied command lists; and any sequencing beyond a linear list — no
 branches, loops or retries between steps.
 
-The MCP face carries the same limits. It is also **plain turns only**: a client
-cannot yet answer the permission prompt or `AskUserQuestion` a child raises
-(phase 2), and cannot change a running session's mode or model (phase 3). Until
-then `spawn_session` defaults to a permissive mode so gates never fire — see
-*The permissive-spawn crutch* above.
+The MCP face carries the same limits, with one exception since phase 2: a client
+**can** now answer the permission prompt or `AskUserQuestion` a child raises —
+`get_pending` reads the request with the options it carries, `answer_pending`
+answers it, and `send_message` returns a parked turn early so the answer lands
+inside the child's 90 s hold. What it still cannot do is change a running
+session's mode or model (phase 3).
+
+`spawn_session` still defaults to a permissive mode so gates never fire, and it
+stays a default rather than a requirement: pass `permission_mode: "default"` to
+let the gates fire and drive them through `get_pending` / `answer_pending`.
+
+⚠️ An answer is only delivered if the **child** consumes it. A `200`, an
+`ANSWERED` and a cleared board card all coexist with a session still parked —
+measured 2026-10-29, when an answer was recorded and never delivered and a worker
+sat on its modal for three hours. See
+[`docs/regression-2026-10-29-answer-recorded-not-delivered.md`](docs/regression-2026-10-29-answer-recorded-not-delivered.md).
 
 ## License
 
