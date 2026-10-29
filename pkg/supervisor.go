@@ -14,6 +14,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +30,28 @@ type SpawnOptions struct {
 	Model            string `json:"model"`
 	PermissionMode   string `json:"permission_mode"`
 	PermissionPrompt string `json:"permission_prompt"`
+	// Env is merged OVER this process's environment, never substituted for it.
+	//
+	// A caller that resolved an environment for the child — a mode handover, a
+	// router base URL, a per-call override — has no other way to hand it over,
+	// and the loss is invisible from the outside: the child starts, answers and
+	// behaves differently. Replacing the environment instead of merging would
+	// drop PATH and HOME and break the child outright, which is why the
+	// inherited half is always kept.
+	Env map[string]string `json:"env"`
+	// Resume continues an existing conversation instead of starting one.
+	//
+	// The child's claude session id is then the RESUMED id, not the id this
+	// supervisor minted for it. A caller that needs the child's id reads it from
+	// the child's own `system`/`init` event rather than from the spawn response.
+	Resume string `json:"resume"`
+	// MCPConfigs are additional MCP config files, loaded alongside the generated
+	// one.
+	//
+	// This is what makes a launcher's own config reachable: it arrives as a CLI
+	// flag, not as a setting, so no setting source can reach it, and a child
+	// without it has measurably fewer servers than its hand-started twin.
+	MCPConfigs []string `json:"mcp_configs"`
 }
 
 // Supervisor owns the claude children this process spawned.
@@ -204,6 +229,14 @@ func newID() string {
 }
 
 func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOptions) (*child, error) {
+	// Validated first, so a refusal costs no temp file: writeMCPConfig below
+	// already writes one, and a rejected spawn must leave nothing behind.
+	if err := validateEnv(ctx, options.Env); err != nil {
+		return nil, err
+	}
+	if err := validateArgv(ctx, options); err != nil {
+		return nil, err
+	}
 	mcpConfig, err := writeMCPConfig(ctx, id)
 	if err != nil {
 		return nil, err
@@ -215,6 +248,10 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	// #nosec G204 -- claudeBin is an operator-supplied flag, never request input.
 	cmd := exec.CommandContext(s.ctx, s.claudeBin, buildArgs(id, options, mcpConfig)...)
 	cmd.Dir = options.Cwd
+	// The child inherits THIS process's environment unless it is given its own,
+	// so a caller's resolved environment would otherwise be discarded without a
+	// word — the child starts, answers, and behaves differently.
+	cmd.Env = childEnv(os.Environ(), options.Env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -305,11 +342,23 @@ func buildArgs(id string, options SpawnOptions, mcpConfig string) []string {
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
-		"--session-id", id,
-		"--permission-mode", mode,
-		"--mcp-config", mcpConfig,
-		"--permission-prompt-tool", "mcp__claude-wrapper__" + PermissionToolName,
 	}
+	// Resuming and minting an id are mutually exclusive: the resumed
+	// conversation already has one, and passing both would leave the CLI holding
+	// two identities for a single conversation.
+	if options.Resume != "" {
+		args = append(args, "--resume", options.Resume)
+	} else {
+		args = append(args, "--session-id", id)
+	}
+	args = append(args,
+		"--permission-mode", mode,
+		// --mcp-config is variadic, so the extra files belong immediately after
+		// the generated one and before the next flag.
+		"--mcp-config", mcpConfig,
+	)
+	args = append(args, options.MCPConfigs...)
+	args = append(args, "--permission-prompt-tool", "mcp__claude-wrapper__"+PermissionToolName)
 	if options.Model != "" {
 		args = append(args, "--model", options.Model)
 	}
@@ -317,6 +366,97 @@ func buildArgs(id string, options SpawnOptions, mcpConfig string) []string {
 		args = append(args, "--permission-prompts", options.PermissionPrompt)
 	}
 	return args
+}
+
+// validateEnv refuses an environment key that cannot be expressed as KEY=VALUE.
+//
+// Refused rather than filtered, on the same reasoning the option itself exists
+// for: a key silently dropped is a value the child does not have, and a child
+// missing one value looks exactly like one that was never given it.
+//
+// A NUL in the VALUE is refused too, and not for symmetry: execve treats each
+// entry as an opaque NUL-terminated string, so a value containing one reaches
+// os/exec and fails at cmd.Start with EINVAL — which surfaces as a 500 for what
+// is plainly a caller error, the exact confusion the statusFor mapping exists to
+// avoid.
+func validateEnv(ctx context.Context, env map[string]string) error {
+	for key, value := range env {
+		if key == "" || strings.ContainsAny(key, "=\x00") {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "env key %q is not a valid environment name", key)
+		}
+		if strings.ContainsRune(value, 0) {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "env value for %q contains a NUL byte", key)
+		}
+	}
+	return nil
+}
+
+// uuidPattern is the shape `claude` accepts for a session id. newID mints one
+// and its doc records the CLI's refusal ("Invalid session ID. Must be a valid
+// UUID.") when the shape is wrong; `--resume` takes the same kind of value, so a
+// malformed one has to be refused here rather than left to exit before producing
+// a single event.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// validateArgv refuses values that would not reach the child as the argument
+// they look like.
+//
+// ⚠️ This is not cosmetic validation. `--mcp-config` is VARIADIC, so every entry
+// is appended straight into argv — an entry beginning with `-` is parsed as a
+// FLAG rather than a path, and `mcp_configs: ["--dangerously-skip-permissions"]`
+// would silently change the child's permission posture instead of being refused.
+// The same reasoning covers `resume`, which sits immediately after `--resume` and
+// would otherwise consume the next flag as its value.
+func validateArgv(ctx context.Context, options SpawnOptions) error {
+	for _, config := range options.MCPConfigs {
+		if config == "" {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "mcp_configs contains an empty entry")
+		}
+		if strings.HasPrefix(config, "-") {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions,
+				"mcp config %q begins with '-' and would be parsed as a flag", config)
+		}
+		// Same reason as the env-value check: a NUL survives JSON, is rejected by
+		// os/exec at cmd.Start, and surfaces as a 500 for what is plainly a caller
+		// error. `resume` cannot carry one — uuidPattern already excludes it.
+		if strings.ContainsRune(config, 0) {
+			return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "mcp config %q contains a NUL byte", config)
+		}
+	}
+	if options.Resume != "" && !uuidPattern.MatchString(options.Resume) {
+		return errors.Wrapf(ctx, ErrInvalidSpawnOptions, "resume %q is not a UUID", options.Resume)
+	}
+	return nil
+}
+
+// childEnv merges overrides over the inherited environment.
+//
+// An override REPLACES the inherited value for its key rather than appending a
+// second copy: a duplicated key resolves to whichever copy the child reads
+// first, which is not something a caller can observe from outside. Keys are
+// emitted in sorted order so one spawn's environment is reproducible.
+func childEnv(inherited []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return inherited
+	}
+	merged := make([]string, 0, len(inherited)+len(overrides))
+	for _, entry := range inherited {
+		if key, _, ok := strings.Cut(entry, "="); ok {
+			if _, replaced := overrides[key]; replaced {
+				continue
+			}
+		}
+		merged = append(merged, entry)
+	}
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		merged = append(merged, key+"="+overrides[key])
+	}
+	return merged
 }
 
 // child is one running claude process and the state read off its stream.

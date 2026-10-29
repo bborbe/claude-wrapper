@@ -50,9 +50,22 @@ One session. `404` when the id is unknown.
 
 ### POST /api/1.0/sessions
 
-Spawns a child. Body is optional: `{"cwd": "...", "model": "...",
-"permission_mode": "...", "permission_prompt": "..."}`. Returns `201` with the
+Spawns a child. Every field in the body is optional, but the body itself must be
+present — an empty request is rejected as `400 decode body failed`:
+`{"cwd": "...", "model": "...",
+"permission_mode": "...", "permission_prompt": "...", "env": {...},
+"resume": "<session-id>", "mcp_configs": ["..."]}`. Returns `201` with the
 session.
+
+- `env` is **merged over** this process's environment, never substituted for it:
+  the child keeps `PATH` and `HOME`, and an override replaces its inherited key
+  rather than appearing twice.
+- `resume` continues an existing conversation. The child's claude session id is
+  then the resumed one, not the id this endpoint returns — read it from the
+  child's own `init` event. It must be a UUID.
+- `mcp_configs` are extra MCP config files, loaded alongside the generated one.
+  This is how a launcher's own `--mcp-config` file reaches the child: it arrives
+  as a CLI flag, not as a setting, so no setting source can reach it.
 
 ### POST /api/1.0/sessions/{id}/answer
 
@@ -69,6 +82,7 @@ Kills the child. `204` on success.
 
 | Status | Meaning |
 |---|---|
+| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
 | `409` | answered-already, or the session holds no open question to answer |
 | `410` | child exited — it is gone and accepts no control |

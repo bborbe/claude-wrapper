@@ -43,7 +43,10 @@ func Sessions(supervisor pkg.Supervisor) http.Handler {
 			}
 			session, err := supervisor.Spawn(ctx, options)
 			if err != nil {
-				writeError(resp, http.StatusInternalServerError, err)
+				// statusFor, not a hardcoded 500: a refused option set is the
+				// caller's error and must read as one, or a spawn that never
+				// started looks like a server fault.
+				writeError(resp, statusFor(err), err)
 				return
 			}
 			writeJSON(resp, http.StatusCreated, session)
@@ -311,6 +314,8 @@ func statusFor(err error) int {
 		return http.StatusGone
 	case errors.Is(err, pkg.ErrAnswerUnsupported):
 		return http.StatusConflict
+	case errors.Is(err, pkg.ErrInvalidSpawnOptions):
+		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
 	}

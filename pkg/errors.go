@@ -19,4 +19,8 @@ var (
 	ErrSessionExited = stderrors.New("session exited")
 	// ErrAnswerUnsupported is returned when a session declares no answer control.
 	ErrAnswerUnsupported = stderrors.New("answer not supported")
+	// ErrInvalidSpawnOptions is returned when the caller's spawn options cannot
+	// be expressed as a child command, so the request is refused before any child
+	// or temp file exists.
+	ErrInvalidSpawnOptions = stderrors.New("invalid spawn options")
 )
