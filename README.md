@@ -1,6 +1,7 @@
 # claude-wrapper
 
-Owns a `claude` child process and puts a REST face on it.
+Owns a `claude` child process and puts two faces on it: REST, and an MCP server
+a Codex conversation can drive.
 
 A store that observes sessions someone else started can *report* a question. Only
 the process holding the child can *answer* one. That is the whole reason this
@@ -18,6 +19,62 @@ make run            # localhost:18090
 make test
 make precommit      # the gate
 ```
+
+## MCP
+
+`/mcp` is the client-facing MCP face: an MCP client drives a session through it
+instead of speaking REST. It is served on the daemon's own mux and listener —
+streamable HTTP, no second port and no second process.
+
+⚠️ **Two MCP servers point in opposite directions.** `--mcp-stdio` is
+*child-facing*: a stdio server the wrapper gives to its own child so the child
+can ask for a permission verdict. `/mcp` is *client-facing*: a Codex
+conversation driving a child. Different direction, different process boundary.
+
+### Pointing a client at it
+
+The config block below is the shape the spike used, verbatim. Any MCP client
+that speaks streamable HTTP takes the same two lines:
+
+```toml
+[mcp_servers.claude-wrapper]
+url = "http://127.0.0.1:18090/mcp"
+```
+
+For Codex, `codex mcp add` writes that block:
+
+```bash
+codex mcp add claude-wrapper --url http://127.0.0.1:18090/mcp
+codex mcp list          # confirm: transport streamable_http, status enabled
+```
+
+Codex namespaces the tools it exposes as `mcp__<server_name>__<tool_name>`, so
+the five below appear as `mcp__claude_wrapper__spawn_session` and so on. The
+server name is chosen at `mcp add` time, not here.
+
+### Tools
+
+| tool | what it does |
+|---|---|
+| `spawn_session` | start one child; `cwd`, `model`, `permission_mode` are optional |
+| `send_message` | write one user turn and return the assistant text that closed it |
+| `list_sessions` | every session this wrapper owns |
+| `get_session` | one session's state, model and pending question |
+| `kill_session` | stop one child |
+
+`send_message` is the one tool that cannot delegate to REST: `POST
+…/message` answers `202 {"status":"sent"}` and carries no answer, so the tool
+waits for the child's `result` event and returns that event's `result` field. A
+turn that never closes returns a tool error naming the timeout
+(`--mcp-turn-timeout`, default 120s) rather than a success.
+
+### The permissive-spawn crutch
+
+`spawn_session` defaults `permission_mode` to `bypassPermissions`. That is a
+deliberate phase-1 choice, not a safe default: a real session hits a gate on its
+first file write, and this phase exists to prove plain turns. It is removed in
+**phase 2**, where the client sees the prompt and answers it instead of skipping
+it.
 
 ## REST
 
@@ -163,3 +220,9 @@ Kills the child. `204` on success.
 Wrapping TUI sessions; multi-host supervision; auth beyond the localhost bind;
 caller-supplied command lists; and any sequencing beyond a linear list — no
 branches, loops or retries between steps.
+
+The MCP face carries the same limits. It is also **plain turns only**: a client
+cannot yet answer the permission prompt or `AskUserQuestion` a child raises
+(phase 2), and cannot change a running session's mode or model (phase 3). Until
+then `spawn_session` defaults to a permissive mode so gates never fire — see
+*The permissive-spawn crutch* above.

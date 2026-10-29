@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: serve a client-facing MCP face at `/mcp` on the daemon's own mux, over streamable HTTP, so an
+  MCP client (Codex) can drive a Claude session instead of only REST. Five tools —
+  `spawn_session`, `send_message`, `list_sessions`, `get_session`, `kill_session`. This is the
+  opposite direction from `--mcp-stdio`, which is child-facing: that one gives a child a permission
+  tool, this one lets a client drive a child.
+- feat: `send_message` returns the assistant text that closed the turn, taken from the child's
+  `result` event. The REST `POST …/message` route answers `202 {"status":"sent"}` and carries no
+  answer, so this is the one tool that cannot delegate to it.
+- feat: a turn that never closes returns a tool error naming the timeout (`--mcp-turn-timeout`,
+  default 120s) rather than a success.
+
 ## v0.2.0
 
 - feat: run a named macro — a fixed, ordered list of user turns — against one child, writing each step

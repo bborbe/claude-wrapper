@@ -25,6 +25,8 @@ func main() {
 	mcpLog := flag.String("mcp-log", "", "path to append raw permission requests to")
 	wrapperURL := flag.String("wrapper-url", "", "base URL of the wrapper this tool reports to")
 	sessionID := flag.String("session-id", "", "session id this tool answers for")
+	mcpTurnTimeout := flag.Duration("mcp-turn-timeout", 120*time.Second,
+		"how long an MCP send_message waits for the child's turn to close")
 	flag.Parse()
 
 	if *mcpStdio {
@@ -55,6 +57,15 @@ func main() {
 	mux.Handle("/healthz", handler.Healthz())
 	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
 	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer, locks))
+	// The client-facing MCP face: Codex → wrapper, over streamable HTTP on this
+	// same listener. Not to be confused with --mcp-stdio, which is child-facing
+	// (the wrapper giving its own child a permission tool) and runs in a
+	// separate process.
+	mux.Handle("/mcp", &pkg.MCPToolServer{
+		Supervisor:  supervisor,
+		Locks:       locks,
+		TurnTimeout: *mcpTurnTimeout,
+	})
 
 	server := &http.Server{
 		Addr:              *listen,
