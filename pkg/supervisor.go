@@ -532,17 +532,26 @@ func (c *child) send(ctx context.Context, text string) error {
 	if err != nil {
 		return errors.Wrapf(ctx, err, "marshal message failed")
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if _, err := c.stdin.Write(append(encoded, '\n')); err != nil {
-		return errors.Wrapf(ctx, err, "write message to session %q failed", c.id)
-	}
-	// Mark the turn before returning: the child's own message_start arrives
-	// later, and until it does State still reads idle, so this counter is what
-	// makes a written turn visible to a caller that must not write mid-turn.
+	// Count the turn BEFORE the write, not after it.
+	//
+	// apply() takes only c.mutex, so a result applied between the write
+	// returning and a later increment would find the counter at zero, skip its
+	// decrement, and leave the count stuck at one for the child's lifetime —
+	// refusing every subsequent run on a child that is actually idle. Counting
+	// first makes the window impossible; a failed write rolls it back.
 	c.mutex.Lock()
 	c.pendingTurns++
 	c.mutex.Unlock()
+
+	c.writeMu.Lock()
+	_, writeErr := c.stdin.Write(append(encoded, '\n'))
+	c.writeMu.Unlock()
+	if writeErr != nil {
+		c.mutex.Lock()
+		c.pendingTurns--
+		c.mutex.Unlock()
+		return errors.Wrapf(ctx, writeErr, "write message to session %q failed", c.id)
+	}
 	return nil
 }
 
