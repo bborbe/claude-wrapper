@@ -5,11 +5,13 @@
 package handler_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 	. "github.com/onsi/ginkgo/v2"
@@ -93,6 +95,18 @@ func (f *fakeSupervisor) Subscribe(_ context.Context, _ string) ([]pkg.Event, <-
 	live := make(chan pkg.Event)
 	close(live)
 	return f.events, live, func() {}, nil
+}
+
+// openSupervisor hands the events route a LIVE channel instead of fakeSupervisor's
+// closed one, so a spec can write to the stream after the server's write deadline has
+// passed. Nothing else about it matters.
+type openSupervisor struct {
+	fakeSupervisor
+	live chan pkg.Event
+}
+
+func (f *openSupervisor) Subscribe(_ context.Context, _ string) ([]pkg.Event, <-chan pkg.Event, func(), error) {
+	return nil, f.live, func() {}, nil
 }
 
 var _ = Describe("handler", func() {
@@ -228,6 +242,57 @@ var _ = Describe("handler", func() {
 		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"assistant"}`))
 		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"result"}`))
 		Expect(rec.Body.String()).To(ContainSubstring("event: end"))
+	})
+
+	// ⚠️ The regression this spec exists for. `main.go` sets `WriteTimeout: 60s`, and Go
+	// turns that into a deadline on the connection when the request is read. A deadline
+	// closes nothing — it makes the NEXT WRITE fail — so a stream that writes nothing for a
+	// minute looks healthy right up to its next event, and that write then ends the
+	// response. The subscriber sees the body cut mid-stream (a Node client reports
+	// `TypeError: terminated`) and a perfectly healthy child is recorded as a dead worker.
+	// A recorder cannot express this (it reports ErrNotSupported), so the spec runs a real
+	// server with a short WriteTimeout and writes an event after the deadline has passed.
+	It("keeps the stream open past the server's WriteTimeout", func() {
+		live := make(chan pkg.Event, 1)
+		sup := &openSupervisor{live: live}
+		srv := httptest.NewUnstartedServer(handler.Session(sup, nil, pkg.NewSessionLocks()))
+		srv.Config.WriteTimeout = 100 * time.Millisecond
+		srv.Start()
+		defer srv.Close()
+
+		// Every blocking step is bounded. A spec that waits on a socket that never answers
+		// does not fail — it hangs until the 10-minute package timeout, which reads as an
+		// infrastructure problem rather than as the defect under test.
+		type response struct {
+			resp *http.Response
+			err  error
+		}
+		opened := make(chan response, 1)
+		go func() {
+			resp, err := http.Get(srv.URL + "/api/1.0/sessions/a/events")
+			opened <- response{resp, err}
+		}()
+
+		var open response
+		Eventually(opened, 3*time.Second).Should(Receive(&open))
+		Expect(open.err).NotTo(HaveOccurred())
+		defer func() { _ = open.resp.Body.Close() }()
+		Expect(open.resp.StatusCode).To(Equal(http.StatusOK))
+
+		// Well past the write timeout. Without the cleared deadline this event's write
+		// fails, the handler returns, and the body ends instead of carrying the frame.
+		time.Sleep(300 * time.Millisecond)
+		live <- pkg.Event{"type": "assistant", "late": true}
+
+		frames := make(chan string, 1)
+		go func() {
+			line, _ := bufio.NewReader(open.resp.Body).ReadString('\n')
+			frames <- line
+		}()
+
+		var line string
+		Eventually(frames, 3*time.Second).Should(Receive(&line))
+		Expect(line).To(ContainSubstring(`{"late":true,"type":"assistant"}`))
 	})
 
 	It("refuses a non-GET on the events route", func() {

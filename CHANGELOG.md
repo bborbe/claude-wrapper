@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.4.0
 
+- fix: **the event stream no longer dies at the server's 60 s `WriteTimeout`.** `GET
+  …/sessions/{id}/events` is an SSE response that can legitimately write nothing for
+  minutes — a child parked on a permission prompt says nothing until it is answered — but
+  `main.go` sets `WriteTimeout: 60s`, and Go applies that as a connection deadline at the
+  moment the request is read. A deadline closes nothing: it makes the **next write** fail,
+  so the stream looks healthy right up to the first event after the 60 s mark, and that
+  write then ends the response. A subscriber sees a body cut mid-stream, which a Node
+  client reports as `TypeError: terminated` — how a healthy child gets recorded as a dead
+  worker. `handleEvents` now clears the deadline, exactly as the macro route and the MCP
+  tool already did. Measured before the fix: a stream opened at `t0`, a turn sent after the
+  deadline, `curl: (18) transfer closed with outstanding read data remaining` at
+  `time_total=73.5 s` with `size` unchanged since the replay. Also: the response headers are
+  now flushed before the first frame, so a subscriber to a child with an empty replay can
+  tell "connected and quiet" from "not connected yet".
 - feat: `pkg.Supervisor` gains `ForgetQuestion`, and `DELETE …/question/{request_id}` exposes it.
   This is an addition to an exported interface, so an out-of-tree implementer must add the method.
 - fix: a request whose hold expired is now dropped (`DELETE …/question/{request_id}`), instead of

@@ -371,10 +371,32 @@ func handleEvents(
 	}
 	defer cancel()
 
+	// ⚠️ An SSE response outlives the server's WriteTimeout by design, and it must say so
+	// explicitly. `main.go` sets `WriteTimeout: 60s`, which Go applies as a deadline on the
+	// connection at the moment the request is read — and a deadline does not close the
+	// connection, it makes the NEXT WRITE fail. A child that parks on a permission prompt
+	// writes nothing for minutes, so the stream looks healthy right up to the first event
+	// after the 60s mark; that write then fails, this handler returns, and the subscriber's
+	// body is cut mid-stream. A Node client surfaces that as `TypeError: terminated`, which
+	// is how a perfectly healthy child gets recorded as a dead worker.
+	// Best effort: a recorder under test does not implement deadlines, and refusing the
+	// stream over an unsupported write deadline would make the route untestable for no gain.
+	if err := http.NewResponseController(resp).SetWriteDeadline(time.Time{}); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) {
+		writeError(resp, http.StatusInternalServerError,
+			errors.Wrapf(ctx, err, "clear write deadline failed"))
+		return
+	}
+
 	resp.Header().Set("Content-Type", "text/event-stream")
 	resp.Header().Set("Cache-Control", "no-cache")
 	resp.Header().Set("Connection", "keep-alive")
 	resp.WriteHeader(http.StatusOK)
+	// Flush the headers now, before any frame. Without this a subscriber to a child with
+	// an empty replay receives no byte at all until the child next speaks, so its HTTP
+	// client cannot resolve the response and "connected and quiet" is indistinguishable
+	// from "not connected yet".
+	flusher.Flush()
 
 	writeFrame := func(event pkg.Event) bool {
 		encoded, marshalErr := json.Marshal(event)
