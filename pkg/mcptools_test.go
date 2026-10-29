@@ -20,14 +20,16 @@ import (
 // toolSupervisor answers each Send with a `result` event carrying the reply,
 // so a spec observes the tool's return rule without a real child.
 type toolSupervisor struct {
-	mutex       sync.Mutex
-	live        chan Event
-	emitted     []Event
-	sent        []string
-	reply       string
-	neverClose  bool
-	errorReply  bool
-	spawnedMode string
+	mutex        sync.Mutex
+	live         chan Event
+	emitted      []Event
+	sent         []string
+	reply        string
+	neverClose   bool
+	errorReply   bool
+	spawnedMode  string
+	state        State
+	pendingTurns int
 }
 
 func (s *toolSupervisor) Spawn(_ context.Context, options SpawnOptions) (*Session, error) {
@@ -42,7 +44,7 @@ func (s *toolSupervisor) List(context.Context) ([]Session, error) {
 }
 
 func (s *toolSupervisor) Get(context.Context, string) (*Session, error) {
-	return &Session{ID: "s1", State: StateIdle}, nil
+	return &Session{ID: "s1", State: s.state, PendingTurns: s.pendingTurns}, nil
 }
 
 func (s *toolSupervisor) Answer(context.Context, string, string, string) error { return nil }
@@ -117,6 +119,7 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 		supervisor = &toolSupervisor{
 			live:  make(chan Event, 64),
 			reply: "SPIKE-OK",
+			state: StateIdle,
 		}
 		server = &MCPToolServer{
 			Supervisor:  supervisor,
@@ -220,7 +223,7 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 		post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
 			"params":{"name":"spawn_session","arguments":{"cwd":"/tmp"}}}`)
 
-		gomega.Expect(supervisor.spawnedMode).To(gomega.Equal(defaultPermissionMode))
+		gomega.Expect(supervisor.spawnedMode).To(gomega.Equal(string(defaultPermissionMode)))
 	})
 
 	// A typo'd mode handed to Spawn unchecked would start a child that behaves
@@ -333,5 +336,62 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 			httptest.NewRequest(http.MethodPost, "/mcp", nil))
 
 		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusServiceUnavailable))
+	})
+	// The Host header is what a rebinding page cannot forge: it re-resolves the
+	// name but the header still carries the attacker's hostname.
+	ginkgo.It("rejects a non-loopback Host", func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		request.Host = "attacker.example"
+		request.Header.Set("Content-Type", "application/json")
+		server.ServeHTTP(recorder, request)
+
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusForbidden))
+	})
+
+	// A POST with no Content-Type is also a CORS simple request, so tolerating
+	// it would reopen the preflight bypass.
+	ginkgo.It("rejects an absent Content-Type", func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		request.Host = loopbackHost
+		server.ServeHTTP(recorder, request)
+
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusUnsupportedMediaType))
+	})
+
+	// Truncating silently would surface as a -32700 parse error the client
+	// cannot tell from malformed JSON.
+	ginkgo.It("rejects an oversized body", func() {
+		huge := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":"` +
+			strings.Repeat("x", maxMCPBody) + `"}`
+		recorder := post(server, huge)
+
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusRequestEntityTooLarge))
+	})
+
+	// An explicit mode must reach the child unchanged.
+	ginkgo.It("passes an explicit permission_mode through", func() {
+		post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+			"params":{"name":"spawn_session",
+			"arguments":{"permission_mode":"acceptEdits"}}}`)
+
+		gomega.Expect(supervisor.spawnedMode).To(gomega.Equal("acceptEdits"))
+	})
+
+	// The lock excludes writers, but not a turn already open on the child — the
+	// timeout path releases while the child is still generating.
+	ginkgo.It("refuses a turn while the child already has one open", func() {
+		supervisor.pendingTurns = 1
+
+		recorder := post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/call",
+			"params":{"name":"send_message","arguments":{"session_id":"s1","text":"x"}}}`)
+
+		result, ok := decode(recorder)["result"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(result["isError"]).To(gomega.BeTrue())
+		gomega.Expect(supervisor.sent).To(gomega.BeEmpty())
 	})
 })

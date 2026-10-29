@@ -79,9 +79,14 @@ turn that never closes returns a tool error naming the timeout
   same-origin, and the page can then read the replies. With `spawn_session` on
   the other end that is remote code execution as the daemon user. An absent
   `Origin` is allowed, because a non-browser client (Codex, curl) sends none.
+- **The socket's own local address must be loopback too.** The `Host` header is
+  client-supplied, so on a non-loopback bind (`--listen 0.0.0.0:18090`) any
+  remote client could send `Host: localhost` and pass the header check. The
+  local address is what the listener actually bound, so the guard follows it.
 - **The body must be `application/json`.** A `text/plain` POST is a CORS "simple
   request" and skips preflight entirely, so the declared type is checked rather
-  than assumed. An absent `Content-Type` is rejected for the same reason.
+  than assumed. An absent `Content-Type` is rejected for the same reason, and a
+  body over 1 MiB is refused with `413` rather than truncated into a parse error.
 - **`permission_mode` must be one of** `default`, `acceptEdits`,
   `bypassPermissions`, `plan`. An unrecognised value is refused rather than
   handed to the child.

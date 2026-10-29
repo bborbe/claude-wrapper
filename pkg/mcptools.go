@@ -49,7 +49,7 @@ const (
 	// gates never fire. This is a deliberate, temporary choice rather than a
 	// safe default: it is removed in phase 2, when Codex learns to answer the
 	// gate instead of skipping it.
-	defaultPermissionMode = "bypassPermissions"
+	defaultPermissionMode PermissionMode = PermissionModeBypassPermissions
 )
 
 // ToolName is the name of one MCP tool. The set is closed: AvailableToolNames
@@ -76,15 +76,38 @@ func AvailableToolNames() []ToolName {
 	}
 }
 
-// permissionModes is the set of --permission-mode values a child accepts. A
-// client-supplied mode is checked against it: an unrecognised value handed to
-// Spawn would start a child that behaves differently from what the caller asked
-// for, with nothing reporting the typo.
-var permissionModes = map[string]bool{
-	"default":           true,
-	"acceptEdits":       true,
-	"bypassPermissions": true,
-	"plan":              true,
+// PermissionMode is a --permission-mode value a child accepts. The set is
+// closed: AvailablePermissionModes is the single list.
+type PermissionMode string
+
+// The permission modes a child accepts.
+const (
+	PermissionModeDefault           PermissionMode = "default"
+	PermissionModeAcceptEdits       PermissionMode = "acceptEdits"
+	PermissionModeBypassPermissions PermissionMode = "bypassPermissions"
+	PermissionModePlan              PermissionMode = "plan"
+)
+
+// AvailablePermissionModes is every mode spawn_session will pass to a child.
+func AvailablePermissionModes() []PermissionMode {
+	return []PermissionMode{
+		PermissionModeDefault,
+		PermissionModeAcceptEdits,
+		PermissionModeBypassPermissions,
+		PermissionModePlan,
+	}
+}
+
+// isPermissionMode reports whether a client-supplied mode is one this server
+// will hand to Spawn. An unrecognised value would start a child that behaves
+// differently from what the caller asked for, with nothing reporting the typo.
+func isPermissionMode(mode string) bool {
+	for _, known := range AvailablePermissionModes() {
+		if string(known) == mode {
+			return true
+		}
+	}
+	return false
 }
 
 // rpcError is a JSON-RPC protocol-level error.
@@ -141,6 +164,17 @@ func (s *MCPToolServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 // A present Origin must be loopback, which is what stops a rebinding page: its
 // Origin is the attacker's hostname even though the socket reached 127.0.0.1.
 func originAllowed(req *http.Request) bool {
+	// The socket's own local address is what the listener ACTUALLY bound. The
+	// Host header is client-supplied, so on a non-loopback bind any remote
+	// client could send "Host: localhost" and pass the check below; this makes
+	// the guard follow the real bind. Absent in a recorder under test, which is
+	// why the check is conditional.
+	if addr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		if host, _, err := net.SplitHostPort(addr.String()); err == nil &&
+			!isLoopbackHost(host) {
+			return false
+		}
+	}
 	if !isLoopbackHost(req.Host) {
 		return false
 	}
@@ -194,9 +228,15 @@ func (s *MCPToolServer) handlePost(resp http.ResponseWriter, req *http.Request) 
 			&rpcError{Code: -32603, Message: "clear write deadline failed"})
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(req.Body, maxMCPBody))
+	// One byte past the cap, so an oversized body is diagnosed rather than
+	// silently truncated into a parse error the client cannot act on.
+	body, err := io.ReadAll(io.LimitReader(req.Body, maxMCPBody+1))
 	if err != nil {
 		writeRPC(resp, nil, nil, &rpcError{Code: -32700, Message: "read body failed"})
+		return
+	}
+	if len(body) > maxMCPBody {
+		resp.WriteHeader(http.StatusRequestEntityTooLarge)
 		return
 	}
 	var request rpcRequest
@@ -298,9 +338,9 @@ func (s *MCPToolServer) spawn(ctx context.Context, args json.RawMessage) (string
 	}
 	mode := body.PermissionMode
 	if mode == "" {
-		mode = defaultPermissionMode
+		mode = string(defaultPermissionMode)
 	}
-	if !permissionModes[mode] {
+	if !isPermissionMode(mode) {
 		return "", errors.Errorf(ctx, "unknown permission_mode %q", mode)
 	}
 	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
@@ -341,6 +381,22 @@ func (s *MCPToolServer) send(ctx context.Context, args json.RawMessage) (string,
 		return "", errors.Errorf(ctx, "session %q is running a sequence", body.SessionID)
 	}
 	defer release()
+
+	// The lock excludes other WRITERS while they hold it; it does not cover a
+	// turn already open on the child. The timeout path proves the difference:
+	// awaitTurn gives up and the deferred release runs, but the child's turn is
+	// still generating. Writing then would open a second turn on top of the
+	// first, and the two results become indistinguishable — the new call could
+	// return the old turn's text. Same guard, same reason, as Sequencer.Run.
+	session, err := s.Supervisor.Get(ctx, body.SessionID)
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "get session %q failed", body.SessionID)
+	}
+	if session.PendingTurns > 0 ||
+		(session.State != StateIdle && session.State != StateStarting) {
+		return "", errors.Errorf(ctx, "session %q is %s with %d turn(s) pending",
+			body.SessionID, session.State, session.PendingTurns)
+	}
 
 	replay, live, cancel, err := s.Supervisor.Subscribe(ctx, body.SessionID)
 	if err != nil {
