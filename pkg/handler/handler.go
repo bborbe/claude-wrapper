@@ -223,15 +223,21 @@ type questionRequest struct {
 // answerKindFor resolves the kind a registration describes.
 //
 // The caller states it when it can; otherwise the tool name decides, because
-// AskUserQuestion is the only tool whose answer is a selection.
-func answerKindFor(kind string, toolName string) pkg.AnswerKind {
+// AskUserQuestion is the only tool whose answer is a selection. A stated kind is
+// validated: an out-of-set value would create a request no answer shape can ever
+// match, so it would 422 forever while the child sat until its hold expired.
+func answerKindFor(kind string, toolName string) (pkg.AnswerKind, error) {
 	if kind != "" {
-		return pkg.AnswerKind(kind)
+		stated := pkg.AnswerKind(kind)
+		if err := stated.Validate(); err != nil {
+			return "", errors.Wrapf(context.Background(), err, "invalid kind %q", kind)
+		}
+		return stated, nil
 	}
 	if toolName == askUserQuestionTool {
-		return pkg.AnswerKindQuestion
+		return pkg.AnswerKindQuestion, nil
 	}
-	return pkg.AnswerKindPermission
+	return pkg.AnswerKindPermission, nil
 }
 
 // handleQuestion is the two halves the MCP tool needs: POST registers a
@@ -252,9 +258,14 @@ func handleQuestion(
 			writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
 			return
 		}
+		kind, kindErr := answerKindFor(body.Kind, body.ToolName)
+		if kindErr != nil {
+			writeError(resp, http.StatusBadRequest, kindErr)
+			return
+		}
 		question := pkg.Question{
 			RequestID: body.RequestID,
-			Kind:      answerKindFor(body.Kind, body.ToolName),
+			Kind:      kind,
 			ToolName:  body.ToolName,
 			ToolUseID: body.ToolUseID,
 			Input:     body.Input,
@@ -278,6 +289,15 @@ func handleQuestion(
 			"behavior": pending.Answer.Behavior,
 			"answers":  pending.Answer.Answers,
 		})
+	case http.MethodDelete:
+		// The child's hold expired unanswered, so nothing is waiting on this
+		// request any more. Without this the session keeps reporting it as
+		// pending, and every later read says "parked" forever.
+		if err := supervisor.ForgetQuestion(ctx, id, requestID); err != nil {
+			writeError(resp, statusFor(err), err)
+			return
+		}
+		resp.WriteHeader(http.StatusNoContent)
 	default:
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))

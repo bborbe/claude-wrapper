@@ -171,7 +171,53 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 		time.Sleep(250 * time.Millisecond)
 	}
 	log.Printf("mcp: request %s unanswered after %s, defaulting", requestID, s.Hold)
+	// Drop the request before answering: nothing is waiting on it any more, and
+	// a registry that keeps reporting it makes every later read say "parked" and
+	// every later send return this stale request instead of awaiting its turn.
+	if err := s.forget(ctx, requestID); err != nil {
+		log.Printf("mcp: forget %s failed: %v", requestID, err)
+	}
+	// A question that expired must NOT default to allow. The child would carry on
+	// with the tool "permitted" and no answers at all — silently. A deny puts the
+	// expiry into the child's own next turn, where it is visible.
+	if toolNameOf(params) == askUserQuestionToolName {
+		return `{"behavior":"deny","message":"claude-wrapper: the question expired unanswered"}`
+	}
 	return s.verdictFor(s.defaultBehavior())
+}
+
+// askUserQuestionToolName is the child-side tool whose answer is a selection.
+const askUserQuestionToolName = "AskUserQuestion"
+
+// toolNameOf reads the tool name out of a permission-prompt tool call.
+func toolNameOf(params json.RawMessage) string {
+	var call struct {
+		Arguments struct {
+			ToolName string `json:"tool_name"`
+		} `json:"arguments"`
+	}
+	if err := json.Unmarshal(params, &call); err != nil {
+		return ""
+	}
+	return call.Arguments.ToolName
+}
+
+// forget tells the wrapper nothing is waiting on the request any more.
+func (s *MCPServer) forget(ctx context.Context, requestID string) error {
+	url := s.WrapperURL + "/api/1.0/sessions/" + s.SessionID + "/question/" + requestID
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "build forget request failed")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "forget question failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return errors.Errorf(ctx, "forget rejected with %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (s *MCPServer) register(ctx context.Context, requestID string, params json.RawMessage) error {
@@ -293,7 +339,12 @@ func questionVerdict(params json.RawMessage, answers map[string]string) string {
 			} `json:"input"`
 		} `json:"arguments"`
 	}
-	_ = json.Unmarshal(params, &call)
+	if err := json.Unmarshal(params, &call); err != nil {
+		// Answering with a shape the child cannot validate would leave it parked
+		// while the wrapper has already reported success — the exact failure this
+		// change exists to remove. Refuse visibly instead.
+		return `{"behavior":"deny","message":"claude-wrapper could not read the question it is answering"}`
+	}
 
 	updatedInput := map[string]any{"answers": answers}
 	if len(call.Arguments.Input.Questions) > 0 {

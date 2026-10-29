@@ -69,6 +69,10 @@ func (f *fakeSupervisor) RegisterQuestion(_ context.Context, _ string, _ pkg.Que
 	return f.getErr
 }
 
+func (f *fakeSupervisor) ForgetQuestion(_ context.Context, _, _ string) error {
+	return f.getErr
+}
+
 func (f *fakeSupervisor) PollAnswer(_ context.Context, _ string) (pkg.PendingAnswer, error) {
 	return pkg.PendingAnswer{}, f.getErr
 }
@@ -153,6 +157,27 @@ var _ = Describe("handler", func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/answer", body)
 		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	// A registration with an out-of-set kind would create a request no answer
+	// shape can ever match, so it would 422 forever while the child sat until
+	// its hold expired. Reject it at the door instead.
+	It("rejects an unknown question kind", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"request_id":"r1","kind":"bogus","tool_name":"Bash"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/sessions/a/question", body)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	// The hold expired unanswered, so nothing waits on the request any more.
+	It("forgets a request on DELETE", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/1.0/sessions/a/question/r1", nil)
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusNoContent))
 	})
 
 	// A shape mismatch is a caller error, not the unknown-request case: 422

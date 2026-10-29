@@ -51,6 +51,8 @@ func (s *toolSupervisor) Answer(context.Context, string, string, Answer) error {
 
 func (s *toolSupervisor) RegisterQuestion(context.Context, string, Question) error { return nil }
 
+func (s *toolSupervisor) ForgetQuestion(context.Context, string, string) error { return nil }
+
 func (s *toolSupervisor) PollAnswer(context.Context, string) (PendingAnswer, error) {
 	return PendingAnswer{}, nil
 }

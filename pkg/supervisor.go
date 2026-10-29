@@ -65,6 +65,13 @@ type Supervisor interface {
 	Send(ctx context.Context, id string, text string) error
 	Answer(ctx context.Context, id string, requestID string, answer Answer) error
 	RegisterQuestion(ctx context.Context, id string, question Question) error
+	// ForgetQuestion drops a request the child has stopped waiting on.
+	//
+	// It must be called when the child-facing tool's hold expires: without it the
+	// session keeps reporting a question nothing is waiting on, so every later
+	// read says "parked" and every later send returns that stale request instead
+	// of awaiting its own turn.
+	ForgetQuestion(ctx context.Context, id string, requestID string) error
 	PollAnswer(ctx context.Context, requestID string) (PendingAnswer, error)
 	Stop(ctx context.Context, id string) error
 	Subscribe(ctx context.Context, id string) ([]Event, <-chan Event, func(), error)
@@ -215,6 +222,19 @@ func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Q
 // PollAnswer reports whether the pending request has been answered yet.
 func (s *supervisor) PollAnswer(ctx context.Context, requestID string) (PendingAnswer, error) {
 	return s.pending.Peek(requestID)
+}
+
+// ForgetQuestion drops a request nothing is waiting on any more.
+func (s *supervisor) ForgetQuestion(ctx context.Context, id string, requestID string) error {
+	s.mutex.RLock()
+	c, ok := s.sessions[id]
+	s.mutex.RUnlock()
+	if !ok {
+		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
+	}
+	s.pending.Forget(requestID)
+	c.clearQuestion(requestID)
+	return nil
 }
 
 func (s *supervisor) Stop(ctx context.Context, id string) error {

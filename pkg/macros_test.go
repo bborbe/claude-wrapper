@@ -60,6 +60,10 @@ func (s *scriptedSupervisor) RegisterQuestion(context.Context, string, Question)
 	return nil
 }
 
+func (s *scriptedSupervisor) ForgetQuestion(context.Context, string, string) error {
+	return nil
+}
+
 func (s *scriptedSupervisor) PollAnswer(context.Context, string) (PendingAnswer, error) {
 	return PendingAnswer{}, nil
 }
