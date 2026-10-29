@@ -155,6 +155,13 @@ func (s *sequencer) Run(
 	result := newSequenceResult(macro)
 	expected := countResults(replay)
 	for index := range macro.Steps {
+		// Between steps, not inside one: a cancelled request must not write the
+		// next command, but a step already in flight is left to its own timeout
+		// so a half-written turn is never abandoned silently.
+		if err := ctx.Err(); err != nil {
+			result.abort(index, err)
+			return result, err
+		}
 		if err := s.advance(ctx, sessionID, index, expected, live, result); err != nil {
 			return result, err
 		}
