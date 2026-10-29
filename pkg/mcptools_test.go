@@ -128,7 +128,7 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 		}
 	})
 
-	ginkgo.It("lists the five tools a Codex client needs", func() {
+	ginkgo.It("lists every tool a Codex client needs", func() {
 		recorder := post(server, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 
 		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
@@ -151,6 +151,8 @@ var _ = ginkgo.Describe("MCPToolServer", func() {
 			string(ToolListSessions),
 			string(ToolGetSession),
 			string(ToolKillSession),
+			string(ToolGetPending),
+			string(ToolAnswerPending),
 		}))
 	})
 

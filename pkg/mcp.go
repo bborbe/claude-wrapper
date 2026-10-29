@@ -166,7 +166,7 @@ func (s *MCPServer) decide(ctx context.Context, params json.RawMessage) string {
 		}
 		answer, answered, err := s.poll(ctx, requestID)
 		if err == nil && answered {
-			return s.verdictForAnswer(answer)
+			return s.verdictForAnswer(answer, params)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -269,9 +269,9 @@ func (s *MCPServer) verdictFor(behavior string) string {
 }
 
 // verdictForAnswer renders the tool's return value for one recorded answer.
-func (s *MCPServer) verdictForAnswer(answer pollResult) string {
+func (s *MCPServer) verdictForAnswer(answer pollResult, params json.RawMessage) string {
 	if AnswerKind(answer.Kind) == AnswerKindQuestion {
-		return questionVerdict(answer.Answers)
+		return questionVerdict(params, answer.Answers)
 	}
 	return s.verdictFor(answer.Behavior)
 }
@@ -279,15 +279,29 @@ func (s *MCPServer) verdictForAnswer(answer pollResult) string {
 // questionVerdict is the permission-prompt tool's return value for an
 // AskUserQuestion.
 //
-// ⚠️ The exact shape the child expects back is unverified as of 2026-10-29 —
-// the return schema is undocumented, and this is candidate A: `updatedInput`
-// carrying the selections, which is the permission-prompt-tool contract for
-// replacing a tool's input. SC5b's proof settles it; if the child ignores this,
-// this function is the one place to change.
-func questionVerdict(answers map[string]string) string {
+// ⚠️ Measured 2026-10-29: `updatedInput` must satisfy the tool's OWN input
+// schema, so it has to carry `questions` as well as the selections. Returning
+// `{"answers": …}` alone fails the child with
+// `The required parameter "questions" is missing`, the question is never
+// answered, and the turn dies — which is why the original questions are echoed
+// back verbatim rather than reconstructed.
+func questionVerdict(params json.RawMessage, answers map[string]string) string {
+	var call struct {
+		Arguments struct {
+			Input struct {
+				Questions json.RawMessage `json:"questions"`
+			} `json:"input"`
+		} `json:"arguments"`
+	}
+	_ = json.Unmarshal(params, &call)
+
+	updatedInput := map[string]any{"answers": answers}
+	if len(call.Arguments.Input.Questions) > 0 {
+		updatedInput["questions"] = call.Arguments.Input.Questions
+	}
 	encoded, err := json.Marshal(map[string]any{
 		"behavior":     "allow",
-		"updatedInput": map[string]any{"answers": answers},
+		"updatedInput": updatedInput,
 	})
 	if err != nil {
 		return `{"behavior":"deny","message":"claude-wrapper could not encode the answer"}`

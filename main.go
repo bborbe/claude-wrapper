@@ -46,7 +46,12 @@ func main() {
 		return
 	}
 
-	supervisor := pkg.NewSupervisor(context.Background(), *claudeBin, libtime.NewCurrentDateTime())
+	supervisor := pkg.NewSupervisor(
+		context.Background(),
+		*claudeBin,
+		libtime.NewCurrentDateTime(),
+		"http://"+*listen,
+	)
 	// One lock set for every route that can write a turn: a sequence and a
 	// plain message on the same child must not interleave.
 	locks := pkg.NewSessionLocks()

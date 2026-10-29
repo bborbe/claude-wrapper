@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- feat: `get_pending` and `answer_pending` join the client-facing MCP face, so a caller can see
+  what a session is parked on — including an `AskUserQuestion`'s options — and answer it without a
+  second round-trip or a REST call.
+- fix: `send_message` returns as soon as the child registers a request, instead of waiting for the
+  turn to close. The child's permission hold is 90 s, so a caller that only learned of the question
+  at turn-close could never answer inside it — the recorded-but-never-delivered failure this
+  release exists to remove.
+- fix: every child was pointed at `http://localhost:18090` regardless of the daemon's own
+  `--listen`. A wrapper on any other port handed its children the URL of a *different* process, so
+  registrations failed silently and the gate defaulted to allow.
+- fix: the permission tool's `updatedInput` for an `AskUserQuestion` must satisfy the tool's own
+  input schema, so it now echoes the original `questions` back beside `answers`. Returning
+  `answers` alone made the child reject the answer with `The required parameter "questions" is
+  missing`.
 - feat: the pending registry carries a kind-discriminated payload instead of a bare allow/deny
   string. A permission request keeps its tool name and input; an `AskUserQuestion` keeps its
   `questions[]` list — each prompt with its own `options[]`, `header` and `multiSelect` — so a

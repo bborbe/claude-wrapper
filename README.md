@@ -152,10 +152,64 @@ session.
 
 ### POST /api/1.0/sessions/{id}/answer
 
-Answers the permission request the session is parked on.
-Body: `{"request_id": "...", "behavior": "allow"}`. The answer is written to the
-same child that raised the request — the prompt is not reachable from anywhere
-else, so answering a store would answer nothing.
+Answers the request the session is parked on. The answer is written to the same
+child that raised the request — the prompt is not reachable from anywhere else,
+so answering a store would answer nothing.
+
+A child is parked on one of **two shapes**, and they are not interchangeable.
+Both arrive through the same child-facing `permission_prompt` tool; the tool
+name is what tells them apart.
+
+**Permission** — a tool call the gate refused. The answer is a verdict.
+
+```
+POST /api/1.0/sessions/8f2c/answer
+{"request_id": "dmhm90gfxysg", "behavior": "deny"}
+
+→ 200 {"status": "answered"}
+```
+
+The child then receives the verdict as its own tool result:
+
+```
+{"content": "denied by claude-wrapper", "is_error": true, "type": "tool_result"}
+```
+
+**Question** — an `AskUserQuestion`. The answer is a selection among the options
+the question carries, keyed by the question text.
+
+```
+POST /api/1.0/sessions/8f2c/answer
+{"request_id": "dmhmc9mc11z4", "answers": {"Which nonce?": "QUESTION-NONCE-9T2K"}}
+
+→ 200 {"status": "answered"}
+```
+
+The child then receives:
+
+```
+{"content": "Your questions have been answered: \"Which nonce?\"=\"QUESTION-NONCE-9T2K\". You can now continue with these answers in mind.", "type": "tool_result"}
+```
+
+`GET /api/1.0/sessions/{id}/question/{request_id}` reads the pending request —
+its `kind`, the payload the child sent, and the recorded answer once one exists:
+
+```
+{"answered": false, "kind": "", "behavior": "", "answers": null,
+ "question": {"request_id": "dmhmc9mc11z4", "kind": "question",
+              "tool_name": "AskUserQuestion",
+              "questions": [{"question": "Which nonce?", "header": "Nonce",
+                             "options": [{"label": "QUESTION-NONCE-9T2K",
+                                          "description": "Select the token QUESTION-NONCE-9T2K."},
+                                         {"label": "other",
+                                          "description": "Provide a different nonce."}],
+                             "multiSelect": false}]}}
+```
+
+`input.questions` is a **list**: one call can carry several questions, each with
+its own `options[]`, `header` and `multiSelect`. A payload whose shape does not
+match the pending request is refused with `422` and leaves the request
+unanswered — see *Failure modes*.
 
 ### POST /api/1.0/sessions/{id}/commands
 
@@ -239,6 +293,7 @@ Kills the child. `204` on success.
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
 | `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle |
 | `410` | child exited — it is gone and accepts no control |
+| `422` | the answer's shape does not match the pending request — `answers` aimed at a permission request, or `behavior` aimed at a question. Nothing was recorded and the request is still unanswered |
 | `503` | child unreachable — the process exists but its stream is not responding |
 
 ## Not in phase 1
@@ -247,11 +302,22 @@ Wrapping TUI sessions; multi-host supervision; auth beyond the localhost bind;
 caller-supplied command lists; and any sequencing beyond a linear list — no
 branches, loops or retries between steps.
 
-The MCP face carries the same limits. It is also **plain turns only**: a client
-cannot yet answer the permission prompt or `AskUserQuestion` a child raises
-(phase 2), and cannot change a running session's mode or model (phase 3). Until
-then `spawn_session` defaults to a permissive mode so gates never fire — see
-*The permissive-spawn crutch* above.
+The MCP face carries the same limits, with one exception since phase 2: a client
+**can** now answer the permission prompt or `AskUserQuestion` a child raises —
+`get_pending` reads the request with the options it carries, `answer_pending`
+answers it, and `send_message` returns a parked turn early so the answer lands
+inside the child's 90 s hold. What it still cannot do is change a running
+session's mode or model (phase 3).
+
+`spawn_session` still defaults to a permissive mode so gates never fire, and it
+stays a default rather than a requirement: pass `permission_mode: "default"` to
+let the gates fire and drive them through `get_pending` / `answer_pending`.
+
+⚠️ An answer is only delivered if the **child** consumes it. A `200`, an
+`ANSWERED` and a cleared board card all coexist with a session still parked —
+measured 2026-10-29, when an answer was recorded and never delivered and a worker
+sat on its modal for three hours. See
+[`docs/regression-2026-10-29-answer-recorded-not-delivered.md`](docs/regression-2026-10-29-answer-recorded-not-delivered.md).
 
 ## License
 

@@ -63,6 +63,11 @@ const (
 	ToolListSessions ToolName = "list_sessions"
 	ToolGetSession   ToolName = "get_session"
 	ToolKillSession  ToolName = "kill_session"
+	// ToolGetPending reads what a session is parked on, with the options the
+	// question carries, so a caller can choose without a second round-trip.
+	ToolGetPending ToolName = "get_pending"
+	// ToolAnswerPending answers the request get_pending returned.
+	ToolAnswerPending ToolName = "answer_pending"
 )
 
 // AvailableToolNames is every tool this server exposes, in listing order.
@@ -73,6 +78,8 @@ func AvailableToolNames() []ToolName {
 		ToolListSessions,
 		ToolGetSession,
 		ToolKillSession,
+		ToolGetPending,
+		ToolAnswerPending,
 	}
 }
 
@@ -320,6 +327,10 @@ func (s *MCPToolServer) invoke(ctx context.Context, name string, args json.RawMe
 		return s.get(ctx, args)
 	case ToolKillSession:
 		return s.kill(ctx, args)
+	case ToolGetPending:
+		return s.getPending(ctx, args)
+	case ToolAnswerPending:
+		return s.answerPending(ctx, args)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -411,9 +422,21 @@ func (s *MCPToolServer) send(ctx context.Context, args json.RawMessage) (string,
 	if err := s.Supervisor.Send(ctx, body.SessionID, body.Text); err != nil {
 		return "", errors.Wrapf(ctx, err, "send turn to session %q failed", body.SessionID)
 	}
-	event, err := s.awaitTurn(ctx, live, expected)
+	event, question, err := s.awaitTurnOrQuestion(ctx, live, expected, body.SessionID)
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "wait for turn %d failed", expected)
+	}
+	// A turn that parks must return NOW, not when the turn closes. The child's
+	// permission hold is 90s; a send that waited for the turn would hand the
+	// caller a question it can no longer answer, which is the recorded-but-never-
+	// delivered failure this phase removes. Returning the question early is what
+	// makes the answer land inside the hold.
+	if question != nil {
+		pending, marshalErr := marshalJSON(ctx, question)
+		if marshalErr != nil {
+			return "", errors.Wrapf(ctx, marshalErr, "encode pending question failed")
+		}
+		return "parked: " + pending, nil
 	}
 	text, _ := event["result"].(string)
 	if failed, _ := event["is_error"].(bool); failed {
@@ -425,26 +448,101 @@ func (s *MCPToolServer) send(ctx context.Context, args json.RawMessage) (string,
 	return text, nil
 }
 
-// awaitTurn blocks until the child reports turn `expected` closed.
-func (s *MCPToolServer) awaitTurn(ctx context.Context, live <-chan Event, expected int) (Event, error) {
+type pendingArgs struct {
+	SessionID string `json:"session_id"`
+}
+
+// getPending returns the request a session is parked on, or null.
+//
+// Its own tool rather than a field on get_session: get_session answers "what is
+// this session doing" and is polled often, while this payload is large and only
+// relevant while the session is actually waiting.
+func (s *MCPToolServer) getPending(ctx context.Context, args json.RawMessage) (string, error) {
+	var body pendingArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.SessionID == "" {
+		return "", errors.Errorf(ctx, "session_id is required")
+	}
+	session, err := s.Supervisor.Get(ctx, body.SessionID)
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "get session %q failed", body.SessionID)
+	}
+	if session.Question == nil {
+		return "null", nil
+	}
+	return marshalJSON(ctx, session.Question)
+}
+
+type answerPendingArgs struct {
+	SessionID string            `json:"session_id"`
+	RequestID string            `json:"request_id"`
+	Behavior  string            `json:"behavior"`
+	Answers   map[string]string `json:"answers"`
+}
+
+// answerPending posts the caller's decision through the same Supervisor.Answer
+// path the REST route uses, so the two faces cannot drift apart.
+func (s *MCPToolServer) answerPending(ctx context.Context, args json.RawMessage) (string, error) {
+	var body answerPendingArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.SessionID == "" || body.RequestID == "" {
+		return "", errors.Errorf(ctx, "session_id and request_id are required")
+	}
+	answer := Answer{Kind: AnswerKindPermission, Behavior: body.Behavior}
+	if len(body.Answers) > 0 {
+		answer = Answer{Kind: AnswerKindQuestion, Answers: body.Answers}
+	}
+	if answer.Kind == AnswerKindPermission && answer.Behavior == "" {
+		answer.Behavior = "allow"
+	}
+	if err := s.Supervisor.Answer(ctx, body.SessionID, body.RequestID, answer); err != nil {
+		return "", errors.Wrapf(ctx, err, "answer request %q failed", body.RequestID)
+	}
+	return marshalJSON(ctx, map[string]string{"status": "answered"})
+}
+
+// awaitTurnOrQuestion blocks until the child closes turn `expected` OR registers
+// a request it is parked on — whichever happens first.
+//
+// The question branch is what makes the phase work at all. The child's
+// permission hold is 90s; waiting for the turn to close would hand the caller a
+// question whose hold has already expired, so every answer would arrive after
+// the child had already defaulted past it.
+func (s *MCPToolServer) awaitTurnOrQuestion(
+	ctx context.Context,
+	live <-chan Event,
+	expected int,
+	sessionID string,
+) (Event, *Question, error) {
 	timeout := s.TurnTimeout
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	poll := time.NewTicker(250 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		select {
 		case <-waitCtx.Done():
-			return nil, errors.Wrapf(ctx, waitCtx.Err(),
+			return nil, nil, errors.Wrapf(ctx, waitCtx.Err(),
 				"turn %d did not close within %s", expected, timeout)
+		case <-poll.C:
+			current, err := s.Supervisor.Get(ctx, sessionID)
+			if err == nil && current.Question != nil {
+				return nil, current.Question, nil
+			}
 		case event, open := <-live:
 			if !open {
-				return nil, errors.Wrapf(ctx, ErrSessionExited,
+				return nil, nil, errors.Wrapf(ctx, ErrSessionExited,
 					"stream closed before turn %d closed", expected)
 			}
 			if isTurnClosed(event, expected) {
-				return event, nil
+				return event, nil, nil
 			}
 		}
 	}
@@ -544,6 +642,21 @@ func toolDefinitions() []any {
 			"Kill one session's child process.",
 			map[string]any{"session_id": stringProp("id of the session to kill")},
 			"session_id"),
+		toolDef(ToolGetPending,
+			"Read what a session is parked on, with the options its question carries. "+
+				"Returns null when the session is not waiting on anything.",
+			map[string]any{"session_id": stringProp("id of the session to read")},
+			"session_id"),
+		toolDef(ToolAnswerPending,
+			"Answer the request get_pending returned. Supply behavior (allow|deny) for a "+
+				"permission request, or answers (question text -> chosen label) for an AskUserQuestion.",
+			map[string]any{
+				"session_id": stringProp("id of the session to answer"),
+				"request_id": stringProp("the pending request's id, from get_pending"),
+				"behavior":   stringProp("allow or deny, for a permission request"),
+				"answers":    map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+			},
+			"session_id", "request_id"),
 	}
 }
 

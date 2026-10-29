@@ -71,15 +71,20 @@ type Supervisor interface {
 }
 
 // NewSupervisor creates a Supervisor that runs the given claude binary.
+//
+// selfURL is this process's own base URL (e.g. "http://localhost:18090"); every
+// child's permission tool is pointed at it so questions come back here.
 func NewSupervisor(
 	ctx context.Context,
 	claudeBin string,
 	now libtime.CurrentDateTimeGetter,
+	selfURL string,
 ) Supervisor {
 	return &supervisor{
 		ctx:       ctx,
 		claudeBin: claudeBin,
 		now:       now,
+		selfURL:   selfURL,
 		mutex:     sync.RWMutex{},
 		sessions:  map[string]*child{},
 		pending:   NewPending(),
@@ -90,9 +95,19 @@ type supervisor struct {
 	ctx       context.Context
 	claudeBin string
 	now       libtime.CurrentDateTimeGetter
-	mutex     sync.RWMutex
-	sessions  map[string]*child
-	pending   Pending
+	// selfURL is this process's own base URL, handed to every child's
+	// permission tool so it reports its questions HERE.
+	//
+	// It is a field rather than the constant it used to be: a wrapper started on
+	// any other port gave its children `http://localhost:18090`, so the child
+	// registered its question against a different process — silently, because the
+	// tool only logs a failed registration. Measured 2026-10-29 on a :18091
+	// instance, where the child's question never reached the wrapper that spawned
+	// it.
+	selfURL  string
+	mutex    sync.RWMutex
+	sessions map[string]*child
+	pending  Pending
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -237,7 +252,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err := validateArgv(ctx, options); err != nil {
 		return nil, err
 	}
-	mcpConfig, err := writeMCPConfig(ctx, id)
+	mcpConfig, err := writeMCPConfig(ctx, id, s.selfURL)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +315,7 @@ const DefaultPermissionMode = "auto"
 // given a generated config whose `command` is the running wrapper. The log path
 // is what makes the tool's payload observable: its schema is undocumented, so
 // the first runs record it verbatim rather than parsing a guess.
-func writeMCPConfig(ctx context.Context, id string) (string, error) {
+func writeMCPConfig(ctx context.Context, id string, selfURL string) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "resolve own binary failed")
@@ -312,7 +327,7 @@ func writeMCPConfig(ctx context.Context, id string) (string, error) {
 				"args": []string{
 					"--mcp-stdio",
 					"--mcp-log", filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.log"),
-					"--wrapper-url", "http://localhost:18090",
+					"--wrapper-url", selfURL,
 					"--session-id", id,
 				},
 			},
