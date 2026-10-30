@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- test: a table-driven parity suite over the seven session actions in `pkg/handler` asserts the
+  write-deadline, nil-sequencer and partial-reporting invariants for every route, so a route that
+  omits one fails `make precommit` instead of depending on a reviewer who happens to know its
+  sibling. The action table in `pkg/handler/routes.go` is now the single dispatch source, and the
+  test's expected action list is a literal, so a row deleted while its action stays reachable is a
+  red suite rather than a silent fall-through to the session route.
+- fix: every session route clears the server's `WriteTimeout` before doing any work. `answer`,
+  `message`, `question`, `permission-mode` and the default session route were missing the clear, so
+  their response could be truncated at the first write past the 60 s deadline.
+
 ## v0.5.0
 
 - feat: `POST /api/1.0/sessions/{id}/model` and the `set_model` MCP tool change a **running**
