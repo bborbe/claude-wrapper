@@ -65,6 +65,7 @@ func Session(
 	sequencer pkg.Sequencer,
 	locks *pkg.SessionLocks,
 ) http.Handler {
+	routes := Routes(supervisor, sequencer, locks)
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
 		rest := strings.TrimPrefix(req.URL.Path, "/api/1.0/sessions/")
@@ -82,24 +83,16 @@ func Session(
 		if len(parts) > 2 {
 			requestID = parts[2]
 		}
-		switch action {
-		case "answer":
-			handleAnswer(ctx, resp, req, supervisor, id)
-		case "message":
-			handleMessage(ctx, resp, req, supervisor, locks, id)
-		case "question":
-			handleQuestion(ctx, resp, req, supervisor, id, requestID)
-		case "events":
-			handleEvents(ctx, resp, req, supervisor, id)
-		case "commands":
-			handleCommands(ctx, resp, req, sequencer, id)
-		case "model":
-			handleModel(ctx, resp, req, supervisor, sequencer, id)
-		case "permission-mode":
-			handlePermissionMode(ctx, resp, req, supervisor, locks, id)
-		default:
-			handleSession(ctx, resp, req, supervisor, id)
+		// Dispatch is the table lookup, never a switch: a route the table omits
+		// falls through to the session itself, which is why the parity test
+		// asserts the table's action set against a literal list.
+		for _, route := range routes {
+			if route.Action == action {
+				route.Handle(ctx, resp, req, id, requestID)
+				return
+			}
 		}
+		handleSession(ctx, resp, req, supervisor, id)
 	})
 }
 
@@ -115,6 +108,13 @@ func handleMessage(
 	locks *pkg.SessionLocks,
 	id string,
 ) {
+	// Every session route clears the server's WriteTimeout before doing any work.
+	// The invariant is universal across the table in Routes — never per-row
+	// judgement — so a route that forgets it fails the parity test.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
 	if req.Method != http.MethodPost {
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))
@@ -129,6 +129,8 @@ func handleMessage(
 		writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "text is required"))
 		return
 	}
+	// Delivering a turn can outlast the server's WriteTimeout; the deadline was
+	// cleared at the top of this handler like every other session route.
 	// The same lock a sequence holds: a turn written between two steps would
 	// have its result read as the current step's close, firing the next step
 	// one turn early. Fail fast rather than queue — waiting out a run would
@@ -169,6 +171,14 @@ func handleModel(
 	sequencer pkg.Sequencer,
 	id string,
 ) {
+	// Every session route clears the server's WriteTimeout before doing any work.
+	// The invariant is universal across the table in Routes — never per-row
+	// judgement — so a route that forgets it fails the parity test. Clearing it
+	// up front means even a refused request proves the route honours it.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
 	if req.Method != http.MethodPost {
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))
@@ -192,13 +202,7 @@ func handleModel(
 	}
 	// A model change runs a real probe turn, so its response can legitimately
 	// outlive the server's 60 s WriteTimeout — the same reason handleCommands
-	// clears it. Best effort: a recorder under test does not implement
-	// deadlines, and refusing the change over that would make the route
-	// untestable for no gain.
-	if err := clearWriteDeadline(ctx, resp); err != nil {
-		writeError(resp, http.StatusInternalServerError, err)
-		return
-	}
+	// does. The deadline itself was cleared at the top of this handler.
 	// Read before the run and after it. Both reads sit outside the sequencer's
 	// lock, so two model changes racing on one session can report each other's
 	// served model: the WRITES are serialized, the reported fields are
@@ -251,6 +255,13 @@ func handlePermissionMode(
 	locks *pkg.SessionLocks,
 	id string,
 ) {
+	// Every session route clears the server's WriteTimeout before doing any work.
+	// The invariant is universal across the table in Routes — never per-row
+	// judgement — so a route that forgets it fails the parity test.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
 	if req.Method != http.MethodPost {
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))
@@ -270,7 +281,7 @@ func handlePermissionMode(
 	// The same lock a sequence holds, and fail fast rather than queue: a
 	// compaction can hold it for minutes, which outlasts the server's write
 	// deadline — the response would be truncated after the mode had already
-	// changed. handleMessage takes the same choice for the same reason.
+	// changed. The deadline was cleared at the top of this handler.
 	release, ok := locks.TryAcquire(id)
 	if !ok {
 		writeError(resp, http.StatusConflict,
@@ -303,6 +314,14 @@ func handleCommands(
 	sequencer pkg.Sequencer,
 	id string,
 ) {
+	// Every session route clears the server's WriteTimeout before doing any work.
+	// The invariant is universal across the table in Routes — never per-row
+	// judgement — so a route that forgets it fails the parity test. Clearing it
+	// up front means even a refused request proves the route honours it.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
 	if req.Method != http.MethodPost {
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))
@@ -330,11 +349,8 @@ func handleCommands(
 	}
 	// Best effort: a recorder under test does not implement deadlines, and
 	// refusing the run over an unsupported write deadline would make the route
-	// untestable for no gain.
-	if err := clearWriteDeadline(ctx, resp); err != nil {
-		writeError(resp, http.StatusInternalServerError, err)
-		return
-	}
+	// untestable for no gain. The deadline itself was cleared at the top of this
+	// handler.
 	result, err := sequencer.Run(ctx, id, macro)
 	if err != nil && result == nil {
 		writeError(resp, statusFor(err), err)
@@ -389,6 +405,13 @@ func handleQuestion(
 	id string,
 	requestID string,
 ) {
+	// Registering a question can wait on the child, so this route clears the
+	// deadline like every other session route — the invariant is universal
+	// across the table in Routes, never per-row judgement.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
 	switch req.Method {
 	case http.MethodPost:
 		var body questionRequest
@@ -457,6 +480,13 @@ func handleSession(
 	supervisor pkg.Supervisor,
 	id string,
 ) {
+	// The session itself is the fallback for an action the table does not carry,
+	// and its reads and stop can outlast the server's WriteTimeout like any other
+	// session route, so it clears the deadline too.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
 	switch req.Method {
 	case http.MethodGet:
 		session, err := supervisor.Get(ctx, id)
@@ -613,6 +643,14 @@ func handleAnswer(
 	supervisor pkg.Supervisor,
 	id string,
 ) {
+	// Every session route clears the server's WriteTimeout before doing any work.
+	// The invariant is universal across the table in Routes — never per-row
+	// judgement — so a route that forgets it fails the parity test, and clearing
+	// it up front means even a refused request proves the route honours it.
+	if err := clearWriteDeadline(ctx, resp); err != nil {
+		writeError(resp, http.StatusInternalServerError, err)
+		return
+	}
 	if req.Method != http.MethodPost {
 		writeError(resp, http.StatusMethodNotAllowed,
 			errors.Errorf(ctx, "method %q not allowed", req.Method))
