@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- chore: update github.com/bborbe/errors to v1.6.6, github.com/bborbe/time to v1.27.25
+
 ## v0.5.1
 
 - test: a table-driven parity suite over the seven session actions in `pkg/handler` asserts the
