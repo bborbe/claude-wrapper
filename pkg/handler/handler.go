@@ -675,6 +675,8 @@ func statusFor(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, pkg.ErrSessionExited):
 		return http.StatusGone
+	case errors.Is(err, pkg.ErrSessionLive):
+		return http.StatusConflict
 	case errors.Is(err, pkg.ErrAnswerUnsupported):
 		return http.StatusConflict
 	case errors.Is(err, pkg.ErrAnswerShapeMismatch):

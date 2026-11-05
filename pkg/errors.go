@@ -17,6 +17,9 @@ var (
 	ErrSessionNotFound = stderrors.New("session not found")
 	// ErrSessionExited is returned when the child has already left.
 	ErrSessionExited = stderrors.New("session exited")
+	// ErrSessionLive is returned when a resume targets a conversation whose
+	// child is still running, or is already being resumed.
+	ErrSessionLive = stderrors.New("session still running")
 	// ErrAnswerUnsupported is returned when a session declares no answer control.
 	ErrAnswerUnsupported = stderrors.New("answer not supported")
 	// ErrAnswerShapeMismatch is returned when an answer's shape does not match

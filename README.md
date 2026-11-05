@@ -159,9 +159,11 @@ session.
 - `env` is **merged over** this process's environment, never substituted for it:
   the child keeps `PATH` and `HOME`, and an override replaces its inherited key
   rather than appearing twice.
-- `resume` continues an existing conversation. The child's claude session id is
-  then the resumed one, not the id this endpoint returns — read it from the
-  child's own `init` event. It must be a UUID.
+- `resume` continues an existing conversation. It must be a UUID. The returned
+  session id IS the resumed id, so one conversation is one record however often
+  it is resumed: an exited record under that id is replaced, and a resume of a
+  conversation whose child is still running (or already being resumed) is
+  refused with `409`.
 - `mcp_configs` are extra MCP config files, loaded alongside the generated one.
   This is how a launcher's own `--mcp-config` file reaches the child: it arrives
   as a CLI flag, not as a setting, so no setting source can reach it.
@@ -404,7 +406,7 @@ Kills the child. `204` on success.
 |---|---|
 | `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id`. On the change routes: an empty or control-character model name on `…/model`, and a mode outside `default`/`acceptEdits`/`bypassPermissions`/`plan` on `…/permission-mode` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
-| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle, or a `…/permission-mode` change found the per-session lock held by a running sequence |
+| `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle, or a `…/permission-mode` change found the per-session lock held by a running sequence, or a `resume` spawn named a conversation whose child is still running |
 | `410` | child exited — it is gone and accepts no control |
 | `422` | the answer's shape does not match the pending request — `answers` aimed at a permission request, or `behavior` aimed at a question. Nothing was recorded and the request is still unanswered |
 | `503` | child unreachable — the process exists but its stream is not responding |
