@@ -41,9 +41,9 @@ type SpawnOptions struct {
 	Env map[string]string `json:"env"`
 	// Resume continues an existing conversation instead of starting one.
 	//
-	// The child's claude session id is then the RESUMED id, not the id this
-	// supervisor minted for it. A caller that needs the child's id reads it from
-	// the child's own `system`/`init` event rather than from the spawn response.
+	// The session's id is then the RESUMED id, so the record id and the child's
+	// claude session id are the same value in both spawn shapes. Resuming an id
+	// whose child is still running is refused (ErrSessionLive).
 	Resume string `json:"resume"`
 	// MCPConfigs are additional MCP config files, loaded alongside the generated
 	// one.
@@ -120,6 +120,8 @@ type supervisor struct {
 	selfURL  string
 	mutex    sync.RWMutex
 	sessions map[string]*child
+	// starting holds the ids of resume spawns in flight; see reserve.
+	starting map[string]struct{}
 	pending  Pending
 }
 
@@ -129,8 +131,34 @@ type supervisor struct {
 // the stream carries only completed assistant messages, so an open turn is not
 // observable and State can only ever read idle between turns. The partial
 // stream events are what make StateGenerating distinguishable from StateIdle.
+//
+// A resume is keyed by the RESUMED id, not a fresh one: one claude conversation
+// is one record, however often it is resumed. Minting a new id per resume left
+// the original record behind as `exited` under the claude session id while the
+// live question sat under an id nothing else knew — so every reader that looked
+// a session up by its claude id (the attention watcher, the board) found the
+// dead record and refused an answer that was deliverable. Measured 2026-11-05 on
+// session 5cceb1ea, whose live question sat under 127ca1b0.
+//
+// An exited record under that id is replaced. A live one is refused: two
+// children on one conversation would both write its transcript, and the second
+// would silently take over the first's record and question.
+//
+// ⚠️ Known window: the exited child's `--mcp-stdio` grandchild carries the same
+// --session-id. It exits on its parent's stdin EOF, but a registration it had
+// already in flight can land on the replacing record, where it used to hit the
+// exited one and get 410. Such a question names a gate no running child waits
+// on; answering it resolves nothing. Closing it needs a per-child generation in
+// the MCP args, which is not worth the argv change for a sub-second window.
 func (s *supervisor) Spawn(ctx context.Context, options SpawnOptions) (*Session, error) {
 	id := newID()
+	if options.Resume != "" {
+		id = options.Resume
+		if err := s.reserve(ctx, id); err != nil {
+			return nil, err
+		}
+		defer s.release(id)
+	}
 	c, err := s.startChild(ctx, id, options)
 	if err != nil {
 		return nil, err
@@ -139,6 +167,32 @@ func (s *supervisor) Spawn(ctx context.Context, options SpawnOptions) (*Session,
 	s.sessions[id] = c
 	s.mutex.Unlock()
 	return c.snapshot(), nil
+}
+
+// reserve claims id for one resume spawn, refusing when a live child or another
+// in-flight spawn already holds it. The claim is held across startChild, which
+// runs outside the lock, so two concurrent resumes of one conversation cannot
+// both pass the check.
+func (s *supervisor) reserve(ctx context.Context, id string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.starting == nil {
+		s.starting = map[string]struct{}{}
+	}
+	if _, busy := s.starting[id]; busy {
+		return errors.Wrapf(ctx, ErrSessionLive, "session %q is already being resumed", id)
+	}
+	if c, ok := s.sessions[id]; ok && !c.isExited() {
+		return errors.Wrapf(ctx, ErrSessionLive, "session %q is still running", id)
+	}
+	s.starting[id] = struct{}{}
+	return nil
+}
+
+func (s *supervisor) release(id string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	delete(s.starting, id)
 }
 
 func (s *supervisor) List(ctx context.Context) ([]Session, error) {
