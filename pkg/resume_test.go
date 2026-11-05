@@ -20,16 +20,17 @@ import (
 // is one record, so a reader that looks a session up by its claude id finds the
 // child that is actually running.
 var _ = ginkgo.Describe("Spawn resume", func() {
-	const resumed = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-
 	var (
-		ctx  context.Context
-		dir  string
-		exit string
-		hold string
+		resumed string
+		ctx     context.Context
+		dir     string
+		exit    string
+		hold    string
 	)
 
 	ginkgo.BeforeEach(func() {
+		// Per-test id: the mcp temp files are keyed by it in the shared TempDir.
+		resumed = newID()
 		ctx = context.Background()
 		dir = ginkgo.GinkgoT().TempDir()
 		exit = filepath.Join(dir, "exit.sh")
@@ -49,6 +50,13 @@ var _ = ginkgo.Describe("Spawn resume", func() {
 		s, ok := NewSupervisor(ctx, bin, libtime.NewCurrentDateTime(), "http://localhost:0").(*supervisor)
 		gomega.Expect(ok).To(gomega.BeTrue())
 		return s
+	}
+
+	// record reads the map under the lock, like every production reader.
+	record := func(s *supervisor, id string) *child {
+		s.mutex.RLock()
+		defer s.mutex.RUnlock()
+		return s.sessions[id]
 	}
 
 	waitExited := func(s *supervisor, id string) {
@@ -77,14 +85,14 @@ var _ = ginkgo.Describe("Spawn resume", func() {
 		_, err := s.Spawn(ctx, SpawnOptions{Cwd: dir, Resume: resumed})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		waitExited(s, resumed)
-		first := s.sessions[resumed]
+		first := record(s, resumed)
 
 		s.claudeBin = hold
 		_, err = s.Spawn(ctx, SpawnOptions{Cwd: dir, Resume: resumed})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		ginkgo.DeferCleanup(func() { _ = s.Stop(ctx, resumed) })
 
-		gomega.Expect(s.sessions[resumed]).NotTo(gomega.BeIdenticalTo(first))
+		gomega.Expect(record(s, resumed)).NotTo(gomega.BeIdenticalTo(first))
 		session, err := s.Get(ctx, resumed)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(session.State).NotTo(gomega.Equal(StateExited))
@@ -95,11 +103,11 @@ var _ = ginkgo.Describe("Spawn resume", func() {
 		_, err := s.Spawn(ctx, SpawnOptions{Cwd: dir, Resume: resumed})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		ginkgo.DeferCleanup(func() { _ = s.Stop(ctx, resumed) })
-		live := s.sessions[resumed]
+		live := record(s, resumed)
 
 		_, err = s.Spawn(ctx, SpawnOptions{Cwd: dir, Resume: resumed})
 		gomega.Expect(stderrors.Is(err, ErrSessionLive)).To(gomega.BeTrue())
-		gomega.Expect(s.sessions[resumed]).To(gomega.BeIdenticalTo(live))
+		gomega.Expect(record(s, resumed)).To(gomega.BeIdenticalTo(live))
 	})
 
 	ginkgo.It("refuses a resume while another resume of the same id is in flight", func() {

@@ -143,6 +143,13 @@ type supervisor struct {
 // An exited record under that id is replaced. A live one is refused: two
 // children on one conversation would both write its transcript, and the second
 // would silently take over the first's record and question.
+//
+// ⚠️ Known window: the exited child's `--mcp-stdio` grandchild carries the same
+// --session-id. It exits on its parent's stdin EOF, but a registration it had
+// already in flight can land on the replacing record, where it used to hit the
+// exited one and get 410. Such a question names a gate no running child waits
+// on; answering it resolves nothing. Closing it needs a per-child generation in
+// the MCP args, which is not worth the argv change for a sub-second window.
 func (s *supervisor) Spawn(ctx context.Context, options SpawnOptions) (*Session, error) {
 	id := newID()
 	if options.Resume != "" {
