@@ -560,6 +560,14 @@ func (s *RosterToolServer) sendToTabPane(
 			continue
 		}
 		if ledgerRow.PaneID == "" {
+			// Only a LOCAL row is ours to refuse. `interactive` and `headless` are
+			// both this daemon's own spawns, so a missing pane is a real answer for
+			// them; `cluster` and `a2a` rows belong to a remote controller and carry
+			// no pane either, so claiming them here would answer an A2A worker as
+			// unreachable before the A2A arm ever ran.
+			if ledgerRow.Mode != "interactive" && ledgerRow.Mode != "headless" {
+				continue
+			}
 			return true, "", errors.Errorf(
 				ctx,
 				"agent %s is a %s worker with no pane — there is nothing to type into. "+
