@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.6.0
 
 - feat: the wrapper serves the supervisor's roster tools — `list_agents`, `agent_status` and
   `stop_agent` — over a new HTTP MCP face at `/supervisor/mcp`, with the calling session read from
