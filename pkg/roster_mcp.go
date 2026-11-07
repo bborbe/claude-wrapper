@@ -323,10 +323,10 @@ type spawnAgentArgs struct {
 	Shipping    bool              `json:"shipping"`
 }
 
-// spawnAgent creates a worker on an a2a-worker-controller.
+// spawnAgent creates a worker on an a2a-worker-controller or in a WezTerm tab.
 //
-// ⚠️ ONLY THE A2A TARGETS ARE PORTED IN THIS SLICE. A `local` spawn — a WezTerm
-// tab or an in-process headless worker — belongs to a later slice, and refusing
+// Dispatch is by TARGET: the A2A targets go to the controller, `local` (or no
+// target) opens a tab. Headless spawning is still a later slice, and refusing it
 // by name is what keeps a caller from reading a missing feature as a broken one.
 func (s *RosterToolServer) spawnAgent(
 	ctx context.Context,
@@ -436,6 +436,35 @@ func (s *RosterToolServer) spawnLocalTarget(
 				"worker could be opened",
 		)
 	}
+	// Arguments the tab path cannot honour are REFUSED, never dropped: the tab
+	// launches a `cc-*` script, which is never handed `--resume` or a policy, so
+	// accepting either would do real work and then discard what was asked for.
+	if body.Resume {
+		return "", errors.Errorf(
+			ctx,
+			"`resume` reaches a headless worker only — the tab path launches the cc-* "+
+				"launcher, which is not handed the flag, so the call would open a fresh "+
+				"conversation while you believed it continued one",
+		)
+	}
+	if body.Policy != "" {
+		return "", errors.Errorf(
+			ctx,
+			"`policy` reaches a headless worker only — a tab worker answers its own "+
+				"prompts in its own tab, so the server never sees them and a policy "+
+				"handed to one would never be consulted",
+		)
+	}
+	if body.Shipping {
+		return "", errors.Errorf(
+			ctx,
+			"`shipping` needs the server to set the worker's permission mode, which "+
+				"this slice does not do for a tab — omit it",
+		)
+	}
+	if err := ValidateTabEnv(ctx, body.Env); err != nil {
+		return "", err
+	}
 	windowID, err := parseWindowID(ctx, body.WindowID)
 	if err != nil {
 		return "", err
@@ -477,8 +506,13 @@ func parseWindowID(ctx context.Context, raw string) (*int, error) {
 // row: the roster deliberately carries no pane handle, and the pane is the only
 // thing a message can be typed into.
 //
-// `sent: true` means the keystrokes reached the pty and nothing more — it is not
-// delivery and not compliance, since the worker may never read it.
+// The id may be the roster's own agent id or the session id the spawn returned —
+// both name the same worker, and the spawn response hands the caller the session
+// id because that is the only identity a tab worker has.
+//
+// `sent: true` means the message was typed AND its submit was confirmed in the
+// pane's own output. The send's exit code alone would report keystrokes reaching
+// the pty, which is true whether or not anything ran.
 func (s *RosterToolServer) sendToTabPane(
 	ctx context.Context,
 	agentID string,
@@ -487,26 +521,30 @@ func (s *RosterToolServer) sendToTabPane(
 	if s.Tabs == nil || s.Roster == nil || s.Ledger == nil {
 		return false, "", nil
 	}
-	rows, err := s.Roster.List(ctx)
-	if err != nil {
-		return false, "", nil
-	}
 	sessionID := ""
-	for _, row := range rows {
-		if row.AgentID == agentID {
-			sessionID = row.SessionID
-			break
+	if rows, err := s.Roster.List(ctx); err != nil {
+		// A roster that cannot be read must not read as "not a tab worker": the
+		// caller would then be told the agent is unknown, which is a different
+		// and false fact. Degrade loudly, as the roster itself does.
+		log.Printf(
+			"WARNING: the roster could not be read (%v) — resolving agent %q against the ledger only",
+			err,
+			agentID,
+		)
+	} else {
+		for _, row := range rows {
+			if row.AgentID == agentID {
+				sessionID = row.SessionID
+				break
+			}
 		}
-	}
-	if sessionID == "" {
-		return false, "", nil
 	}
 	ledgerRows, err := s.Ledger.Rows(ctx)
 	if err != nil {
 		return false, "", nil
 	}
 	for _, ledgerRow := range ledgerRows {
-		if ledgerRow.SessionID != sessionID {
+		if ledgerRow.SessionID != sessionID && ledgerRow.SessionID != agentID {
 			continue
 		}
 		if ledgerRow.PaneID == "" {
@@ -519,13 +557,14 @@ func (s *RosterToolServer) sendToTabPane(
 				ledgerRow.Mode,
 			)
 		}
-		if err := s.Tabs.SendText(ctx, ledgerRow.PaneID, text); err != nil {
+		if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text); err != nil {
 			return true, "", err
 		}
 		response, err := marshalJSON(ctx, map[string]any{
-			"agent_id": agentID,
-			"sent":     true,
-			"pane_id":  ledgerRow.PaneID,
+			"agent_id":   agentID,
+			"sent":       true,
+			"pane_id":    ledgerRow.PaneID,
+			"session_id": ledgerRow.SessionID,
 		})
 		return true, response, err
 	}

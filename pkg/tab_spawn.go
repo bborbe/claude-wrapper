@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -33,19 +34,26 @@ type TabSpawnRequest struct {
 // is a successful spawn with an unresolved identity, not a failure: the tab is
 // open and usable, but there is no key to file a ledger row under and no id to
 // address a follow-up message to.
+// The wire names are snake_case because the rest of the MCP surface is
+// (`send_agent_message` answers `agent_id`, `pane_id`, `session_id`), and a
+// caller reading `agent_id` off a PascalCase payload gets nothing at all.
 type TabSpawnResult struct {
-	AgentID   string
-	Label     string
-	Cwd       string
-	Vault     string
-	Launcher  string
-	Source    string
-	Model     string
-	Role      string
-	PaneID    string
-	SessionID string
-	TabName   string
-	Color     string
+	// AgentID is the handle a follow-up `send_agent_message` addresses. A tab
+	// worker has one identity — its session id — so this is that id, and it is
+	// empty exactly when SessionID is.
+	AgentID      string `json:"agent_id"`
+	Label        string `json:"label"`
+	Cwd          string `json:"cwd"`
+	Vault        string `json:"vault"`
+	Launcher     string `json:"launcher"`
+	Source       string `json:"launcher_source"`
+	Model        string `json:"model"`
+	Role         string `json:"role"`
+	PaneID       string `json:"pane_id"`
+	SessionID    string `json:"session_id"`
+	TabName      string `json:"tab_name"`
+	Color        string `json:"color,omitempty"`
+	ColorApplied bool   `json:"color_applied"`
 }
 
 // TabSpawner opens a named WezTerm tab for a worker.
@@ -74,6 +82,7 @@ func NewTabSpawner(
 		vaults:     vaults,
 		ledger:     ledger,
 		now:        now,
+		sleep:      time.Sleep,
 		exitRecord: exitRecord,
 	}
 }
@@ -88,12 +97,15 @@ const (
 )
 
 type tabSpawner struct {
-	tabs       TabClient
-	registry   SessionRegistry
-	roleMap    RoleMapReader
-	vaults     VaultLister
-	ledger     LedgerReader
-	now        libtime.CurrentDateTimeGetter
+	tabs     TabClient
+	registry SessionRegistry
+	roleMap  RoleMapReader
+	vaults   VaultLister
+	ledger   LedgerReader
+	now      libtime.CurrentDateTimeGetter
+	// sleep is the registration poll's wait, injected so a test clock and the
+	// loop's notion of elapsed time are the same source.
+	sleep      func(time.Duration)
 	exitRecord string
 }
 
@@ -114,7 +126,10 @@ func (s *tabSpawner) Spawn(
 	if err != nil {
 		return nil, err
 	}
-	target, err := ResolveWorkerTarget(ctx, vaults, request.Cwd, request.Vault, "")
+	// The server's own cwd is named in the refusal a bare spawn produces, so the
+	// caller can see which directory a defaulted spawn would have used.
+	serverCwd, _ := os.Getwd()
+	target, err := ResolveWorkerTarget(ctx, vaults, request.Cwd, request.Vault, serverCwd)
 	if err != nil {
 		return nil, err
 	}
@@ -166,15 +181,19 @@ func (s *tabSpawner) Spawn(
 		TabName:  tabName,
 	}
 
-	// The colour is a separate submit AFTER the prompt is up, and it never
+	// The colour is a separate submit AFTER the composer is up, and it never
 	// carries the task prompt with it: `/color` takes the whole trimmed argument,
 	// so `/color pink\n<task>` fails validation.
 	if chip := ChipForRole(role, target.Vault); chip != "" && paneID != "" {
 		result.Color = chip
-		_ = s.sendColor(ctx, paneID, chip)
+		// Reported, not assumed: the node server logs a failed colour and still
+		// reports the spawn, because a worker in the wrong colour is usable and a
+		// worker that never opened is not. `color_applied` is what the caller reads.
+		result.ColorApplied = s.sendColor(ctx, paneID, chip) == nil
 	}
 
 	result.SessionID = s.awaitRegistration(ctx, tabName, preexisting)
+	result.AgentID = result.SessionID
 	s.postLedger(ctx, request.SpawnerSessionID, result)
 	return result, nil
 }
@@ -194,6 +213,10 @@ func (s *tabSpawner) postLedger(
 		return
 	}
 	_ = s.ledger.Post(ctx, spawnerSessionID, LedgerRow{
+		// AgentID is REQUIRED for the row to be adopted: the roster skips an
+		// id-less record, so a row without it leaves the worker invisible to
+		// `list_agents` and unreachable by `send_agent_message`.
+		AgentID:   result.AgentID,
 		SessionID: result.SessionID,
 		Label:     result.Label,
 		Cwd:       result.Cwd,
@@ -208,15 +231,21 @@ func (s *tabSpawner) postLedger(
 //
 // Best-effort by design: the node server logs a failed colour and still reports
 // the spawn, because a worker in the wrong colour is usable and a worker that
-// never opened is not.
+// never opened is not. It goes through the same ready-gated send as any other
+// message, so the colour is not typed into a pane that is still booting.
 func (s *tabSpawner) sendColor(ctx context.Context, paneID, chip string) error {
-	return s.tabs.SendText(ctx, paneID, "/color "+chip)
+	return SendWhenReady(ctx, s.tabs, paneID, "/color "+chip)
 }
 
 // awaitRegistration polls the registry for the session this spawn created.
 //
 // The exclusion set is what makes the join sound: without it a slow register
 // from a previous spawn under the same name is indistinguishable from this one.
+//
+// The deadline is read from the injected clock AND the wait is an injected
+// sleeper, because the two must come from the same source: a loop that compares
+// an injected clock against a real `time.After` never advances under a test
+// clock and spins until the process is killed.
 func (s *tabSpawner) awaitRegistration(
 	ctx context.Context,
 	tabName string,
@@ -234,7 +263,8 @@ func (s *tabSpawner) awaitRegistration(
 		select {
 		case <-ctx.Done():
 			return ""
-		case <-time.After(registrationInterval):
+		default:
 		}
+		s.sleep(registrationInterval)
 	}
 }

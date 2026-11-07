@@ -55,9 +55,8 @@ type LedgerRow struct {
 	PaneID string `json:"pane_id,omitempty"`
 	// Role is the resolved role the spawn ran under.
 	//
-	// The store accepts it on every row, but this struct did not carry it until
-	// slice 2: a tab spawn's role is what explains its window and colour, so a row
-	// without it cannot answer "why is this worker pink".
+	// A tab spawn's role is what explains its window and colour, so a row without
+	// it cannot answer "why is this worker pink".
 	Role string `json:"role,omitempty"`
 	// ModeSource names the chain step that decided the spawn mode, so a mode that
 	// surprised the caller can be traced to the env, the config file or the

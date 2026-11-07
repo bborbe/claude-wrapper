@@ -171,16 +171,25 @@ func resolveByCwd(
 	if trimmed == "" {
 		return nil, errors.Wrapf(ctx, ErrUnknownVault, "vault %q is not configured", vault)
 	}
+	// The MOST SPECIFIC vault wins, not the first one listed: configured paths can
+	// nest (an Obsidian root and a vault inside it), and taking the first match
+	// would run a worker under the parent's launcher.
+	best := -1
 	for i := range vaults {
 		if vaults[i].Path == "" || !within(trimmed, vaults[i].Path) {
 			continue
 		}
-		launcher, source, err := launcherForVault(ctx, &vaults[i])
+		if best == -1 || len(vaults[i].Path) > len(vaults[best].Path) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		launcher, source, err := launcherForVault(ctx, &vaults[best])
 		if err != nil {
 			return nil, err
 		}
 		return &WorkerTarget{
-			Cwd: trimmed, Vault: vaults[i].Name, Launcher: launcher, Source: source,
+			Cwd: trimmed, Vault: vaults[best].Name, Launcher: launcher, Source: source,
 		}, nil
 	}
 	return nil, errors.Wrapf(
@@ -277,12 +286,18 @@ func hasDotDotSegment(value string) bool {
 }
 
 // within reports whether path is inside root.
+//
+// Both sides are resolved through symlinks first, because a string comparison
+// refuses a path that reaches the same directory by another name: the Obsidian
+// vaults are opened through `~/Documents/Obsidian/Personal`, a symlink to
+// `private-personal`, and `/tmp` is `/private/tmp` on macOS. A path that cannot
+// be resolved (it does not exist yet) falls back to its absolute form.
 func within(path, root string) bool {
-	cleanPath, err := filepath.Abs(path)
+	cleanPath, err := resolvePath(path)
 	if err != nil {
 		return false
 	}
-	cleanRoot, err := filepath.Abs(root)
+	cleanRoot, err := resolvePath(root)
 	if err != nil {
 		return false
 	}
@@ -290,6 +305,16 @@ func within(path, root string) bool {
 		return true
 	}
 	return strings.HasPrefix(cleanPath, cleanRoot+string(os.PathSeparator))
+}
+
+// resolvePath returns path with symlinks resolved, falling back to its absolute
+// form when it cannot be resolved.
+func resolvePath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Abs(resolved)
+	}
+	return filepath.Abs(path)
 }
 
 // vaultNames renders the configured vault names for a refusal message.

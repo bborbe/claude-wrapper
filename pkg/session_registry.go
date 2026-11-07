@@ -192,7 +192,8 @@ func (r *sessionRegistry) Named(ctx context.Context, name string) ([]string, err
 	return ids, nil
 }
 
-// pidAlive reports whether a pid names a running process.//
+// pidAlive reports whether a pid names a running process.
+//
 // Signal 0 performs the permission and existence checks without delivering
 // anything. EPERM means "there, but not yours", which is a live process every
 // bit as much as ESRCH is a dead one — folding it into "dead" would make every
