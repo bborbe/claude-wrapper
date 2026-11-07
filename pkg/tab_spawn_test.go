@@ -353,6 +353,21 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 		gomega.Expect(tabs.texts).To(gomega.BeEmpty())
 	})
 
+	ginkgo.It("leaves a remote worker to the A2A arm", func() {
+		// A cluster row carries no pane by design. Claiming it here would answer an
+		// A2A worker as unreachable before the A2A arm ever ran.
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "cluster"}}
+		server := &RosterToolServer{
+			Tabs:   tabs,
+			Roster: &fakeRoster{},
+			Ledger: ledger,
+		}
+		handled, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(handled).To(gomega.BeFalse())
+		gomega.Expect(tabs.texts).To(gomega.BeEmpty())
+	})
+
 	ginkgo.It("reports a headless worker rather than typing nowhere", func() {
 		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
 		server := &RosterToolServer{
