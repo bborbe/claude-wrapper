@@ -63,18 +63,32 @@ type PermissionDecider struct {
 	Via string
 }
 
-// Decide evaluates one park and writes its permissions record.
+// Decide evaluates one park. It writes NOTHING.
 //
-// The record is written for EVERY verdict, including an escalation: a park left
-// for the manager must be visible in the log, or the log reads as "the policy
-// saw nothing" for the requests it deliberately declined.
+// ⚠️ The record is a separate call, made by the caller AFTER the answer has
+// landed: a `decided_by: policy` row means "the policy released this park", and
+// writing it first would record a delivery that may never have happened.
 func (d *PermissionDecider) Decide(
 	ctx context.Context,
 	agentID string,
 	policy PolicyContext,
 	question Question,
 ) Verdict {
-	verdict := Decide(policy.Rules, question.ToolName, question.Input, policy.Cwd)
+	return Decide(policy.Rules, question.ToolName, question.Input, policy.Cwd)
+}
+
+// RecordDecided writes the permissions record for a verdict.
+//
+// It is written for EVERY verdict, including an escalation: a park left for the
+// manager must be visible in the log, or the log reads as "the policy saw
+// nothing" for the requests it deliberately declined.
+func (d *PermissionDecider) RecordDecided(
+	ctx context.Context,
+	agentID string,
+	policy PolicyContext,
+	question Question,
+	verdict Verdict,
+) {
 	record := PermissionRecord{
 		Agent:       agentID,
 		Label:       policy.Label,
@@ -96,7 +110,6 @@ func (d *PermissionDecider) Decide(
 		record.DecidedBy = DecidedByEscalated
 	}
 	d.write(ctx, record)
-	return verdict
 }
 
 // via is the record's `via` value, defaulted.

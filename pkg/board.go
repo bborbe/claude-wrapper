@@ -280,9 +280,21 @@ func answerFor(item BoardItem, mechanism string, question Question, session *Ses
 			log.Printf("board delivery: item %s carries no decision", item.ItemID)
 			return Answer{}, false
 		}
+		// ⚠️ The arm guard, ported verbatim: a permission gate releases only on an
+		// arm answer, and the sole exception is a board answer on a HEADLESS park.
+		// A permission approval EXECUTES a command, so it is the one class a
+		// scripted click must not be able to take; a tab worker answers in its own
+		// tab, so a board answer for one is a defect rather than an answer.
+		if item.ResolvedBy == "" && session.Mode != "headless" {
+			log.Printf(
+				"board delivery: item %s carries no resolved_by and its producer is not headless — refusing to release a permission gate",
+				item.ItemID,
+			)
+			return Answer{}, false
+		}
 		return Answer{Kind: question.Kind, Behavior: item.Decision}, true
 	case "message":
-		return messageAnswer(item, question, session)
+		return messageAnswer(item, question)
 	default:
 		return Answer{}, false
 	}
@@ -292,13 +304,13 @@ func answerFor(item BoardItem, mechanism string, question Question, session *Ses
 //
 // ⚠️ deny + a message, never allow: an allow runs an AskUserQuestion in a
 // tty-less session, where it waits and the worker exits unanswered.
-func messageAnswer(item BoardItem, question Question, session *Session) (Answer, bool) {
+func messageAnswer(item BoardItem, question Question) (Answer, bool) {
 	text := messageTextOf(item)
 	if text == "" {
 		log.Printf("board delivery: item %s carries no answer content", item.ItemID)
 		return Answer{}, false
 	}
-	if stale(item, session) {
+	if stale(item, question) {
 		log.Printf("board delivery: item %s predates its park — refusing to settle", item.ItemID)
 		return Answer{}, false
 	}
@@ -314,15 +326,15 @@ func messageAnswer(item BoardItem, question Question, session *Session) (Answer,
 //
 // The park is joined by producer, and one producer answers many cards over its
 // life, so without this an old answer would settle a new park.
-func stale(item BoardItem, session *Session) bool {
-	if item.CreatedAt == "" || !session.StartedAt.After(time.Time{}) {
+func stale(item BoardItem, question Question) bool {
+	if item.CreatedAt == "" || question.RequestedAt.IsZero() {
 		return false
 	}
 	createdAt, err := time.Parse(time.RFC3339, item.CreatedAt)
 	if err != nil {
 		return false
 	}
-	return createdAt.Before(session.StartedAt.Add(-FreshnessSkew))
+	return createdAt.Before(question.RequestedAt.Add(-FreshnessSkew))
 }
 
 func (d *BoardDelivery) carrier() string {

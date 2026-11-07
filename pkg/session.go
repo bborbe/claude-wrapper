@@ -170,6 +170,12 @@ type Question struct {
 	ToolUseID string           `json:"tool_use_id,omitempty"`
 	Input     map[string]any   `json:"input,omitempty"`
 	Questions []QuestionPrompt `json:"questions,omitempty"`
+	// RequestedAt is when this process registered the park.
+	//
+	// It is the join a board answer's freshness is measured against: the park is
+	// joined to its card by producer, and one producer answers many cards over its
+	// life, so an answer from an earlier gate must not settle this one.
+	RequestedAt time.Time `json:"requested_at"`
 }
 
 // Session is the REST view of one wrapped claude child.
@@ -189,8 +195,12 @@ type Session struct {
 	Question       *Question `json:"question"`
 	Controls       Controls  `json:"controls"`
 	Cwd            string    `json:"cwd"`
-	StartedAt      time.Time `json:"started_at"`
-	ExitCode       *int      `json:"exit_code"`
+	// Mode is "headless" or "interactive", resolved at spawn. It is the flag a
+	// board answer consults before releasing a permission gate: only a headless
+	// park has no pane of its own, so only its gate needs the board.
+	Mode      string    `json:"mode"`
+	StartedAt time.Time `json:"started_at"`
+	ExitCode  *int      `json:"exit_code"`
 	// LastEventAgeSeconds is how long the child's stream has been silent.
 	//
 	// It is reported so a caller can tell a genuinely idle child from one that

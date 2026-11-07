@@ -364,6 +364,9 @@ func (s *RosterToolServer) awaitPermission(
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
 	}
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "await_permission is not wired")
+	}
 	requestID := body.RequestID
 	if requestID == "" {
 		session, err := s.Supervisor.Get(ctx, body.AgentID)
@@ -405,6 +408,9 @@ func (s *RosterToolServer) awaitPermission(
 
 // pendingPermissions lists every park this process holds.
 func (s *RosterToolServer) pendingPermissions(ctx context.Context) (string, error) {
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "pending_permissions is not wired")
+	}
 	sessions, err := s.Supervisor.List(ctx)
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "list sessions failed")

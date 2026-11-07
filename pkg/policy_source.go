@@ -44,6 +44,11 @@ type PolicyFile struct {
 // UserPolicyPath is the overlay path this process would read.
 func UserPolicyPath() string {
 	if path := os.Getenv(UserPolicyEnv); path != "" {
+		// Expanded: `SUPERVISOR_POLICY=~/…` is a shape operators write, and an
+		// unexpanded `~` would silently disable the overlay rather than fail.
+		if expanded, err := expandHome(path); err == nil {
+			return expanded
+		}
 		return path
 	}
 	home, err := os.UserHomeDir()
@@ -109,7 +114,11 @@ func ResolvePolicy(ctx context.Context, spawnPath string) ([]Rule, error) {
 
 	userPath := UserPolicyPath()
 	if userPath != "" {
-		if _, statErr := os.Stat(userPath); statErr == nil {
+		// Absent is legal (most machines have no overlay). Any OTHER stat failure —
+		// a permission problem, a path through a dead mount — must not be read as
+		// "no overlay", because that silently applies the bundled rules to a worker
+		// the operator deliberately narrowed.
+		if _, statErr := os.Stat(userPath); statErr == nil || !os.IsNotExist(statErr) {
 			userRules, loadErr := LoadPolicyFile(ctx, userPath)
 			if loadErr != nil {
 				return nil, loadErr

@@ -63,6 +63,14 @@ type SpawnOptions struct {
 	// server applies. A file that cannot be read refuses the spawn rather than
 	// quietly becoming "no override".
 	Policy string `json:"policy"`
+	// Mode is "headless" or "interactive". Empty means headless, which is what
+	// every wrapper child is today.
+	//
+	// ⚠️ It gates ONE thing: a board answer may release a `permission` gate only
+	// for a headless producer. A tab worker answers its own prompts in its tab, so
+	// a board click for one is a defect rather than an answer — and a permission
+	// approval EXECUTES a command.
+	Mode string `json:"mode"`
 }
 
 // Supervisor owns the claude children this process spawned.
@@ -359,10 +367,14 @@ func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Q
 	if c.isExited() {
 		return errors.Wrapf(ctx, ErrSessionExited, "session %q exited", id)
 	}
+	question.RequestedAt = s.now.Now().Time()
 	s.pending.Register(question.RequestID, question)
 	c.setQuestion(question)
-	s.applyPolicy(ctx, id, c, question)
-	s.scheduleTimeout(ctx, id, c, question)
+	// A park the policy already released needs no timeout: scheduling one would
+	// leave a goroutine holding a 15-minute timer for the common case.
+	if !s.applyPolicy(ctx, id, c, question) {
+		s.scheduleTimeout(ctx, id, c, question)
+	}
 	return nil
 }
 
@@ -376,9 +388,19 @@ func (s *supervisor) resolvePolicy(
 	ctx context.Context,
 	options SpawnOptions,
 ) (PolicyContext, error) {
+	// ⚠️ An empty cwd is resolved to this process's working directory rather than
+	// left empty: `match: "cwd"` compares against it, so an empty one makes every
+	// `Write`/`Edit` escalate — the bundled defaults would silently stop applying
+	// to the workers they were written for.
+	cwd := options.Cwd
+	if cwd == "" {
+		if resolved, err := os.Getwd(); err == nil {
+			cwd = resolved
+		}
+	}
 	spawnPath := options.Policy
-	if spawnPath != "" && !filepath.IsAbs(spawnPath) && options.Cwd != "" {
-		spawnPath = filepath.Join(options.Cwd, spawnPath)
+	if spawnPath != "" && !filepath.IsAbs(spawnPath) && cwd != "" {
+		spawnPath = filepath.Join(cwd, spawnPath)
 	}
 	rules, err := ResolvePolicy(ctx, spawnPath)
 	if err != nil {
@@ -386,7 +408,7 @@ func (s *supervisor) resolvePolicy(
 	}
 	return PolicyContext{
 		Label:      options.Label,
-		Cwd:        options.Cwd,
+		Cwd:        cwd,
 		PolicyPath: spawnPath,
 		Rules:      rules,
 	}, nil
@@ -398,31 +420,44 @@ func (s *supervisor) resolvePolicy(
 // an allow or deny is recorded and answered before the child's tool has made its
 // first read — which is what removes the node server's 2-second interval from
 // the latency of a policy-allowed prompt.
-func (s *supervisor) applyPolicy(ctx context.Context, id string, c *child, question Question) {
+func (s *supervisor) applyPolicy(ctx context.Context, id string, c *child, question Question) bool {
 	if s.policy.Decider == nil || !IsPermissionQuestion(question) {
-		return
+		return false
 	}
 	verdict := s.policy.Decider.Decide(ctx, id, c.policy, question)
 	if verdict.Action != ActionAllow && verdict.Action != ActionDeny {
-		// Escalate: leave the park exactly where it is, for the manager.
-		return
+		// Escalate: leave the park exactly where it is, for the manager — and
+		// record it, or the log reads as "the policy saw nothing".
+		s.policy.Decider.RecordDecided(ctx, id, c.policy, question, verdict)
+		return false
 	}
 	behavior := string(verdict.Action)
+	// ⚠️ The answer's kind must match the park's. A question-class park answered
+	// with a permission-kind answer is refused by the registry, which would leave
+	// the park open while the log claimed it was released.
+	kind := question.Kind
+	if kind == "" {
+		kind = AnswerKindPermission
+	}
 	if err := s.Answer(ctx, id, question.RequestID, Answer{
-		Kind:     AnswerKindPermission,
+		Kind:     kind,
 		Behavior: behavior,
 	}); err != nil {
 		log.Printf(
 			"WARNING: policy %s for %s could not be delivered: %v",
 			behavior, question.RequestID, err,
 		)
-		return
+		return false
 	}
+	// Recorded only now: the row means the policy released this park, so it must
+	// follow the delivery rather than precede it.
+	s.policy.Decider.RecordDecided(ctx, id, c.policy, question, verdict)
 	matched := ""
 	if rule := verdict.MatchedRule(); rule != nil {
 		matched = *rule
 	}
 	log.Printf("policy %s %s for %s (%s)", behavior, question.ToolName, id, matched)
+	return true
 }
 
 // scheduleTimeout denies a park nobody answered in time.
@@ -453,9 +488,12 @@ func (s *supervisor) scheduleTimeout(
 		case <-s.ctx.Done():
 			return
 		case <-ctx.Done():
-			// The registering request ending says nothing about the park: the
-			// child's tool polls over its own connections. Only the daemon's own
-			// shutdown cancels a timeout.
+			// ⚠️ The registering request ending says nothing about the park — the
+			// child's tool polls over its own connections — so this arm must
+			// RETURN, not fall through. Falling through denied the park the moment
+			// POST /question responded, which made every escalated park unanswerable
+			// and board delivery unreachable.
+			return
 		case <-timer.C:
 		}
 		pending, err := s.pending.Peek(question.RequestID)
@@ -533,6 +571,13 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err := validateArgv(ctx, options); err != nil {
 		return nil, err
 	}
+	// Resolved BEFORE the child starts: an unreadable overlay must refuse the
+	// spawn with no process behind it, not return an error while a live, unreaped
+	// child holds stdin and an undrained stdout pipe.
+	policy, err := s.resolvePolicy(ctx, options)
+	if err != nil {
+		return nil, err
+	}
 	mcpConfig, err := writeMCPConfig(ctx, id, s.selfURL, s.childHold())
 	if err != nil {
 		return nil, err
@@ -561,12 +606,6 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		return nil, errors.Wrapf(ctx, err, "start claude failed")
 	}
 
-	policy, err := s.resolvePolicy(ctx, options)
-	if err != nil {
-		// Refused before the child is registered, so an unreadable overlay leaves
-		// no session behind that would park with no policy at all.
-		return nil, err
-	}
 	c := &child{
 		id:          id,
 		now:         s.now,
@@ -579,6 +618,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 			State:     StateStarting,
 			Controls:  []Control{ControlMessage},
 			Cwd:       options.Cwd,
+			Mode:      sessionMode(options.Mode),
 			StartedAt: s.now.Now().Time().UTC(),
 		},
 	}
@@ -659,6 +699,17 @@ func (s *supervisor) childHold() time.Duration {
 		return 90 * time.Second
 	}
 	return s.policy.PermissionTimeout + childHoldMargin
+}
+
+// sessionMode resolves a spawn's mode, defaulting to headless.
+//
+// Empty means headless because every child this daemon spawns today is one: a
+// tab worker arrives with slice 2 and names itself then.
+func sessionMode(mode string) string {
+	if mode == "interactive" {
+		return "interactive"
+	}
+	return "headless"
 }
 
 // holdArgs renders the child tool's hold as CLI arguments.
