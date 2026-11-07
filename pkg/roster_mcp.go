@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 
 	"github.com/bborbe/claude-wrapper/pkg/a2a"
 )
@@ -72,6 +73,17 @@ type RosterToolServer struct {
 	// Tabs types into a tab worker's pane for send_agent_message. Nil means a tab
 	// worker cannot be messaged.
 	Tabs TabClient
+	// Now bounds the pane-send readiness and confirmation polls. Nil falls back to
+	// the system clock, which is what a test wants to override.
+	Now libtime.CurrentDateTimeGetter
+}
+
+// currentDateTime returns the clock the pane polls run on.
+func (s *RosterToolServer) currentDateTime() libtime.CurrentDateTimeGetter {
+	if s.Now == nil {
+		return libtime.NewCurrentDateTime()
+	}
+	return s.Now
 }
 
 // ServeHTTP serves one roster MCP request.
@@ -557,7 +569,7 @@ func (s *RosterToolServer) sendToTabPane(
 				ledgerRow.Mode,
 			)
 		}
-		if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text); err != nil {
+		if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime()); err != nil {
 			return true, "", err
 		}
 		response, err := marshalJSON(ctx, map[string]any{

@@ -234,7 +234,7 @@ func (s *tabSpawner) postLedger(
 // never opened is not. It goes through the same ready-gated send as any other
 // message, so the colour is not typed into a pane that is still booting.
 func (s *tabSpawner) sendColor(ctx context.Context, paneID, chip string) error {
-	return SendWhenReady(ctx, s.tabs, paneID, "/color "+chip)
+	return SendWhenReady(ctx, s.tabs, paneID, "/color "+chip, s.now)
 }
 
 // awaitRegistration polls the registry for the session this spawn created.

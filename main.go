@@ -171,6 +171,7 @@ func startFleetFaces(
 		A2A:        a2aManager,
 		Spawner:    tabSpawner,
 		Tabs:       tabs,
+		Now:        now,
 	})
 
 	// The central heartbeat poster. It runs beside the HTTP server rather than

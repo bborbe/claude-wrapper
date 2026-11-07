@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 )
 
 // promptGlyph marks the composer line of a Claude Code tab.
@@ -310,14 +311,20 @@ const (
 // reached the pty — true whether or not anything submitted. So the verdict is
 // the pane's own output, and an unconfirmed submit is retried once with a bare
 // Enter before being reported as a failure.
-func SendWhenReady(ctx context.Context, tabs TabClient, paneID, text string) error {
-	if err := waitComposer(ctx, tabs, paneID, composerDeadline); err != nil {
+func SendWhenReady(
+	ctx context.Context,
+	tabs TabClient,
+	paneID string,
+	text string,
+	now libtime.CurrentDateTimeGetter,
+) error {
+	if err := waitComposer(ctx, tabs, paneID, composerDeadline, now); err != nil {
 		return err
 	}
 	if err := tabs.SendText(ctx, paneID, text); err != nil {
 		return err
 	}
-	if confirmSubmission(ctx, tabs, paneID, text) {
+	if confirmSubmission(ctx, tabs, paneID, text, now) {
 		return nil
 	}
 	// The Enter was swallowed. An extra Enter on an empty composer is harmless,
@@ -325,7 +332,7 @@ func SendWhenReady(ctx context.Context, tabs TabClient, paneID, text string) err
 	if err := tabs.SendText(ctx, paneID, ""); err != nil {
 		return err
 	}
-	if confirmSubmission(ctx, tabs, paneID, text) {
+	if confirmSubmission(ctx, tabs, paneID, text, now) {
 		return nil
 	}
 	return errors.Errorf(
@@ -337,8 +344,14 @@ func SendWhenReady(ctx context.Context, tabs TabClient, paneID, text string) err
 }
 
 // waitComposer polls a pane until its composer is empty and accepting input.
-func waitComposer(ctx context.Context, tabs TabClient, paneID string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+func waitComposer(
+	ctx context.Context,
+	tabs TabClient,
+	paneID string,
+	timeout time.Duration,
+	now libtime.CurrentDateTimeGetter,
+) error {
+	deadline := now.Now().Time().Add(timeout)
 	var lastErr error
 	for {
 		output, err := tabs.Text(ctx, paneID)
@@ -346,7 +359,7 @@ func waitComposer(ctx context.Context, tabs TabClient, paneID string, timeout ti
 			return nil
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
+		if now.Now().Time().After(deadline) {
 			if lastErr != nil {
 				return errors.Wrapf(
 					ctx, lastErr, "pane %s could not be read within %s", paneID, timeout,
@@ -369,14 +382,20 @@ func waitComposer(ctx context.Context, tabs TabClient, paneID string, timeout ti
 }
 
 // confirmSubmission polls a pane for a fresh prompt below the message.
-func confirmSubmission(ctx context.Context, tabs TabClient, paneID, text string) bool {
-	deadline := time.Now().Add(confirmDeadline)
+func confirmSubmission(
+	ctx context.Context,
+	tabs TabClient,
+	paneID string,
+	text string,
+	now libtime.CurrentDateTimeGetter,
+) bool {
+	deadline := now.Now().Time().Add(confirmDeadline)
 	for {
 		if output, err := tabs.Text(ctx, paneID); err == nil &&
 			SubmissionConfirmed(output, text) {
 			return true
 		}
-		if time.Now().After(deadline) {
+		if now.Now().Time().After(deadline) {
 			return false
 		}
 		select {

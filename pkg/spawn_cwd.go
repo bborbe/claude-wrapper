@@ -289,9 +289,9 @@ func hasDotDotSegment(value string) bool {
 //
 // Both sides are resolved through symlinks first, because a string comparison
 // refuses a path that reaches the same directory by another name: the Obsidian
-// vaults are opened through `~/Documents/Obsidian/Personal`, a symlink to
-// `private-personal`, and `/tmp` is `/private/tmp` on macOS. A path that cannot
-// be resolved (it does not exist yet) falls back to its absolute form.
+// vaults are routinely opened through a symlink to the vault's real directory,
+// and `/tmp` is `/private/tmp` on macOS. A path that cannot be resolved (it does
+// not exist yet) falls back to its absolute form.
 func within(path, root string) bool {
 	cleanPath, err := resolvePath(path)
 	if err != nil {
