@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +53,16 @@ type SpawnOptions struct {
 	// flag, not as a setting, so no setting source can reach it, and a child
 	// without it has measurably fewer servers than its hand-started twin.
 	MCPConfigs []string `json:"mcp_configs"`
+	// Label is the agent's human name, carried into the permissions record so a
+	// decision is attributable without a second lookup.
+	Label string `json:"label"`
+	// Policy is a per-spawn policy overlay path, evaluated ahead of the user
+	// overlay and the bundled defaults.
+	//
+	// A relative path resolves against the child's cwd, the same rule the node
+	// server applies. A file that cannot be read refuses the spawn rather than
+	// quietly becoming "no override".
+	Policy string `json:"policy"`
 }
 
 // Supervisor owns the claude children this process spawned.
@@ -93,6 +104,34 @@ func NewSupervisor(
 	now libtime.CurrentDateTimeGetter,
 	selfURL string,
 ) Supervisor {
+	return NewSupervisorWithPolicy(ctx, claudeBin, now, selfURL, SupervisorPolicy{})
+}
+
+// SupervisorPolicy wires the in-process approval policy into a supervisor.
+//
+// It is a separate argument rather than a constructor option so a caller that
+// has no policy (every existing test) keeps the old two-argument behaviour and
+// gets an undecided park, which is what it had before this slice.
+type SupervisorPolicy struct {
+	// Decider applies the rules and writes the permissions record. Nil leaves
+	// every park for the manager.
+	Decider *PermissionDecider
+	// PermissionTimeout is how long a headless park waits before it is denied.
+	//
+	// The wrapper is the only process that can release a headless child's park,
+	// so this is where the 15-minute window the node server enforced now lives.
+	// Zero disables the timeout entirely.
+	PermissionTimeout time.Duration
+}
+
+// NewSupervisorWithPolicy creates a Supervisor with an approval policy.
+func NewSupervisorWithPolicy(
+	ctx context.Context,
+	claudeBin string,
+	now libtime.CurrentDateTimeGetter,
+	selfURL string,
+	policy SupervisorPolicy,
+) Supervisor {
 	return &supervisor{
 		ctx:       ctx,
 		claudeBin: claudeBin,
@@ -101,6 +140,7 @@ func NewSupervisor(
 		mutex:     sync.RWMutex{},
 		sessions:  map[string]*child{},
 		pending:   NewPending(),
+		policy:    policy,
 	}
 }
 
@@ -123,6 +163,9 @@ type supervisor struct {
 	// starting holds the ids of resume spawns in flight; see reserve.
 	starting map[string]struct{}
 	pending  Pending
+	// policy is the in-process approval policy; the zero value leaves every park
+	// for the manager.
+	policy SupervisorPolicy
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -318,7 +361,123 @@ func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Q
 	}
 	s.pending.Register(question.RequestID, question)
 	c.setQuestion(question)
+	s.applyPolicy(ctx, id, c, question)
+	s.scheduleTimeout(ctx, id, c, question)
 	return nil
+}
+
+// resolvePolicy builds the rule set a child is spawned under.
+//
+// A relative per-spawn path resolves against the child's cwd, the same rule the
+// node server applies. An unreadable overlay refuses the spawn: a typo must not
+// quietly become "no override", which would apply the bundled rules to a worker
+// the operator deliberately narrowed.
+func (s *supervisor) resolvePolicy(
+	ctx context.Context,
+	options SpawnOptions,
+) (PolicyContext, error) {
+	spawnPath := options.Policy
+	if spawnPath != "" && !filepath.IsAbs(spawnPath) && options.Cwd != "" {
+		spawnPath = filepath.Join(options.Cwd, spawnPath)
+	}
+	rules, err := ResolvePolicy(ctx, spawnPath)
+	if err != nil {
+		return PolicyContext{}, errors.Wrapf(ctx, err, "resolve policy for spawn failed")
+	}
+	return PolicyContext{
+		Label:      options.Label,
+		Cwd:        options.Cwd,
+		PolicyPath: spawnPath,
+		Rules:      rules,
+	}, nil
+}
+
+// applyPolicy decides a permission park in-process.
+//
+// ⚠️ The decision happens HERE, not on a poll. This process holds the park, so
+// an allow or deny is recorded and answered before the child's tool has made its
+// first read — which is what removes the node server's 2-second interval from
+// the latency of a policy-allowed prompt.
+func (s *supervisor) applyPolicy(ctx context.Context, id string, c *child, question Question) {
+	if s.policy.Decider == nil || !IsPermissionQuestion(question) {
+		return
+	}
+	verdict := s.policy.Decider.Decide(ctx, id, c.policy, question)
+	if verdict.Action != ActionAllow && verdict.Action != ActionDeny {
+		// Escalate: leave the park exactly where it is, for the manager.
+		return
+	}
+	behavior := string(verdict.Action)
+	if err := s.Answer(ctx, id, question.RequestID, Answer{
+		Kind:     AnswerKindPermission,
+		Behavior: behavior,
+	}); err != nil {
+		log.Printf(
+			"WARNING: policy %s for %s could not be delivered: %v",
+			behavior, question.RequestID, err,
+		)
+		return
+	}
+	matched := ""
+	if rule := verdict.MatchedRule(); rule != nil {
+		matched = *rule
+	}
+	log.Printf("policy %s %s for %s (%s)", behavior, question.ToolName, id, matched)
+}
+
+// scheduleTimeout denies a park nobody answered in time.
+//
+// The window is the node server's 15 minutes, and it lives here because this is
+// the only process that can release a wrapper child's park. A timeout writes its
+// own record: a deny that reached no log would be indistinguishable from a policy
+// deny, which is the attribution gap `decided_by` exists to close.
+func (s *supervisor) scheduleTimeout(
+	ctx context.Context,
+	id string,
+	c *child,
+	question Question,
+) {
+	if s.policy.PermissionTimeout <= 0 || s.policy.Decider == nil {
+		return
+	}
+	if question.ToolName == askUserQuestionToolName {
+		// A question's timeout is the child tool's own hold; the wrapper only
+		// times out a permission park, which is the one the policy can deny.
+		return
+	}
+	requestedAt := s.now.Now().Time()
+	go func() {
+		timer := time.NewTimer(s.policy.PermissionTimeout)
+		defer timer.Stop()
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ctx.Done():
+			// The registering request ending says nothing about the park: the
+			// child's tool polls over its own connections. Only the daemon's own
+			// shutdown cancels a timeout.
+		case <-timer.C:
+		}
+		pending, err := s.pending.Peek(question.RequestID)
+		if err != nil || pending.Answered || pending.Question.RequestID == "" {
+			return
+		}
+		if err := s.Answer(s.ctx, id, question.RequestID, Answer{
+			Kind:     AnswerKindPermission,
+			Behavior: "deny",
+		}); err != nil {
+			log.Printf("WARNING: permission timeout for %s could not be delivered: %v",
+				question.RequestID, err)
+			return
+		}
+		latency := int(s.now.Now().Time().Sub(requestedAt).Milliseconds())
+		s.policy.Decider.RecordSettled(
+			s.ctx, id, c.policy, question,
+			"deny", DecidedByTimeout, "", &latency,
+		)
+		log.Printf("permission timeout: denied %s for %s after %s",
+			question.ToolName, id, s.policy.PermissionTimeout)
+	}()
 }
 
 // PollAnswer reports whether the pending request has been answered yet.
@@ -374,7 +533,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err := validateArgv(ctx, options); err != nil {
 		return nil, err
 	}
-	mcpConfig, err := writeMCPConfig(ctx, id, s.selfURL)
+	mcpConfig, err := writeMCPConfig(ctx, id, s.selfURL, s.childHold())
 	if err != nil {
 		return nil, err
 	}
@@ -402,12 +561,19 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		return nil, errors.Wrapf(ctx, err, "start claude failed")
 	}
 
+	policy, err := s.resolvePolicy(ctx, options)
+	if err != nil {
+		// Refused before the child is registered, so an unreadable overlay leaves
+		// no session behind that would park with no policy at all.
+		return nil, err
+	}
 	c := &child{
 		id:          id,
 		now:         s.now,
 		cmd:         cmd,
 		stdin:       stdin,
 		subscribers: map[int]chan Event{},
+		policy:      policy,
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
@@ -437,7 +603,12 @@ const DefaultPermissionMode = "auto"
 // given a generated config whose `command` is the running wrapper. The log path
 // is what makes the tool's payload observable: its schema is undocumented, so
 // the first runs record it verbatim rather than parsing a guess.
-func writeMCPConfig(ctx context.Context, id string, selfURL string) (string, error) {
+func writeMCPConfig(
+	ctx context.Context,
+	id string,
+	selfURL string,
+	hold time.Duration,
+) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "resolve own binary failed")
@@ -446,12 +617,12 @@ func writeMCPConfig(ctx context.Context, id string, selfURL string) (string, err
 		"mcpServers": map[string]any{
 			"claude-wrapper": map[string]any{
 				"command": self,
-				"args": []string{
+				"args": append([]string{
 					"--mcp-stdio",
 					"--mcp-log", filepath.Join(os.TempDir(), "claude-wrapper-"+id+".mcp.log"),
 					"--wrapper-url", selfURL,
 					"--session-id", id,
-				},
+				}, holdArgs(hold)...),
 			},
 		},
 	}
@@ -464,6 +635,38 @@ func writeMCPConfig(ctx context.Context, id string, selfURL string) (string, err
 		return "", errors.Wrapf(ctx, err, "write mcp config failed")
 	}
 	return path, nil
+}
+
+// DefaultPermissionTimeout is how long an unanswered headless park waits before
+// it is denied.
+//
+// The node server's value, kept because it is the number operators and runbooks
+// already reason about.
+const DefaultPermissionTimeout = 15 * time.Minute
+
+// childHoldMargin keeps the child's own hold just past the daemon's timeout, so
+// the daemon's deny is the verdict the tool reads rather than the tool giving up
+// first with its own default.
+const childHoldMargin = time.Minute
+
+// childHold is how long a child's permission tool waits for an answer.
+//
+// Zero timeout (no policy wired) keeps the historical 90-second hold: with no
+// daemon-side timeout there is nothing to wait for, and a child parked forever on
+// an unanswered prompt is the failure the channel exists to avoid.
+func (s *supervisor) childHold() time.Duration {
+	if s.policy.PermissionTimeout <= 0 {
+		return 90 * time.Second
+	}
+	return s.policy.PermissionTimeout + childHoldMargin
+}
+
+// holdArgs renders the child tool's hold as CLI arguments.
+func holdArgs(hold time.Duration) []string {
+	if hold <= 0 {
+		return nil
+	}
+	return []string{"--mcp-hold", hold.String()}
 }
 
 // buildArgs pins the flags the wrapper depends on. The stream formats are
@@ -619,6 +822,10 @@ type child struct {
 	// child's own message_start: State still reads idle in that window, so a
 	// caller that wrote a turn would be invisible to anything reading State.
 	pendingTurns int
+	// policy is the rule set this child was SPAWNED under, held so a park is
+	// judged by the overlay in force at spawn rather than by whatever the files
+	// say when it parks.
+	policy PolicyContext
 }
 
 func (c *child) snapshot() *Session {

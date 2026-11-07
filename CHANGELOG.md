@@ -14,6 +14,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process's argv and a heap profile can carry session content. Both halves of the gate log, so a
   mounted endpoint and a skipped registration are distinguishable from default-verbosity output.
 
+## Unreleased
+
+- feat: the daemon applies the supervisor's approval policy **in the process that holds the
+  park**. `policy.json` is ported to Go (`pkg/policy.go`) with the same rule shape, the same
+  anchored `matchType: "command"` semantics, the same `cwd` path-boundary test and the same
+  segment-by-segment allowance for a chained Bash command; the bundled defaults are embedded
+  and `~/.config/claude-supervisor/policy.json` (`SUPERVISOR_POLICY`) overlays them, ahead of
+  which a per-spawn `policy` path may overlay both. A permission park is decided the moment it
+  registers — no HTTP hop to itself and no 2-second poll — and the decision is written to
+  `permissions.jsonl` with the node server's exact key set, `decided_by: policy` for a released
+  prompt and `decided_by: escalated` for one left to the manager. An unanswered park is denied
+  after 15 minutes with a `decided_by: timeout` row, which is the window the node server
+  enforced and the wrapper is now the only process able to enforce.
+- feat: board answers are delivered from the daemon, once, instead of from every session's own
+  supervisor. A `permission` card answered on the board settles its park and writes a
+  `decided_by: store` row; a `message` card settles it as `deny` + a message prefixed
+  `Operator answer, via supervisor:` — never `allow`, which would run an `AskUserQuestion` in a
+  tty-less session. Delivery keeps the node server's two-speed cadence (250 ms park re-check,
+  2 s while parked, 30 s idle) so the `failed` delivery record survives, and only the process
+  holding the producing session records an attempt.
+- feat: `spawn_agent`, `answer_permission`, `await_permission` and `pending_permissions` join
+  the roster MCP face. `spawn_agent` creates a headless worker in-process and delivers its
+  opening turn; the three park tools settle and observe wrapper parks, with `answer_permission`
+  writing a `decided_by: manager` row.
+- feat: `--permission-timeout`, `--permission-log` and `--mcp-hold` flags; a child's own
+  permission-tool hold now follows the daemon's timeout so the daemon's deny is the verdict the
+  tool reads rather than the tool giving up first with its default.
+
 ## v0.6.0
 
 - feat: the wrapper serves the supervisor's roster tools — `list_agents`, `agent_status` and
