@@ -17,6 +17,7 @@ import (
 	libtime "github.com/bborbe/time"
 
 	"github.com/bborbe/claude-wrapper/pkg"
+	"github.com/bborbe/claude-wrapper/pkg/a2a"
 	"github.com/bborbe/claude-wrapper/pkg/handler"
 )
 
@@ -150,6 +151,26 @@ func startFleetFaces(
 		}
 	}()
 
+	// The A2A spawn targets: docker and k8s workers, created on an
+	// a2a-worker-controller. A configuration that cannot be read disables the
+	// tools rather than failing the daemon — a daemon with no controller is a
+	// daemon whose local work still runs.
+	a2aConfig, a2aErr := a2a.LoadConfig(context.Background(), "")
+	if a2aErr != nil {
+		log.Printf("WARNING: A2A spawn targets disabled: %v", a2aErr)
+		a2aConfig = a2a.Config{}
+	}
+	pushRegistry := a2a.NewPushRegistry("host.docker.internal")
+	a2aManager := a2a.NewManager(a2a.NewClient(a2a.NewID), pushRegistry, a2aConfig)
+	// ⚠️ THE MAC CANNOT ACCEPT AN INBOUND CONNECTION FROM THE CLUSTER, so a
+	// cluster worker's push is pulled from an in-cluster relay instead. No relay
+	// configured means no cluster status channel, and the spawn still works.
+	if tunnel, tunnelErr := a2a.NewTunnel(
+		a2aConfig.RelayURL, a2aConfig.RelaySecret, pushRegistry,
+	); tunnelErr == nil {
+		go tunnel.Run(context.Background())
+	}
+
 	// The fleet-facing MCP face: a Claude session reading and steering the
 	// roster. A third face beside /mcp and --mcp-stdio, and separate from both on
 	// purpose — /mcp is Codex driving one child, --mcp-stdio is a child asking
@@ -165,6 +186,7 @@ func startFleetFaces(
 		Supervisor: supervisor,
 		Ledger:     ledger,
 		Decider:    decider,
+		A2A:        a2aManager,
 	})
 
 	// The central heartbeat poster. It runs beside the HTTP server rather than

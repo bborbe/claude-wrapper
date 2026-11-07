@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+
+	"github.com/bborbe/claude-wrapper/pkg/a2a"
 )
 
 // SessionHeader is the header a calling session identifies itself with.
@@ -26,10 +28,11 @@ const SessionHeader = "X-Claude-Code-Session-Id"
 
 // Roster tool names, as they appear to an MCP client.
 const (
+	ToolSpawnAgent         ToolName = "spawn_agent"
+	ToolSendAgentMessage   ToolName = "send_agent_message"
 	ToolListAgents         ToolName = "list_agents"
 	ToolAgentStatus        ToolName = "agent_status"
 	ToolStopAgent          ToolName = "stop_agent"
-	ToolSpawnAgent         ToolName = "spawn_agent"
 	ToolAnswerPermission   ToolName = "answer_permission"
 	ToolAwaitPermission    ToolName = "await_permission"
 	ToolPendingPermissions ToolName = "pending_permissions"
@@ -37,14 +40,15 @@ const (
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
 //
-// Seven of the supervisor's nine. What is still absent is the message surface and
-// the A2A surface — slice 2 and slice 4 of the same port.
+// Eight of the supervisor's nine. What is still absent is the local tab spawn
+// surface — slice 2 of the same port.
 func RosterToolNames() []ToolName {
 	return []ToolName{
 		ToolListAgents,
 		ToolAgentStatus,
 		ToolStopAgent,
 		ToolSpawnAgent,
+		ToolSendAgentMessage,
 		ToolAnswerPermission,
 		ToolAwaitPermission,
 		ToolPendingPermissions,
@@ -69,6 +73,10 @@ type RosterToolServer struct {
 	// Decider records a manager answer. Nil is legal — the answer still lands,
 	// and only its audit row is skipped.
 	Decider *PermissionDecider
+	// A2A owns the docker / k8s workers: the create and stop calls, the turn
+	// plane and the push channel. Nil means the A2A tools refuse, which is the
+	// correct answer for a daemon started without a controller configured.
+	A2A *a2a.Manager
 }
 
 // ServeHTTP serves one roster MCP request.
@@ -189,14 +197,16 @@ func (s *RosterToolServer) invoke(
 	sessionID string,
 ) (string, error) {
 	switch ToolName(name) {
+	case ToolSpawnAgent:
+		return s.spawnAgent(ctx, args, sessionID)
+	case ToolSendAgentMessage:
+		return s.sendAgentMessage(ctx, args)
 	case ToolListAgents:
 		return s.listAgents(ctx)
 	case ToolAgentStatus:
 		return s.agentStatus(ctx, args)
 	case ToolStopAgent:
 		return s.stopAgent(ctx, args, sessionID)
-	case ToolSpawnAgent:
-		return s.spawnAgent(ctx, args, sessionID)
 	case ToolAnswerPermission:
 		return s.answerPermission(ctx, args, sessionID)
 	case ToolAwaitPermission:
@@ -208,24 +218,14 @@ func (s *RosterToolServer) invoke(
 	}
 }
 
-// spawnAgentArgs is the spawn_agent call shape.
-type spawnAgentArgs struct {
-	Prompt      string `json:"prompt"`
-	Cwd         string `json:"cwd"`
-	Label       string `json:"label"`
-	Model       string `json:"model"`
-	Policy      string `json:"policy"`
-	Interactive *bool  `json:"interactive"`
-}
-
-// spawnAgent creates a wrapper child and delivers its opening turn.
+// spawnLocalAgent creates a wrapper child and delivers its opening turn.
 //
 // ⚠️ It is in-process on purpose: the daemon that answers the call is the daemon
 // that holds the child, so there is no HTTP hop to itself and no second process
 // to keep alive. The child's opening turn is a SEPARATE call because the wrapper
 // has no `prompt` field on spawn — a spawn that only creates the child leaves it
 // idle, which looks exactly like one that is thinking.
-func (s *RosterToolServer) spawnAgent(
+func (s *RosterToolServer) spawnLocalAgent(
 	ctx context.Context,
 	args json.RawMessage,
 	sessionID string,
@@ -436,7 +436,19 @@ func (s *RosterToolServer) listAgents(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "list agents failed")
 	}
-	return marshalJSON(ctx, rows)
+	// The A2A workers this daemon created are appended to the roster: they have
+	// no local child and no ledger row of their own, so the only place a caller
+	// can see them is here.
+	combined := make([]any, 0, len(rows))
+	for _, row := range rows {
+		combined = append(combined, row)
+	}
+	if s.A2A != nil {
+		for _, agent := range s.A2A.List() {
+			combined = append(combined, agent.View(s.A2A.Registry))
+		}
+	}
+	return marshalJSON(ctx, combined)
 }
 
 type agentArgs struct {
@@ -450,6 +462,9 @@ func (s *RosterToolServer) agentStatus(ctx context.Context, args json.RawMessage
 	}
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if agent := s.a2aAgent(ctx, body.AgentID); agent != nil {
+		return marshalJSON(ctx, agent.View(s.A2A.Registry))
 	}
 	row, err := s.Roster.Get(ctx, body.AgentID)
 	if err != nil {
@@ -476,6 +491,17 @@ func (s *RosterToolServer) stopAgent(
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
 	}
+	// An A2A worker is stopped on its controller, keyed on worker id — a task can
+	// be respawned after its first worker died, so the task name is not a handle.
+	if agent := s.a2aAgent(ctx, body.AgentID); agent != nil {
+		if err := s.A2A.Stop(ctx, agent.AgentID); err != nil {
+			return "", err
+		}
+		return marshalJSON(ctx, map[string]string{
+			"agent_id": agent.AgentID,
+			"state":    "stopped",
+		})
+	}
 	row, err := s.Roster.Get(ctx, body.AgentID)
 	if err != nil {
 		return "", err
@@ -499,6 +525,111 @@ func (s *RosterToolServer) stopAgent(
 		"agent_id": body.AgentID,
 		"state":    "stopped",
 	})
+}
+
+// spawnAgentArgs is every argument a spawn call may carry.
+type spawnAgentArgs struct {
+	Target      string            `json:"target"`
+	Task        string            `json:"task"`
+	Vault       string            `json:"vault"`
+	Prompt      string            `json:"prompt"`
+	Cwd         string            `json:"cwd"`
+	Label       string            `json:"label"`
+	Model       string            `json:"model"`
+	Resume      bool              `json:"resume"`
+	Policy      string            `json:"policy"`
+	Interactive *bool             `json:"interactive"`
+	WindowID    string            `json:"window_id"`
+	Role        string            `json:"role"`
+	Env         map[string]string `json:"env"`
+	Shipping    bool              `json:"shipping"`
+}
+
+// spawnAgent creates a worker on an a2a-worker-controller.
+//
+// ⚠️ Two shapes share this one tool name, dispatched by `target`. An A2A target
+// (`docker`, `k8s`, `k8s:<cluster>`) creates a worker on a controller; an absent
+// or `local` target creates an in-process headless worker in THIS daemon. A tab
+// spawn belongs to a later slice and is refused by name, which keeps a caller
+// from reading a missing feature as a broken one.
+func (s *RosterToolServer) spawnAgent(
+	ctx context.Context,
+	args json.RawMessage,
+	sessionID string,
+) (string, error) {
+	var body spawnAgentArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if !a2a.IsTarget(ctx, body.Target) {
+		return s.spawnLocalAgent(ctx, args, sessionID)
+	}
+	if s.A2A == nil {
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent is not wired: no A2A controller configuration was loaded, so no "+
+				"worker could be created. Set `a2a.url` and a controller token",
+		)
+	}
+	agent, err := s.A2A.Spawn(ctx, a2a.SpawnArgs{
+		Target:      body.Target,
+		Task:        body.Task,
+		Vault:       body.Vault,
+		Prompt:      body.Prompt,
+		Resume:      body.Resume,
+		Policy:      body.Policy,
+		Interactive: body.Interactive,
+		WindowID:    body.WindowID,
+		Role:        body.Role,
+		Env:         body.Env,
+		Shipping:    body.Shipping,
+	})
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, agent.View(s.A2A.Registry))
+}
+
+// sendAgentMessage sends one further turn to an existing A2A worker.
+func (s *RosterToolServer) sendAgentMessage(
+	ctx context.Context,
+	args json.RawMessage,
+) (string, error) {
+	var body struct {
+		AgentID string `json:"agent_id"`
+		Text    string `json:"text"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" {
+		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if s.A2A == nil {
+		return "", errors.Errorf(ctx, "send_agent_message is not wired")
+	}
+	result, err := s.A2A.SendMessage(ctx, body.AgentID, body.Text)
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, map[string]any{
+		"agent_id":   body.AgentID,
+		"state":      result.State,
+		"context_id": result.ContextID,
+		"reply":      result.Reply,
+	})
+}
+
+// a2aAgent resolves an agent id to an A2A record, or nil.
+func (s *RosterToolServer) a2aAgent(ctx context.Context, agentID string) *a2a.Agent {
+	if s.A2A == nil || agentID == "" {
+		return nil
+	}
+	agent, err := s.A2A.Get(ctx, agentID)
+	if err != nil {
+		return nil
+	}
+	return agent
 }
 
 // recordStop writes the ledger row a stop would otherwise leave silent.
@@ -545,7 +676,40 @@ func writeRosterError(resp http.ResponseWriter, status int, code string, message
 
 // rosterToolDefinitions describes the three tools to an MCP client.
 func rosterToolDefinitions() []any {
+	return append(spawnToolDefinitions(), parkToolDefinitions()...)
+}
+
+// spawnToolDefinitions describes the spawn and steering tools.
+func spawnToolDefinitions() []any {
 	return []any{
+		toolDef(ToolSpawnAgent,
+			"Create one worker on an a2a-worker-controller and return its agent id "+
+				"immediately — the first turn is sent asynchronously, so the record carries "+
+				"no result yet. `target` is `docker` (a container on this Mac), `k8s` (a pod "+
+				"on the default cluster, nuke dev unless `a2a.defaultCluster` says otherwise) "+
+				"or `k8s:<cluster>`. `task` is REQUIRED and names the vault task the worker "+
+				"is opened for. An absent or `local` target instead creates an in-process "+
+				"headless worker in THIS daemon — `cwd`, `label`, `model` and `policy` apply "+
+				"there, and the daemon holds its parks and its stdin. `interactive: true` "+
+				"is refused: a tab worker belongs to a later slice.",
+			map[string]any{
+				"target": stringProp("docker, k8s, k8s:<cluster>, or local"),
+				"task":   stringProp("the vault task the worker is opened for"),
+				"vault":  stringProp("the vault the task lives in; required when the name is not unique"),
+				"prompt": stringProp("the first turn to send; omitted means create only"),
+				"cwd":    stringProp("local only: working directory for the worker"),
+				"label":  stringProp("local only: a human name for the worker"),
+				"model":  stringProp("local only: model to run, or empty for the default"),
+				"policy": stringProp("path to a per-spawn policy overlay"),
+			}),
+		toolDef(ToolSendAgentMessage,
+			"Send one further turn to an A2A worker, continuing its conversation by "+
+				"`contextId`. Returns the turn's terminal state and the assistant text.",
+			map[string]any{
+				"agent_id": stringProp("id of the agent to write to"),
+				"text":     stringProp("the user turn to send"),
+			},
+			"agent_id", "text"),
 		toolDef(ToolListAgents,
 			"All sessions with status, the call each is inside right now, and how many "+
 				"are waiting on input. Each row carries `current_tool_call` and "+
@@ -566,19 +730,12 @@ func rosterToolDefinitions() []any {
 				"only its own children.",
 			map[string]any{"agent_id": stringProp("id of the agent to stop")},
 			"agent_id"),
-		toolDef(ToolSpawnAgent,
-			"Spawn a headless worker in this daemon and deliver its opening turn. Returns the "+
-				"agent id, which is also its session id. The child is created in-process, so "+
-				"this daemon holds its parks and its stdin.",
-			map[string]any{
-				"prompt":      stringProp("the opening turn to deliver"),
-				"cwd":         stringProp("working directory for the worker"),
-				"label":       stringProp("a human name for the worker"),
-				"model":       stringProp("model to run, or empty for the default"),
-				"policy":      stringProp("path to a per-spawn policy overlay"),
-				"interactive": map[string]any{"type": "boolean", "description": "must be false or absent; tab spawning is a later slice"},
-			},
-			"prompt"),
+	}
+}
+
+// parkToolDefinitions describes the permission-park tools.
+func parkToolDefinitions() []any {
+	return []any{
 		toolDef(ToolAnswerPermission,
 			"Settle a parked permission request. Writes a `decided_by: manager` row to "+
 				"permissions.jsonl and returns the answer that was recorded.",

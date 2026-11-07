@@ -5,15 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.7.0
-
-- feat: serve the `net/http/pprof` endpoints on `/debug/pprof/` when `-listen` is a loopback
-  address, so a running wrapper can be profiled with `go tool pprof` without a rebuild. The mount
-  is gated on the listen address: an empty host (`:18090`), a wildcard, a routable address or an
-  unresolvable name withholds the whole surface, because `/debug/pprof/cmdline` publishes the
-  process's argv and a heap profile can carry session content. Both halves of the gate log, so a
-  mounted endpoint and a skipped registration are distinguishable from default-verbosity output.
-
 ## Unreleased
 
 - feat: the daemon applies the supervisor's approval policy **in the process that holds the
@@ -34,13 +25,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tty-less session. Delivery keeps the node server's two-speed cadence (250 ms park re-check,
   2 s while parked, 30 s idle) so the `failed` delivery record survives, and only the process
   holding the producing session records an attempt.
-- feat: `spawn_agent`, `answer_permission`, `await_permission` and `pending_permissions` join
-  the roster MCP face. `spawn_agent` creates a headless worker in-process and delivers its
-  opening turn; the three park tools settle and observe wrapper parks, with `answer_permission`
-  writing a `decided_by: manager` row.
+- feat: `answer_permission`, `await_permission` and `pending_permissions` join the roster MCP
+  face, and `spawn_agent` grows a `local` target that creates a headless worker in-process and
+  delivers its opening turn; the three park tools settle and observe wrapper parks, with
+  `answer_permission` writing a `decided_by: manager` row.
 - feat: `--permission-timeout`, `--permission-log` and `--mcp-hold` flags; a child's own
   permission-tool hold now follows the daemon's timeout so the daemon's deny is the verdict the
   tool reads rather than the tool giving up first with its default.
+
+## v0.8.0
+
+- feat: the wrapper serves the A2A spawn targets — `spawn_agent`, `send_agent_message` and
+  `stop_agent` for `docker`, `k8s` and `k8s:<cluster>` workers created on an
+  `a2a-worker-controller`. `spawn_agent` calls the controller's `create` and returns an agent id
+  immediately, sending the first turn asynchronously so a cluster card read (measured at ~45 s
+  behind an ingress) cannot slow the control call; the local-only arguments `interactive`,
+  `resume`, `policy`, `window_id`, `role`, `env` and `shipping` are refused rather than dropped,
+  and the retired `cluster` target is refused naming its 2026-10-15 retirement. Per-target URLs
+  come from `a2a.url.<key>` in `~/.config/claude-supervisor/config.json` and bearer tokens from
+  `SUPERVISOR_A2A_TOKEN_<CLUSTER>`, with a plaintext `a2a.token` in the file refused; a vault's
+  cluster allowlist (`vaults.json`) is enforced, so a wrong placement fails as the data-boundary
+  breach it is rather than being retried. One push receiver in the daemon accepts a worker's
+  `A2A-Notification-Token`-authenticated status, files it under the worker the token names (never
+  the body), bounds each worker at 50 entries and surfaces them as `status_messages`; a cluster
+  worker's status is pulled from an in-cluster relay (`/relay/pull`), because the Mac cannot
+  accept an inbound connection from the cluster.
+
+## v0.7.0
+
+- feat: serve the `net/http/pprof` endpoints on `/debug/pprof/` when `-listen` is a loopback
+  address, so a running wrapper can be profiled with `go tool pprof` without a rebuild. The mount
+  is gated on the listen address: an empty host (`:18090`), a wildcard, a routable address or an
+  unresolvable name withholds the whole surface, because `/debug/pprof/cmdline` publishes the
+  process's argv and a heap profile can carry session content. Both halves of the gate log, so a
+  mounted endpoint and a skipped registration are distinguishable from default-verbosity output.
 
 ## v0.6.0
 
