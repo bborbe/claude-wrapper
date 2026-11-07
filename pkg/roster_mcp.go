@@ -10,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/bborbe/errors"
 
@@ -64,6 +66,12 @@ type RosterToolServer struct {
 	// plane and the push channel. Nil means the A2A tools refuse, which is the
 	// correct answer for a daemon started without a controller configured.
 	A2A *a2a.Manager
+	// Spawner opens the WezTerm tab for a `local` spawn_agent. Nil means the local
+	// target refuses, which is the correct answer for a daemon with no terminal.
+	Spawner TabSpawner
+	// Tabs types into a tab worker's pane for send_agent_message. Nil means a tab
+	// worker cannot be messaged.
+	Tabs TabClient
 }
 
 // ServeHTTP serves one roster MCP request.
@@ -185,7 +193,7 @@ func (s *RosterToolServer) invoke(
 ) (string, error) {
 	switch ToolName(name) {
 	case ToolSpawnAgent:
-		return s.spawnAgent(ctx, args)
+		return s.spawnAgent(ctx, args, sessionID)
 	case ToolSendAgentMessage:
 		return s.sendAgentMessage(ctx, args)
 	case ToolListAgents:
@@ -297,9 +305,14 @@ func (s *RosterToolServer) stopAgent(
 
 // spawnAgentArgs is every argument a spawn call may carry.
 type spawnAgentArgs struct {
-	Target      string            `json:"target"`
-	Task        string            `json:"task"`
-	Vault       string            `json:"vault"`
+	Target string `json:"target"`
+	Task   string `json:"task"`
+	Vault  string `json:"vault"`
+	// Cwd and Label are the local-tab arguments. Cwd is deliberately separate from
+	// Vault: a tab may run in a subdirectory of its vault, and the launcher still
+	// comes from the vault.
+	Cwd         string            `json:"cwd"`
+	Label       string            `json:"label"`
 	Prompt      string            `json:"prompt"`
 	Resume      bool              `json:"resume"`
 	Policy      string            `json:"policy"`
@@ -315,19 +328,17 @@ type spawnAgentArgs struct {
 // ⚠️ ONLY THE A2A TARGETS ARE PORTED IN THIS SLICE. A `local` spawn — a WezTerm
 // tab or an in-process headless worker — belongs to a later slice, and refusing
 // by name is what keeps a caller from reading a missing feature as a broken one.
-func (s *RosterToolServer) spawnAgent(ctx context.Context, args json.RawMessage) (string, error) {
+func (s *RosterToolServer) spawnAgent(
+	ctx context.Context,
+	args json.RawMessage,
+	sessionID string,
+) (string, error) {
 	var body spawnAgentArgs
 	if err := json.Unmarshal(args, &body); err != nil {
 		return "", errors.Wrapf(ctx, err, "decode arguments failed")
 	}
 	if !a2a.IsTarget(ctx, body.Target) {
-		return "", errors.Errorf(
-			ctx,
-			"spawn_agent with target %q is not available in this daemon: only the A2A "+
-				"targets `docker`, `k8s` and `k8s:<cluster>` are ported. Local tab and "+
-				"headless spawning is a later slice",
-			body.Target,
-		)
+		return s.spawnLocalTarget(ctx, body, sessionID)
 	}
 	if s.A2A == nil {
 		return "", errors.Errorf(
@@ -370,6 +381,11 @@ func (s *RosterToolServer) sendAgentMessage(
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
 	}
+	// A tab worker has a pane and no A2A record, so it is resolved first: falling
+	// through to A2A would report it as unknown and never type into its tab.
+	if handled, response, err := s.sendToTabPane(ctx, body.AgentID, body.Text); handled {
+		return response, err
+	}
 	if s.A2A == nil {
 		return "", errors.Errorf(ctx, "send_agent_message is not wired")
 	}
@@ -383,6 +399,137 @@ func (s *RosterToolServer) sendAgentMessage(
 		"context_id": result.ContextID,
 		"reply":      result.Reply,
 	})
+}
+
+// spawnLocalTarget serves the `local` spawn — a WezTerm tab under a vault's cc-* launcher.
+//
+// Headless spawning is still a later slice, and any other target is refused by
+// name rather than guessed at: a worker created somewhere the caller did not ask
+// for is discovered only by noticing it.
+func (s *RosterToolServer) spawnLocalTarget(
+	ctx context.Context,
+	body spawnAgentArgs,
+	sessionID string,
+) (string, error) {
+	switch body.Target {
+	case "", "local":
+	default:
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent with target %q is not available in this daemon: the targets "+
+				"are `local` (a WezTerm tab), `docker`, `k8s` and `k8s:<cluster>`. "+
+				"Headless spawning is a later slice",
+			body.Target,
+		)
+	}
+	if body.Interactive != nil && !*body.Interactive {
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent with interactive:false is headless spawning, which is a later "+
+				"slice — omit `interactive`, or pass true for a local tab",
+		)
+	}
+	if s.Spawner == nil {
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent is not wired: this daemon has no tab spawner, so no local "+
+				"worker could be opened",
+		)
+	}
+	windowID, err := parseWindowID(ctx, body.WindowID)
+	if err != nil {
+		return "", err
+	}
+	result, err := s.Spawner.Spawn(ctx, TabSpawnRequest{
+		Prompt:           body.Prompt,
+		Label:            body.Label,
+		Cwd:              body.Cwd,
+		Vault:            body.Vault,
+		Role:             body.Role,
+		Env:              body.Env,
+		WindowID:         windowID,
+		SpawnerSessionID: sessionID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, result)
+}
+
+// parseWindowID converts the wire's string window id to the pointer the spawner
+// takes, keeping empty and absent distinct from window 0.
+func parseWindowID(ctx context.Context, raw string) (*int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "window_id %q is not a number", raw)
+	}
+	return &parsed, nil
+}
+
+// sendToTabPane types a message into a tab worker's pane.
+//
+// `handled` is false when the id names no tab worker, so the caller falls through
+// to the A2A arm. A tab worker is recognised by its LEDGER row, not its roster
+// row: the roster deliberately carries no pane handle, and the pane is the only
+// thing a message can be typed into.
+//
+// `sent: true` means the keystrokes reached the pty and nothing more — it is not
+// delivery and not compliance, since the worker may never read it.
+func (s *RosterToolServer) sendToTabPane(
+	ctx context.Context,
+	agentID string,
+	text string,
+) (bool, string, error) {
+	if s.Tabs == nil || s.Roster == nil || s.Ledger == nil {
+		return false, "", nil
+	}
+	rows, err := s.Roster.List(ctx)
+	if err != nil {
+		return false, "", nil
+	}
+	sessionID := ""
+	for _, row := range rows {
+		if row.AgentID == agentID {
+			sessionID = row.SessionID
+			break
+		}
+	}
+	if sessionID == "" {
+		return false, "", nil
+	}
+	ledgerRows, err := s.Ledger.Rows(ctx)
+	if err != nil {
+		return false, "", nil
+	}
+	for _, ledgerRow := range ledgerRows {
+		if ledgerRow.SessionID != sessionID {
+			continue
+		}
+		if ledgerRow.PaneID == "" {
+			return true, "", errors.Errorf(
+				ctx,
+				"agent %s is a %s worker with no pane — there is nothing to type into. "+
+					"Answer its parked prompts with answer_permission, or reach it mid-task "+
+					"with SendMessage",
+				agentID,
+				ledgerRow.Mode,
+			)
+		}
+		if err := s.Tabs.SendText(ctx, ledgerRow.PaneID, text); err != nil {
+			return true, "", err
+		}
+		response, err := marshalJSON(ctx, map[string]any{
+			"agent_id": agentID,
+			"sent":     true,
+			"pane_id":  ledgerRow.PaneID,
+		})
+		return true, response, err
+	}
+	return false, "", nil
 }
 
 // a2aAgent resolves an agent id to an A2A record, or nil.
