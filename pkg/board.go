@@ -224,36 +224,46 @@ func (d *BoardDelivery) tick(ctx context.Context, watching map[string]string) {
 			}
 			continue
 		}
+		// ⚠️ Delete only once the item is settled. Deleting first discards the
+		// answer permanently on a transient failure — an unreadable session list
+		// or a failed Answer — and the park then falls through to its own
+		// fail-open timeout.
+		if err := d.deliver(ctx, item, mechanism); err != nil {
+			log.Printf("board delivery: item %s stays watched for retry: %v", itemID, err)
+			continue
+		}
 		delete(watching, itemID)
-		d.deliver(ctx, item, mechanism)
 	}
 }
 
 // deliver settles the park an answered item belongs to.
-func (d *BoardDelivery) deliver(ctx context.Context, item BoardItem, mechanism string) {
+// It reports an error only for a transient failure the caller should retry; a
+// card that can never settle anything reports nil, so it is dropped rather than
+// re-read forever.
+func (d *BoardDelivery) deliver(ctx context.Context, item BoardItem, mechanism string) error {
 	sessions, err := d.Supervisor.List(ctx)
 	if err != nil {
-		log.Printf("board delivery: sessions unreadable: %v", err)
-		return
+		return errors.Wrapf(ctx, err, "list sessions for %s", item.ItemID)
 	}
 	session := findSession(sessions, item.ProducerID)
 	if session == nil || session.Question == nil {
 		// Not this process's park, or nothing parked. Only the owner records an
 		// attempt; every other reader stays silent so ~N non-owners cannot
 		// outvote the owner's real outcome.
-		return
+		return nil
 	}
 	question := *session.Question
 	answer, ok := answerFor(item, mechanism, question, session)
 	if !ok {
-		return
+		return nil
 	}
 	if err := d.Supervisor.Answer(ctx, session.ID, question.RequestID, answer); err != nil {
-		log.Printf("board delivery: settling %s failed: %v", question.RequestID, err)
 		if d.Store != nil {
-			_ = d.Store.RecordAttempt(ctx, item.ItemID, d.carrier(), "failed")
+			if recordErr := d.Store.RecordAttempt(ctx, item.ItemID, d.carrier(), "failed"); recordErr != nil {
+				log.Printf("board delivery: attempt record for %s failed: %v", item.ItemID, recordErr)
+			}
 		}
-		return
+		return errors.Wrapf(ctx, err, "settle %s", question.RequestID)
 	}
 	if d.Decider != nil {
 		d.Decider.RecordSettled(
@@ -267,6 +277,7 @@ func (d *BoardDelivery) deliver(ctx context.Context, item BoardItem, mechanism s
 		}
 	}
 	log.Printf("board delivery: %s settled %s (%s)", mechanism, question.RequestID, item.ItemID)
+	return nil
 }
 
 // answerFor builds the answer one answered item settles its park with.
@@ -278,6 +289,14 @@ func answerFor(item BoardItem, mechanism string, question Question, session *Ses
 	case "permission":
 		if item.Decision != "allow" && item.Decision != "deny" {
 			log.Printf("board delivery: item %s carries no decision", item.ItemID)
+			return Answer{}, false
+		}
+		// The same freshness test the message arm applies. A permission card is
+		// joined to a park by producer, so an old `allow` would otherwise release
+		// a LATER park of the same worker — the one case where a stale answer
+		// executes a command nobody approved.
+		if stale(item, question) {
+			log.Printf("board delivery: item %s predates its park — refusing to settle", item.ItemID)
 			return Answer{}, false
 		}
 		// ⚠️ The arm guard, ported verbatim: a permission gate releases only on an

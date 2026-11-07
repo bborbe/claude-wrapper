@@ -26,6 +26,9 @@ import (
 // against a session that does not exist.
 const SessionHeader = "X-Claude-Code-Session-Id"
 
+// maxAwaitPermission bounds how long await_permission holds a request open.
+const maxAwaitPermission = 5 * time.Minute
+
 // Roster tool names, as they appear to an MCP client.
 const (
 	ToolSpawnAgent         ToolName = "spawn_agent"
@@ -316,7 +319,7 @@ func (s *RosterToolServer) answerPermission(
 	}
 	session, err := s.Supervisor.Get(ctx, body.AgentID)
 	if err != nil {
-		return "", err
+		return "", errors.Wrapf(ctx, err, "read agent %s", body.AgentID)
 	}
 	kind := AnswerKindPermission
 	if session.Question != nil && session.Question.Kind != "" {
@@ -371,7 +374,7 @@ func (s *RosterToolServer) awaitPermission(
 	if requestID == "" {
 		session, err := s.Supervisor.Get(ctx, body.AgentID)
 		if err != nil {
-			return "", err
+			return "", errors.Wrapf(ctx, err, "read agent %s", body.AgentID)
 		}
 		if session.Question == nil {
 			return marshalJSON(ctx, map[string]any{"answered": false, "answer": nil})
@@ -381,6 +384,12 @@ func (s *RosterToolServer) awaitPermission(
 	timeout := time.Duration(body.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 60 * time.Second
+	}
+	// Bounded: the wait holds a request goroutine, and the caller names the
+	// number. A park's own window is the policy timeout, so waiting past it only
+	// holds a connection open for a gate that has already been decided.
+	if timeout > maxAwaitPermission {
+		timeout = maxAwaitPermission
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

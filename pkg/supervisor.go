@@ -373,7 +373,7 @@ func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Q
 	// A park the policy already released needs no timeout: scheduling one would
 	// leave a goroutine holding a 15-minute timer for the common case.
 	if !s.applyPolicy(ctx, id, c, question) {
-		s.scheduleTimeout(ctx, id, c, question)
+		s.scheduleTimeout(id, c, question)
 	}
 	return nil
 }
@@ -466,8 +466,14 @@ func (s *supervisor) applyPolicy(ctx context.Context, id string, c *child, quest
 // the only process that can release a wrapper child's park. A timeout writes its
 // own record: a deny that reached no log would be indistinguishable from a policy
 // deny, which is the attribution gap `decided_by` exists to close.
+// scheduleTimeout denies a park nothing settled, once the policy's window expires.
+//
+// ⚠️ It takes no caller context, deliberately. `RegisterQuestion` is called with
+// the POST /question request's context, which is cancelled the moment that
+// handler returns — watching it would end the timer immediately and the deny
+// would never fire, leaving the child's own tool hold to answer `allow` by
+// default. The timer is tied to the supervisor's lifetime and nothing else.
 func (s *supervisor) scheduleTimeout(
-	ctx context.Context,
 	id string,
 	c *child,
 	question Question,
@@ -486,13 +492,6 @@ func (s *supervisor) scheduleTimeout(
 		defer timer.Stop()
 		select {
 		case <-s.ctx.Done():
-			return
-		case <-ctx.Done():
-			// ⚠️ The registering request ending says nothing about the park — the
-			// child's tool polls over its own connections — so this arm must
-			// RETURN, not fall through. Falling through denied the park the moment
-			// POST /question responded, which made every escalated park unanswerable
-			// and board delivery unreachable.
 			return
 		case <-timer.C:
 		}
