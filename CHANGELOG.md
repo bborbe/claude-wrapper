@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: the wrapper serves the A2A spawn targets — `spawn_agent`, `send_agent_message` and
+  `stop_agent` for `docker`, `k8s` and `k8s:<cluster>` workers created on an
+  `a2a-worker-controller`. `spawn_agent` calls the controller's `create` and returns an agent id
+  immediately, sending the first turn asynchronously so a cluster card read (measured at ~45 s
+  behind an ingress) cannot slow the control call; the local-only arguments `interactive`,
+  `resume`, `policy`, `window_id`, `role`, `env` and `shipping` are refused rather than dropped,
+  and the retired `cluster` target is refused naming its 2026-10-15 retirement. Per-target URLs
+  come from `a2a.url.<key>` in `~/.config/claude-supervisor/config.json` and bearer tokens from
+  `SUPERVISOR_A2A_TOKEN_<CLUSTER>`, with a plaintext `a2a.token` in the file refused; a vault's
+  cluster allowlist (`vaults.json`) is enforced, so a wrong placement fails as the data-boundary
+  breach it is rather than being retried. One push receiver in the daemon accepts a worker's
+  `A2A-Notification-Token`-authenticated status, files it under the worker the token names (never
+  the body), bounds each worker at 50 entries and surfaces them as `status_messages`; a cluster
+  worker's status is pulled from an in-cluster relay (`/relay/pull`), because the Mac cannot
+  accept an inbound connection from the cluster.
+
 ## v0.7.0
 
 - feat: serve the `net/http/pprof` endpoints on `/debug/pprof/` when `-listen` is a loopback
