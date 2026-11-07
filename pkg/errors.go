@@ -51,4 +51,21 @@ var (
 	// child that is mid-turn, where the in-flight turn's close would be read as
 	// the first step's.
 	ErrSessionNotIdle = stderrors.New("session not idle")
+	// ErrMissingSessionHeader is returned when a roster call arrives without the
+	// X-Claude-Code-Session-Id header.
+	//
+	// It is never defaulted to a placeholder: every roster answer is attributed to
+	// the calling session, so an un-attributed call would be recorded against a
+	// session that does not exist — a ledger row that reads as evidence and names
+	// nobody.
+	ErrMissingSessionHeader = stderrors.New("missing X-Claude-Code-Session-Id header")
+	// ErrAgentNotOwned is returned when stop_agent names a session this daemon
+	// did not spawn.
+	//
+	// The wrapper holds the child's stdin, which is what lets it answer and stop
+	// it; a session spawned elsewhere has no such handle here, so a stop would be
+	// a signal sent by a process that does not own the process it is killing.
+	ErrAgentNotOwned = stderrors.New("agent is not a child of this wrapper")
+	// ErrAgentNotFound is returned for an agent id no roster row carries.
+	ErrAgentNotFound = stderrors.New("agent not found")
 )
