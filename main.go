@@ -175,6 +175,22 @@ func startFleetFaces(
 	// roster. A third face beside /mcp and --mcp-stdio, and separate from both on
 	// purpose — /mcp is Codex driving one child, --mcp-stdio is a child asking
 	// for a verdict, and this one answers across sessions.
+	// The local-tab spawn path: a WezTerm tab under the vault's cc-* launcher.
+	// Without these two the daemon refuses every `local` spawn by name, which is
+	// why they are wired here rather than left for a caller to construct.
+	tabs := pkg.NewTabClient("")
+	tabSpawner := pkg.NewTabSpawner(
+		tabs,
+		registry,
+		pkg.NewRoleMapReader(""),
+		pkg.NewVaultCLILister(),
+		ledger,
+		now,
+		// No exit recorder: the daemon ships no copy of the script, and an empty
+		// path omits the hook rather than naming one that does not exist.
+		"",
+	)
+
 	mux.Handle("/supervisor/mcp", &pkg.RosterToolServer{
 		Roster: pkg.NewRoster(
 			supervisor,
@@ -187,6 +203,9 @@ func startFleetFaces(
 		Ledger:     ledger,
 		Decider:    decider,
 		A2A:        a2aManager,
+		Spawner:    tabSpawner,
+		Tabs:       tabs,
+		Now:        now,
 	})
 
 	// The central heartbeat poster. It runs beside the HTTP server rather than
