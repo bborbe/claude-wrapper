@@ -78,6 +78,11 @@ func main() {
 		Locks:       locks,
 		TurnTimeout: *mcpTurnTimeout,
 	})
+	// Loopback-gated: a heap profile carries session content and
+	// /debug/pprof/cmdline publishes this process's argv, so the debug surface
+	// is mounted only when the listener cannot be reached from another
+	// interface.
+	handler.RegisterPprofIfLoopback(mux, *listen)
 
 	startFleetFaces(mux, supervisor, *attentionURL, *heartbeatInterval)
 

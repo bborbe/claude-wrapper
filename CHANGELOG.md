@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: serve the `net/http/pprof` endpoints on `/debug/pprof/` when `-listen` is a loopback
+  address, so a running wrapper can be profiled with `go tool pprof` without a rebuild. The mount
+  is gated on the listen address: an empty host (`:18090`), a wildcard, a routable address or an
+  unresolvable name withholds the whole surface, because `/debug/pprof/cmdline` publishes the
+  process's argv and a heap profile can carry session content. Both halves of the gate log, so a
+  mounted endpoint and a skipped registration are distinguishable from default-verbosity output.
+
 ## v0.6.0
 
 - feat: the wrapper serves the supervisor's roster tools — `list_agents`, `agent_status` and
