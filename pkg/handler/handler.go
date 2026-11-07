@@ -449,6 +449,7 @@ func handleQuestion(
 			"kind":     pending.Answer.Kind,
 			"behavior": pending.Answer.Behavior,
 			"answers":  pending.Answer.Answers,
+			"message":  pending.Answer.Message,
 		})
 	case http.MethodDelete:
 		// The child's hold expired unanswered, so nothing is waiting on this

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/bborbe/errors"
 )
@@ -25,17 +26,29 @@ const SessionHeader = "X-Claude-Code-Session-Id"
 
 // Roster tool names, as they appear to an MCP client.
 const (
-	ToolListAgents  ToolName = "list_agents"
-	ToolAgentStatus ToolName = "agent_status"
-	ToolStopAgent   ToolName = "stop_agent"
+	ToolListAgents         ToolName = "list_agents"
+	ToolAgentStatus        ToolName = "agent_status"
+	ToolStopAgent          ToolName = "stop_agent"
+	ToolSpawnAgent         ToolName = "spawn_agent"
+	ToolAnswerPermission   ToolName = "answer_permission"
+	ToolAwaitPermission    ToolName = "await_permission"
+	ToolPendingPermissions ToolName = "pending_permissions"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
 //
-// Three of the supervisor's nine. The other six are the spawn, message, park and
-// A2A surfaces, which have nothing to act on until the spawn slices land.
+// Seven of the supervisor's nine. What is still absent is the message surface and
+// the A2A surface — slice 2 and slice 4 of the same port.
 func RosterToolNames() []ToolName {
-	return []ToolName{ToolListAgents, ToolAgentStatus, ToolStopAgent}
+	return []ToolName{
+		ToolListAgents,
+		ToolAgentStatus,
+		ToolStopAgent,
+		ToolSpawnAgent,
+		ToolAnswerPermission,
+		ToolAwaitPermission,
+		ToolPendingPermissions,
+	}
 }
 
 // RosterToolServer serves the supervisor's roster tools over streamable HTTP.
@@ -53,6 +66,9 @@ type RosterToolServer struct {
 	// Ledger records the stop attribution. Nil is legal — the tools still serve,
 	// and only the ledger write is skipped.
 	Ledger LedgerReader
+	// Decider records a manager answer. Nil is legal — the answer still lands,
+	// and only its audit row is skipped.
+	Decider *PermissionDecider
 }
 
 // ServeHTTP serves one roster MCP request.
@@ -179,9 +195,240 @@ func (s *RosterToolServer) invoke(
 		return s.agentStatus(ctx, args)
 	case ToolStopAgent:
 		return s.stopAgent(ctx, args, sessionID)
+	case ToolSpawnAgent:
+		return s.spawnAgent(ctx, args, sessionID)
+	case ToolAnswerPermission:
+		return s.answerPermission(ctx, args, sessionID)
+	case ToolAwaitPermission:
+		return s.awaitPermission(ctx, args)
+	case ToolPendingPermissions:
+		return s.pendingPermissions(ctx)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
+}
+
+// spawnAgentArgs is the spawn_agent call shape.
+type spawnAgentArgs struct {
+	Prompt      string `json:"prompt"`
+	Cwd         string `json:"cwd"`
+	Label       string `json:"label"`
+	Model       string `json:"model"`
+	Policy      string `json:"policy"`
+	Interactive *bool  `json:"interactive"`
+}
+
+// spawnAgent creates a wrapper child and delivers its opening turn.
+//
+// ⚠️ It is in-process on purpose: the daemon that answers the call is the daemon
+// that holds the child, so there is no HTTP hop to itself and no second process
+// to keep alive. The child's opening turn is a SEPARATE call because the wrapper
+// has no `prompt` field on spawn — a spawn that only creates the child leaves it
+// idle, which looks exactly like one that is thinking.
+func (s *RosterToolServer) spawnAgent(
+	ctx context.Context,
+	args json.RawMessage,
+	sessionID string,
+) (string, error) {
+	var body spawnAgentArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.Interactive != nil && *body.Interactive {
+		return "", errors.Errorf(
+			ctx,
+			"interactive spawn is not this slice's surface — a tab worker is spawned and steered by the tab-spawn slice",
+		)
+	}
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "spawn_agent is not wired")
+	}
+	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
+		Cwd:    body.Cwd,
+		Model:  body.Model,
+		Label:  body.Label,
+		Policy: body.Policy,
+	})
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "spawn agent failed")
+	}
+	if body.Prompt != "" {
+		if err := s.Supervisor.Send(ctx, session.ID, body.Prompt); err != nil {
+			// The child is live by now and holds stdin. A spawn that throws here
+			// leaves an idle process behind that looks exactly like a thinking
+			// worker, so it is stopped rather than orphaned.
+			_ = s.Supervisor.Stop(context.Background(), session.ID)
+			return "", errors.Wrapf(ctx, err, "deliver opening turn failed")
+		}
+	}
+	s.recordSpawn(ctx, session, sessionID, body.Label)
+	return marshalJSON(ctx, map[string]string{
+		"agent_id":   session.ID,
+		"session_id": session.ID,
+		"state":      string(session.State),
+	})
+}
+
+// recordSpawn files the ledger row a spawned child would otherwise lack.
+func (s *RosterToolServer) recordSpawn(
+	ctx context.Context,
+	session *Session,
+	callerSessionID string,
+	label string,
+) {
+	if s.Ledger == nil {
+		return
+	}
+	if err := s.Ledger.Post(ctx, callerSessionID, LedgerRow{
+		SessionID: session.ID,
+		AgentID:   session.ID,
+		Label:     label,
+		Cwd:       session.Cwd,
+		Mode:      "headless",
+		Location:  "local",
+	}); err != nil {
+		log.Printf("WARNING: ledger post for spawned session %s failed: %v", session.ID, err)
+	}
+}
+
+// answerPermission settles a parked permission request.
+func (s *RosterToolServer) answerPermission(
+	ctx context.Context,
+	args json.RawMessage,
+	sessionID string,
+) (string, error) {
+	var body struct {
+		AgentID   string `json:"agent_id"`
+		RequestID string `json:"request_id"`
+		Behavior  string `json:"behavior"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" || body.RequestID == "" {
+		return "", errors.Errorf(ctx, "agent_id and request_id are required")
+	}
+	if body.Behavior != "allow" && body.Behavior != "deny" {
+		return "", errors.Errorf(ctx, "behavior must be allow or deny, got %q", body.Behavior)
+	}
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "answer_permission is not wired")
+	}
+	session, err := s.Supervisor.Get(ctx, body.AgentID)
+	if err != nil {
+		return "", err
+	}
+	kind := AnswerKindPermission
+	if session.Question != nil && session.Question.Kind != "" {
+		kind = session.Question.Kind
+	}
+	if err := s.Supervisor.Answer(ctx, body.AgentID, body.RequestID, Answer{
+		Kind:     kind,
+		Behavior: body.Behavior,
+	}); err != nil {
+		return "", errors.Wrapf(ctx, err, "answer permission failed")
+	}
+	if s.Decider != nil && session.Question != nil {
+		s.Decider.RecordSettled(
+			ctx, body.AgentID, PolicyContext{Cwd: session.Cwd}, *session.Question,
+			body.Behavior, DecidedByManager, "", nil,
+		)
+	}
+	// Deliberately no per-argument log line: the caller-supplied strings are
+	// attacker-controlled and the decided_by record already carries the verdict.
+	_ = sessionID
+	return marshalJSON(ctx, map[string]string{
+		"agent_id":   body.AgentID,
+		"request_id": body.RequestID,
+		"behavior":   body.Behavior,
+	})
+}
+
+// awaitPermission waits for a park to be settled, or returns a null answer.
+//
+// A null answer is a quiet window, not an error: the park may still be open, and
+// a caller that treats a timeout as failure would re-ask a question already
+// pending.
+func (s *RosterToolServer) awaitPermission(
+	ctx context.Context,
+	args json.RawMessage,
+) (string, error) {
+	var body struct {
+		AgentID        string `json:"agent_id"`
+		RequestID      string `json:"request_id"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" {
+		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "await_permission is not wired")
+	}
+	requestID := body.RequestID
+	if requestID == "" {
+		session, err := s.Supervisor.Get(ctx, body.AgentID)
+		if err != nil {
+			return "", err
+		}
+		if session.Question == nil {
+			return marshalJSON(ctx, map[string]any{"answered": false, "answer": nil})
+		}
+		requestID = session.Question.RequestID
+	}
+	timeout := time.Duration(body.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		pending, err := s.Supervisor.PollAnswer(ctx, requestID)
+		if err != nil {
+			return "", errors.Wrapf(ctx, err, "poll answer failed")
+		}
+		if pending.Answered {
+			return marshalJSON(ctx, map[string]any{
+				"answered":   true,
+				"request_id": requestID,
+				"behavior":   pending.Answer.Behavior,
+				"answers":    pending.Answer.Answers,
+				"message":    pending.Answer.Message,
+			})
+		}
+		select {
+		case <-ctx.Done():
+			return marshalJSON(ctx, map[string]any{"answered": false, "answer": nil})
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return marshalJSON(ctx, map[string]any{"answered": false, "request_id": requestID, "answer": nil})
+}
+
+// pendingPermissions lists every park this process holds.
+func (s *RosterToolServer) pendingPermissions(ctx context.Context) (string, error) {
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "pending_permissions is not wired")
+	}
+	sessions, err := s.Supervisor.List(ctx)
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "list sessions failed")
+	}
+	rows := make([]map[string]any, 0, len(sessions))
+	for index := range sessions {
+		if sessions[index].Question == nil {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"agent_id":   sessions[index].ID,
+			"request_id": sessions[index].Question.RequestID,
+			"tool":       sessions[index].Question.ToolName,
+			"kind":       string(sessions[index].Question.Kind),
+			"cwd":        sessions[index].Cwd,
+		})
+	}
+	return marshalJSON(ctx, rows)
 }
 
 func (s *RosterToolServer) listAgents(ctx context.Context) (string, error) {
@@ -319,5 +566,40 @@ func rosterToolDefinitions() []any {
 				"only its own children.",
 			map[string]any{"agent_id": stringProp("id of the agent to stop")},
 			"agent_id"),
+		toolDef(ToolSpawnAgent,
+			"Spawn a headless worker in this daemon and deliver its opening turn. Returns the "+
+				"agent id, which is also its session id. The child is created in-process, so "+
+				"this daemon holds its parks and its stdin.",
+			map[string]any{
+				"prompt":      stringProp("the opening turn to deliver"),
+				"cwd":         stringProp("working directory for the worker"),
+				"label":       stringProp("a human name for the worker"),
+				"model":       stringProp("model to run, or empty for the default"),
+				"policy":      stringProp("path to a per-spawn policy overlay"),
+				"interactive": map[string]any{"type": "boolean", "description": "must be false or absent; tab spawning is a later slice"},
+			},
+			"prompt"),
+		toolDef(ToolAnswerPermission,
+			"Settle a parked permission request. Writes a `decided_by: manager` row to "+
+				"permissions.jsonl and returns the answer that was recorded.",
+			map[string]any{
+				"agent_id":   stringProp("id of the parked agent"),
+				"request_id": stringProp("the parked request id"),
+				"behavior":   map[string]any{"type": "string", "enum": []string{"allow", "deny"}},
+			},
+			"agent_id", "request_id", "behavior"),
+		toolDef(ToolAwaitPermission,
+			"Wait for a park to be settled. Returns `answered: true` with the behavior and "+
+				"answers, or `answered: false` when the window closed with the park still open — "+
+				"a quiet window, not an error.",
+			map[string]any{
+				"agent_id":        stringProp("id of the parked agent"),
+				"request_id":      stringProp("the request to wait on; defaults to the agent's current park"),
+				"timeout_seconds": map[string]any{"type": "integer", "description": "how long to wait; defaults to 60"},
+			},
+			"agent_id"),
+		toolDef(ToolPendingPermissions,
+			"Every park this daemon holds right now: agent id, request id, tool and kind.",
+			map[string]any{}),
 	}
 }

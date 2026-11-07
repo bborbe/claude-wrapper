@@ -294,6 +294,7 @@ type pollResult struct {
 	Kind     string
 	Behavior string
 	Answers  map[string]string
+	Message  string
 }
 
 func (s *MCPServer) poll(ctx context.Context, requestID string) (pollResult, bool, error) {
@@ -312,11 +313,17 @@ func (s *MCPServer) poll(ctx context.Context, requestID string) (pollResult, boo
 		Kind     string            `json:"kind"`
 		Behavior string            `json:"behavior"`
 		Answers  map[string]string `json:"answers"`
+		Message  string            `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return pollResult{}, false, errors.Wrapf(ctx, err, "decode poll failed")
 	}
-	return pollResult{Kind: body.Kind, Behavior: body.Behavior, Answers: body.Answers}, body.Answered, nil
+	return pollResult{
+		Kind:     body.Kind,
+		Behavior: body.Behavior,
+		Answers:  body.Answers,
+		Message:  body.Message,
+	}, body.Answered, nil
 }
 
 func (s *MCPServer) defaultBehavior() string {
@@ -327,18 +334,36 @@ func (s *MCPServer) defaultBehavior() string {
 }
 
 func (s *MCPServer) verdictFor(behavior string) string {
-	if behavior == "deny" {
+	return verdictForMessage(behavior, "")
+}
+
+// verdictForMessage renders one permission verdict, carrying the answer's own
+// text when it has any.
+//
+// ⚠️ The fixed `denied by claude-wrapper` string is the marker the regression
+// doc pins a delivered deny to, so it is the fallback rather than the only text:
+// a board answer arrives with the operator's words and dropping them would tell
+// the worker it was refused without saying what it was told.
+func verdictForMessage(behavior string, message string) string {
+	if behavior != "deny" {
+		return `{"behavior":"allow"}`
+	}
+	if message == "" {
+		message = "denied by claude-wrapper"
+	}
+	encoded, err := json.Marshal(map[string]any{"behavior": "deny", "message": message})
+	if err != nil {
 		return `{"behavior":"deny","message":"denied by claude-wrapper"}`
 	}
-	return `{"behavior":"allow"}`
+	return string(encoded)
 }
 
 // verdictForAnswer renders the tool's return value for one recorded answer.
 func (s *MCPServer) verdictForAnswer(answer pollResult, params json.RawMessage) string {
-	if AnswerKind(answer.Kind) == AnswerKindQuestion {
+	if AnswerKind(answer.Kind) == AnswerKindQuestion && answer.Behavior != "deny" {
 		return questionVerdict(params, answer.Answers)
 	}
-	return s.verdictFor(answer.Behavior)
+	return verdictForMessage(answer.Behavior, answer.Message)
 }
 
 // questionVerdict is the permission-prompt tool's return value for an

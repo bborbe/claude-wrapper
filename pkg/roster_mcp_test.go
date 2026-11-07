@@ -85,7 +85,10 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 		for _, tool := range body.Result.Tools {
 			names = append(names, tool.Name)
 		}
-		gomega.Expect(names).To(gomega.ConsistOf("list_agents", "agent_status", "stop_agent"))
+		gomega.Expect(names).To(gomega.ConsistOf(
+			"list_agents", "agent_status", "stop_agent",
+			"spawn_agent", "answer_permission", "await_permission", "pending_permissions",
+		))
 	})
 
 	ginkgo.It("returns a foreign worker alongside its own", func() {
