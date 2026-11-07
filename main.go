@@ -31,6 +31,12 @@ func main() {
 	sessionID := flag.String("session-id", "", "session id this tool answers for")
 	mcpTurnTimeout := flag.Duration("mcp-turn-timeout", 120*time.Second,
 		"how long an MCP send_message waits for the child's turn to close")
+	mcpHold := flag.Duration("mcp-hold", 90*time.Second,
+		"how long the child-facing permission tool waits for an answer before returning its default")
+	permissionTimeout := flag.Duration("permission-timeout", pkg.DefaultPermissionTimeout,
+		"how long an unanswered headless park waits before it is denied; 0 disables the timeout")
+	permissionLog := flag.String("permission-log", "",
+		"path to append permissions.jsonl to; defaults to $SUPERVISOR_PERMISSION_LOG or ~/.local/state/claude-supervisor/permissions.jsonl")
 	attentionURL := flag.String("attention-url", "http://localhost:18080",
 		"base URL of attention-controller, which serves the spawn ledger and the session-heartbeat store")
 	heartbeatInterval := flag.Duration("heartbeat-interval", pkg.DefaultHeartbeatInterval,
@@ -50,7 +56,7 @@ func main() {
 			WrapperURL: *wrapperURL,
 			SessionID:  *sessionID,
 			Allow:      true,
-			Hold:       90 * time.Second,
+			Hold:       *mcpHold,
 		}
 		if err := server.Run(context.Background()); err != nil {
 			log.Fatalf("mcp server failed: %v", err)
@@ -68,12 +74,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	now := libtime.NewCurrentDateTime()
+	// One decider, shared: the policy path and the board path must write their
+	// records through the same writer or `permissions.jsonl` interleaves two
+	// half-open files.
+	decider := &pkg.PermissionDecider{Log: pkg.NewPermissionLog(*permissionLog, now), Now: now}
 	store := pkg.NewSessionStore(*stateDir)
-	supervisor := pkg.NewSupervisor(
+	supervisor := pkg.NewSupervisorWithPolicy(
+		ctx,
 		*claudeBin,
-		libtime.NewCurrentDateTime(),
+		now,
 		pkg.SelfURL(*listen),
 		store,
+		pkg.SupervisorPolicy{
+			Decider:           decider,
+			PermissionTimeout: *permissionTimeout,
+		},
 	)
 	// Re-adoption runs before the listener opens, so a supervisor that connects the
 	// instant the port is up already sees the sessions that survived the restart.
@@ -109,7 +125,7 @@ func main() {
 	// interface.
 	handler.RegisterPprofIfLoopback(mux, *listen)
 
-	startFleetFaces(ctx, mux, supervisor, *attentionURL, *heartbeatInterval)
+	startFleetFaces(ctx, mux, supervisor, decider, *attentionURL, *heartbeatInterval)
 
 	server := &http.Server{
 		Addr:              *listen,
@@ -158,6 +174,7 @@ func startFleetFaces(
 	ctx context.Context,
 	mux *http.ServeMux,
 	supervisor pkg.Supervisor,
+	decider *pkg.PermissionDecider,
 	attentionURL string,
 	heartbeatInterval time.Duration,
 ) {
@@ -165,6 +182,23 @@ func startFleetFaces(
 	registry := pkg.NewSessionRegistry("")
 	ledger := pkg.NewLedgerClient(attentionURL, nil, now)
 	heartbeats := pkg.NewHeartbeatClient(attentionURL, nil)
+
+	// The board arms. One process reads the store for every child it holds, which
+	// is what removes the per-session poller from the headless path.
+	deliveryCtx, stopDelivery := signal.NotifyContext(
+		context.Background(), os.Interrupt, syscall.SIGTERM,
+	)
+	delivery := &pkg.BoardDelivery{
+		Supervisor: supervisor,
+		Store:      pkg.NewBoardStore(attentionURL, nil),
+		Decider:    decider,
+	}
+	go func() {
+		defer stopDelivery()
+		if err := delivery.Run(deliveryCtx); err != nil {
+			log.Printf("board delivery stopped: %v", err)
+		}
+	}()
 
 	// The A2A spawn targets: docker and k8s workers, created on an
 	// a2a-worker-controller. A configuration that cannot be read disables the
@@ -200,6 +234,7 @@ func startFleetFaces(
 		),
 		Supervisor: supervisor,
 		Ledger:     ledger,
+		Decider:    decider,
 		A2A:        a2aManager,
 	})
 
