@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: `spawn_agent` reports the model the tab actually runs on instead of the literal
+  `inherits` — the parser matched the launcher's own comment prose (`# … a launch that passes
+  no --model inherits the ambient`) before the real `--model` flag, so a correct spawn reported
+  a model it never used. Comment lines are now stripped before matching.
+- fix: the tab colour's submission confirmation waits the same 8s the node server allows,
+  instead of 2s, so a `/color` that applied is reported as applied rather than a false negative.
+- fix: a tab `spawn_agent` with no `prompt` is refused with a message naming the headless
+  escape (`interactive: false`), instead of the spawner's generic "invalid spawn options". The
+  schema keeps `prompt` optional because the headless and A2A paths accept an empty one.
+
 ## v0.10.0
 
 - feat: `spawn_agent` opens a WezTerm tab under the vault's `cc-*` launcher and `send_agent_message`
