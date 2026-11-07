@@ -151,6 +151,14 @@ func (c *Config) readSupervisorConfig(ctx context.Context) error {
 // An unreadable or absent file leaves the map empty, and the allowlist rule
 // then refuses every cluster target: an allowlist that cannot be read must not
 // read as "everything allowed".
+//
+// ⚠️ TWO SHAPES, ONE FILE. The live file is a flat array per vault
+// (`{"private-personal": ["nukedev", …]}`); an earlier revision nested them
+// (`{"private-personal": {"clusters": [...]}}`). Reading only the nested form
+// fails the unmarshal on the real file, and the swallow below then turns a
+// perfectly good allowlist into an empty one — every cluster spawn refused for a
+// vault that is in fact declared. Accept both, and keep the fail-closed
+// behaviour for a file that parses as neither.
 func (c *Config) readVaultsConfig(ctx context.Context, path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -160,19 +168,38 @@ func (c *Config) readVaultsConfig(ctx context.Context, path string) error {
 		return errors.Wrapf(ctx, err, "read %s failed", path)
 	}
 	var file struct {
-		Vaults map[string]struct {
-			Clusters []string `json:"clusters"`
-		} `json:"vaults"`
+		Vaults map[string]json.RawMessage `json:"vaults"`
 	}
 	if err := json.Unmarshal(raw, &file); err != nil {
-		// The real file is a flat map of vault -> object in some revisions; a
-		// parse failure leaves the allowlist empty, which fails closed.
+		// A file that does not parse leaves the allowlist empty, which fails closed.
 		return nil
 	}
 	for vault, entry := range file.Vaults {
-		c.VaultClusters[vault] = entry.Clusters
+		clusters, ok := parseVaultClusters(entry)
+		if !ok {
+			// An entry in neither shape stays undeclared, so the vault fails closed
+			// rather than silently allowing every cluster.
+			continue
+		}
+		c.VaultClusters[vault] = clusters
 	}
 	return nil
+}
+
+// parseVaultClusters reads one vault's allowlist entry in either shape: a flat
+// array of cluster names, or an object carrying them under `clusters`.
+func parseVaultClusters(entry json.RawMessage) ([]string, bool) {
+	var flat []string
+	if err := json.Unmarshal(entry, &flat); err == nil {
+		return flat, true
+	}
+	var nested struct {
+		Clusters []string `json:"clusters"`
+	}
+	if err := json.Unmarshal(entry, &nested); err == nil {
+		return nested.Clusters, true
+	}
+	return nil, false
 }
 
 // readEnv fills the per-key environment maps.

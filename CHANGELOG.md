@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: read the A2A cluster allowlist from the shape `vaults.json` actually uses.
+  `readVaultsConfig` unmarshalled every vault entry as `{"clusters": [...]}`, so the live file's
+  flat arrays (`"private-personal": ["nukedev", …]`) failed to parse and the swallowed error left
+  the allowlist empty — every cluster spawn refused for a vault that is in fact declared. Both
+  shapes are accepted now; an entry in neither still fails closed.
+- test: `pkg/a2a/tunnel_test.go` covers the relay puller — the empty-secret refusal, a pull that
+  files a status with `source: "push"`, an unknown token dropped, a non-2xx pull reported as an
+  error rather than a delivery, survival of failed pulls followed by a delivery, and a cancelled
+  context ending the loop within 2 s.
+
 ## v0.9.0
 
 - feat: the daemon applies the supervisor's approval policy **in the process that holds the
