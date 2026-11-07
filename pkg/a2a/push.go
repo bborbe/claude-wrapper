@@ -116,12 +116,12 @@ func (r *PushRegistry) EnsureListening(ctx context.Context) (int, error) {
 		mux := http.NewServeMux()
 		mux.HandleFunc(PushPath, r.handlePush)
 		r.server = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-		go func() {
+		safeGo("push receiver", func() {
 			if serveErr := r.server.Serve(listener); serveErr != nil &&
 				serveErr != http.ErrServerClosed {
 				log.Printf("WARNING: A2A push receiver stopped: %v", serveErr)
 			}
-		}()
+		})
 	})
 	if r.listenEr != nil {
 		return 0, r.listenEr
@@ -263,7 +263,7 @@ func (r *PushRegistry) handlePush(resp http.ResponseWriter, req *http.Request) {
 		respondJSON(resp, http.StatusBadRequest, map[string]any{"error": "read body failed"})
 		return
 	}
-	kind, payload, err := parseStreamEnvelope(raw)
+	kind, payload, err := parseStreamEnvelope(req.Context(), raw)
 	if err != nil {
 		respondJSON(resp, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -357,13 +357,18 @@ func (r *PushRegistry) Deliver(workerID string, entry StatusEntry) {
 // There is deliberately no `event` key: an earlier spec asserted one and was
 // wrong, and a body keyed on `event` is a bespoke shape that is refused rather
 // than guessed at.
-func parseStreamEnvelope(raw []byte) (kind string, payload map[string]any, err error) {
+func parseStreamEnvelope(
+	ctx context.Context,
+	raw []byte,
+) (kind string, payload map[string]any, err error) {
 	var body map[string]any
 	if unmarshalErr := json.Unmarshal(raw, &body); unmarshalErr != nil {
-		return "", nil, fmt.Errorf("body is not JSON")
+		return "", nil, errors.Wrapf(ctx, unmarshalErr, "the push body is not JSON")
 	}
 	if len(body) != 1 {
-		return "", nil, fmt.Errorf("expected exactly one envelope key, got %d", len(body))
+		return "", nil, errors.Errorf(
+			ctx, "expected exactly one envelope key, got %d", len(body),
+		)
 	}
 	for key, value := range body {
 		switch key {
@@ -371,10 +376,10 @@ func parseStreamEnvelope(raw []byte) (kind string, payload map[string]any, err e
 			payload, _ = value.(map[string]any)
 			return key, payload, nil
 		default:
-			return "", nil, fmt.Errorf("unknown envelope key %q", key)
+			return "", nil, errors.Errorf(ctx, "unknown envelope key %q", key)
 		}
 	}
-	return "", nil, fmt.Errorf("empty envelope")
+	return "", nil, errors.Errorf(ctx, "empty envelope")
 }
 
 func statusState(payload map[string]any) string {

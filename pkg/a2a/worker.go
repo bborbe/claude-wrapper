@@ -186,7 +186,10 @@ func (m *Manager) Spawn(ctx context.Context, args SpawnArgs) (*Agent, error) {
 
 	// The first turn, and the push registration that must happen before the
 	// worker's mid-turn status fires (~10 s in).
-	go m.firstTurn(context.WithoutCancel(ctx), agent, args.Prompt, pushURL, token)
+	firstCtx := context.WithoutCancel(ctx)
+	safeGo("first turn", func() {
+		m.firstTurn(firstCtx, agent, args.Prompt, pushURL, token)
+	})
 	return agent, nil
 }
 
@@ -247,7 +250,9 @@ func (m *Manager) firstTurn(
 	result, err := m.Client.SendTurn(
 		ctx, endpoint, agent.Token, agent.ContextID, prompt, agent.ProtocolVersion,
 		func(taskID string) {
-			go m.registerPush(ctx, agent, endpoint, taskID, pushURL, pushToken)
+			safeGo("push registration", func() {
+				m.registerPush(ctx, agent, endpoint, taskID, pushURL, pushToken)
+			})
 		},
 	)
 	if err != nil {
@@ -297,7 +302,9 @@ func (m *Manager) SendMessage(ctx context.Context, agentID, text string) (*TurnR
 	result, err := m.Client.SendTurn(
 		ctx, agent.A2AURL, agent.Token, agent.ContextID, text, agent.ProtocolVersion,
 		func(taskID string) {
-			go m.registerPush(ctx, agent, agent.A2AURL, taskID, pushURL, pushToken)
+			safeGo("push registration", func() {
+				m.registerPush(ctx, agent, agent.A2AURL, taskID, pushURL, pushToken)
+			})
 		},
 	)
 	if err != nil {
@@ -421,4 +428,22 @@ func (m *Manager) now() time.Time {
 		return m.Now()
 	}
 	return time.Now()
+}
+
+// safeGo runs fn on its own goroutine and recovers a panic.
+//
+// ⚠️ A PANIC IN A BARE GOROUTINE KILLS THE WHOLE DAEMON, and this daemon owns
+// the `claude` child process — every in-flight worker dies with it. None of the
+// work started here (a first turn, a push registration) is on a caller's
+// critical path, so the correct response to a panic in one is a logged warning,
+// not a process exit that takes unrelated sessions down with it.
+func safeGo(what string, fn func()) {
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("WARNING: a2a %s panicked: %v", what, recovered)
+			}
+		}()
+		fn()
+	}()
 }

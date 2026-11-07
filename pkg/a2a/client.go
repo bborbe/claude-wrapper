@@ -640,6 +640,13 @@ func readTurnFrames(
 	var buffer string
 
 	for {
+		// The body is bound to ctx by the caller's request, so a cancel closes it
+		// underneath the reader. Checking explicitly keeps that exit visible here
+		// rather than inferring it from an I/O error that reads like a broken
+		// stream.
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return nil, "", errors.Wrapf(ctx, cancelErr, "the turn stream was cancelled")
+		}
 		chunk, readErr := reader.ReadString('\n')
 		buffer += chunk
 		complete := buffer

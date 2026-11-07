@@ -84,10 +84,10 @@ func (t *Tunnel) Run(ctx context.Context) {
 					"WARNING: a2a relay pull failed %d× in a row: %v", failures, err,
 				)
 			}
-			delay := t.RetryDelay * time.Duration(1<<minInt(failures-1, 8))
-			if delay > t.MaxRetryDelay {
-				delay = t.MaxRetryDelay
-			}
+			delay := min(
+				t.RetryDelay*time.Duration(1<<minInt(failures-1, 8)),
+				t.MaxRetryDelay,
+			)
 			select {
 			case <-ctx.Done():
 				return
@@ -143,7 +143,7 @@ func (t *Tunnel) PullOnce(ctx context.Context) (int, error) {
 		if item.Token == "" {
 			continue
 		}
-		kind, body, err := parseStreamEnvelope(item.Body)
+		kind, body, err := parseStreamEnvelope(ctx, item.Body)
 		if err != nil || kind != "statusUpdate" {
 			continue
 		}
