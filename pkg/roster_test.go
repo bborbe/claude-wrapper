@@ -18,6 +18,7 @@ import (
 // The unused methods panic rather than return zero values: a roster that started
 // calling Spawn would otherwise read as a passing test that spawned nothing.
 type rosterSupervisor struct {
+	fakeDurable
 	sessions []Session
 	err      error
 }

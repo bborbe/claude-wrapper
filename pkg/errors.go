@@ -68,4 +68,11 @@ var (
 	ErrAgentNotOwned = stderrors.New("agent is not a child of this wrapper")
 	// ErrAgentNotFound is returned for an agent id no roster row carries.
 	ErrAgentNotFound = stderrors.New("agent not found")
+	// ErrStreamGap is returned when a stream resume point is no longer retained.
+	//
+	// It exists so a reconnect cannot silently substitute a different point: a
+	// client that asked to continue from event 120 and was quietly handed the last
+	// 4096 events would see a stream with an invisible hole, which is the failure
+	// this whole stream exists to make impossible.
+	ErrStreamGap = stderrors.New("stream resume point is no longer retained")
 )

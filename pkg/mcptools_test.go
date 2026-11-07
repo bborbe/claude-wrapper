@@ -20,6 +20,7 @@ import (
 // toolSupervisor answers each Send with a `result` event carrying the reply,
 // so a spec observes the tool's return rule without a real child.
 type toolSupervisor struct {
+	fakeDurable
 	mutex        sync.Mutex
 	live         chan Event
 	emitted      []Event

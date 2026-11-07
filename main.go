@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
@@ -34,6 +35,10 @@ func main() {
 		"base URL of attention-controller, which serves the spawn ledger and the session-heartbeat store")
 	heartbeatInterval := flag.Duration("heartbeat-interval", pkg.DefaultHeartbeatInterval,
 		"how often to stamp a heartbeat for every live session")
+	stateDir := flag.String("state-dir", "",
+		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
+	drainBound := flag.Duration("drain-bound", 120*time.Second,
+		"how long a SIGTERM waits for each child's turn boundary before recording it as interrupted")
 	flag.Parse()
 
 	if *mcpStdio {
@@ -53,12 +58,31 @@ func main() {
 		return
 	}
 
+	// One signal context for the whole process.
+	//
+	// It replaces the poster-only NotifyContext this used to build: that one
+	// registered a handler, which suppressed Go's default SIGTERM termination, and
+	// then unregistered it — so the FIRST SIGTERM did nothing at all and the daemon
+	// only died on the second or on a SIGKILL. `launchctl kickstart -k` sends one
+	// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	store := pkg.NewSessionStore(*stateDir)
 	supervisor := pkg.NewSupervisor(
-		context.Background(),
 		*claudeBin,
 		libtime.NewCurrentDateTime(),
 		pkg.SelfURL(*listen),
+		store,
 	)
+	// Re-adoption runs before the listener opens, so a supervisor that connects the
+	// instant the port is up already sees the sessions that survived the restart.
+	if adopted, adoptErr := supervisor.Adopt(ctx); adoptErr != nil {
+		log.Printf("WARNING: re-adopt failed: %v", adoptErr)
+	} else if adopted > 0 {
+		log.Printf("re-adopted %d live session(s) from the previous daemon", adopted)
+	}
+
 	// One lock set for every route that can write a turn: a sequence and a
 	// plain message on the same child must not interleave.
 	locks := pkg.NewSessionLocks()
@@ -85,7 +109,7 @@ func main() {
 	// interface.
 	handler.RegisterPprofIfLoopback(mux, *listen)
 
-	startFleetFaces(mux, supervisor, *attentionURL, *heartbeatInterval)
+	startFleetFaces(ctx, mux, supervisor, *attentionURL, *heartbeatInterval)
 
 	server := &http.Server{
 		Addr:              *listen,
@@ -96,10 +120,33 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	log.Printf("claude-wrapper listening on %s", *listen)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("listen failed: %v", err)
+	go func() {
+		log.Printf("claude-wrapper listening on %s", *listen)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("listen failed: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	// A second signal during the drain is not a second chance to die: the children
+	// outlive this process either way, so the drain is allowed to finish its bound.
+	stop()
+	log.Printf("claude-wrapper draining: waiting up to %s per session for a turn boundary", *drainBound)
+	report := supervisor.Drain(context.Background(), *drainBound)
+	for _, result := range report.Sessions {
+		if result.Interrupted {
+			log.Printf("drain: session %s interrupted — %s", result.ID, result.Reason)
+			continue
+		}
+		log.Printf("drain: session %s at turn boundary (state %s)", result.ID, result.State)
 	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("server shutdown: %v", err)
+	}
+	log.Printf("claude-wrapper stopped; %d session(s) continue under the next daemon", len(report.Sessions))
 }
 
 // startFleetFaces mounts the fleet-facing MCP face and starts the central
@@ -108,6 +155,7 @@ func main() {
 // Split out of main so the wiring is readable on its own and main stays a flag
 // block plus a server.
 func startFleetFaces(
+	ctx context.Context,
 	mux *http.ServeMux,
 	supervisor pkg.Supervisor,
 	attentionURL string,
@@ -135,7 +183,7 @@ func startFleetFaces(
 	if tunnel, tunnelErr := a2a.NewTunnel(
 		a2aConfig.RelayURL, a2aConfig.RelaySecret, pushRegistry,
 	); tunnelErr == nil {
-		go tunnel.Run(context.Background())
+		go tunnel.Run(ctx)
 	}
 
 	// The fleet-facing MCP face: a Claude session reading and steering the
@@ -160,12 +208,8 @@ func startFleetFaces(
 	// supervisor of its own has nothing posting for it, and this is what makes
 	// liveness independent of which server spawned what.
 	poster := pkg.NewHeartbeatPoster(registry, heartbeats, heartbeatInterval)
-	posterCtx, stopPoster := signal.NotifyContext(
-		context.Background(), os.Interrupt, syscall.SIGTERM,
-	)
 	go func() {
-		defer stopPoster()
-		if err := poster.Run(posterCtx); err != nil {
+		if err := poster.Run(ctx); err != nil {
 			log.Printf("heartbeat poster stopped: %v", err)
 		}
 	}()

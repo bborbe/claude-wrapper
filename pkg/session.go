@@ -205,6 +205,13 @@ type Session struct {
 	// that event the child still reads idle while a turn is on its way. A
 	// caller that must not write mid-turn reads this instead.
 	PendingTurns int `json:"pending_turns"`
+	// Interrupted names the reason a drain could not reach this session's turn
+	// boundary before its bound expired.
+	//
+	// It says nothing about the child, which keeps running: it is the drain's own
+	// verdict, recorded so a restart that cut a turn short cannot afterwards read
+	// the same as one that landed between turns.
+	Interrupted string `json:"interrupted,omitempty"`
 }
 
 // ModelChange is what a model change reports back.

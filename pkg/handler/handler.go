@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -550,7 +551,21 @@ func handleEvents(
 			errors.Errorf(ctx, "streaming unsupported"))
 		return
 	}
-	replay, live, cancel, err := supervisor.Subscribe(req.Context(), id)
+	// A resume point is read from Last-Event-ID, the header an SSE client sends
+	// when it reconnects. It is what lets a supervisor whose connection died
+	// continue exactly where it stopped: without it the whole retained session is
+	// replayed, and every event the client already consumed arrives a second time.
+	from := -1
+	if raw := req.Header.Get("Last-Event-ID"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil {
+			writeError(resp, http.StatusBadRequest,
+				errors.Wrapf(ctx, parseErr, "Last-Event-ID %q is not a sequence number", raw))
+			return
+		}
+		from = parsed
+	}
+	replay, firstSeq, live, cancel, err := supervisor.SubscribeFrom(req.Context(), id, from)
 	if err != nil {
 		writeError(resp, statusFor(err), err)
 		return
@@ -580,23 +595,27 @@ func handleEvents(
 	// from "not connected yet".
 	flusher.Flush()
 
-	writeFrame := func(event pkg.Event) bool {
+	writeFrame := func(seq int, event pkg.Event) bool {
 		encoded, marshalErr := json.Marshal(event)
 		if marshalErr != nil {
 			return true
 		}
-		if _, writeErr := fmt.Fprintf(resp, "data: %s\n\n", encoded); writeErr != nil {
+		// The id is what a reconnecting client resumes from, so it is written on
+		// every frame — a stream whose ids stop at the first reconnect cannot be
+		// resumed a second time.
+		if _, writeErr := fmt.Fprintf(resp, "id: %d\ndata: %s\n\n", seq, encoded); writeErr != nil {
 			return false
 		}
 		flusher.Flush()
 		return true
 	}
 
-	for _, event := range replay {
-		if !writeFrame(event) {
+	for index, event := range replay {
+		if !writeFrame(firstSeq+index, event) {
 			return
 		}
 	}
+	next := firstSeq + len(replay)
 	for {
 		select {
 		case <-req.Context().Done():
@@ -607,9 +626,10 @@ func handleEvents(
 				flusher.Flush()
 				return
 			}
-			if !writeFrame(event) {
+			if !writeFrame(next, event) {
 				return
 			}
+			next++
 		}
 	}
 }
@@ -690,6 +710,11 @@ func statusFor(err error) int {
 	case errors.Is(err, pkg.ErrConfirmationRequired):
 		return http.StatusConflict
 	case errors.Is(err, pkg.ErrSessionNotIdle):
+		return http.StatusConflict
+	case errors.Is(err, pkg.ErrStreamGap):
+		// 409, not 200: a resume point that is no longer retained means the client
+		// has missed events, and serving it a different point would hand it a stream
+		// with an invisible hole in it.
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

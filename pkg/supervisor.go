@@ -5,12 +5,12 @@
 package pkg
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -81,23 +83,45 @@ type Supervisor interface {
 	PollAnswer(ctx context.Context, requestID string) (PendingAnswer, error)
 	Stop(ctx context.Context, id string) error
 	Subscribe(ctx context.Context, id string) ([]Event, <-chan Event, func(), error)
+	// SubscribeFrom streams a child's events from a resume point, so a client
+	// whose connection broke can continue where it stopped instead of replaying
+	// the session and re-delivering events it already consumed.
+	//
+	// from is a sequence number previously handed out in a frame id; a negative
+	// value means "from the start of what is retained". ErrStreamGap reports that
+	// the requested point is no longer retained, which a caller must surface
+	// rather than silently substituting a different one.
+	SubscribeFrom(ctx context.Context, id string, from int) (
+		replay []Event, firstSeq int, live <-chan Event, cancel func(), err error)
+	// Adopt registers every child a previous daemon left running, so a restart
+	// does not lose the sessions streaming across it. It returns how many were
+	// adopted.
+	Adopt(ctx context.Context) (int, error)
+	// Drain waits for each child to reach a turn boundary, up to bound, and
+	// reports what it found. It never kills a child.
+	Drain(ctx context.Context, bound time.Duration) DrainReport
 }
 
 // NewSupervisor creates a Supervisor that runs the given claude binary.
 //
 // selfURL is this process's own base URL (e.g. "http://localhost:18090"); every
 // child's permission tool is pointed at it so questions come back here.
+//
+// The supervisor deliberately takes no context. A child is bound to a durable
+// event file and a FIFO, not to this process, so nothing about it should be
+// cancelled when this process's own work ends — an earlier version bound the
+// child to a process context and every daemon shutdown killed every worker.
 func NewSupervisor(
-	ctx context.Context,
 	claudeBin string,
 	now libtime.CurrentDateTimeGetter,
 	selfURL string,
+	store SessionStore,
 ) Supervisor {
 	return &supervisor{
-		ctx:       ctx,
 		claudeBin: claudeBin,
 		now:       now,
 		selfURL:   selfURL,
+		store:     store,
 		mutex:     sync.RWMutex{},
 		sessions:  map[string]*child{},
 		pending:   NewPending(),
@@ -105,7 +129,6 @@ func NewSupervisor(
 }
 
 type supervisor struct {
-	ctx       context.Context
 	claudeBin string
 	now       libtime.CurrentDateTimeGetter
 	// selfURL is this process's own base URL, handed to every child's
@@ -117,7 +140,10 @@ type supervisor struct {
 	// tool only logs a failed registration. Measured 2026-10-29 on a :18091
 	// instance, where the child's question never reached the wrapper that spawned
 	// it.
-	selfURL  string
+	selfURL string
+	// store owns the durable half: the child's endpoints and the record that lets
+	// a successor find them.
+	store    SessionStore
 	mutex    sync.RWMutex
 	sessions map[string]*child
 	// starting holds the ids of resume spawns in flight; see reserve.
@@ -224,14 +250,198 @@ func (s *supervisor) Get(ctx context.Context, id string) (*Session, error) {
 // the child. Cancel must be called once the caller stops reading; it is safe to
 // call more than once.
 func (s *supervisor) Subscribe(ctx context.Context, id string) ([]Event, <-chan Event, func(), error) {
+	replay, _, live, cancel, err := s.SubscribeFrom(ctx, id, -1)
+	return replay, live, cancel, err
+}
+
+// SubscribeFrom streams one child's events from a resume point.
+//
+// firstSeq is the sequence number of replay[0]; a caller labels the events that
+// follow the replay by counting up from firstSeq+len(replay). The child hands out
+// no per-event number because Event is the child's own JSON, kept verbatim, and a
+// supervision field smuggled into it would be a lie about what the child said.
+func (s *supervisor) SubscribeFrom(
+	ctx context.Context,
+	id string,
+	from int,
+) ([]Event, int, <-chan Event, func(), error) {
 	s.mutex.RLock()
 	c, ok := s.sessions[id]
 	s.mutex.RUnlock()
 	if !ok {
-		return nil, nil, nil, errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
+		return nil, 0, nil, nil, errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
 	}
-	replay, live, cancel := c.subscribe()
-	return replay, live, cancel, nil
+	return c.subscribeFrom(from)
+}
+
+// Adopt registers every child a previous daemon left running.
+//
+// It is what makes a restart cost a turn boundary rather than a turn. Each
+// record names a pid and two endpoint paths; a pid that is still alive is a child
+// that survived, and its state is rebuilt by replaying the event file from the
+// beginning — state is derived from events, so a replay reconstructs exactly what
+// the previous daemon reported, including a turn left open across the restart.
+func (s *supervisor) Adopt(ctx context.Context) (int, error) {
+	records, err := s.store.List(ctx)
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "list session records failed")
+	}
+	adopted := 0
+	for _, record := range records {
+		if record.ID == "" {
+			continue
+		}
+		if !processAlive(record.ChildPID) {
+			// The child left while no daemon was watching. Its record has nothing
+			// left to serve — no stream, no stdin — so keeping it would make every
+			// later list report a session that cannot be reached.
+			if removeErr := s.store.Remove(ctx, record.ID); removeErr != nil {
+				log.Printf("WARNING: prune session %s failed: %v", record.ID, removeErr)
+			}
+			continue
+		}
+		files, openErr := s.store.Open(ctx, record.ID)
+		if openErr != nil {
+			log.Printf("WARNING: adopt session %s failed: %v", record.ID, openErr)
+			continue
+		}
+		c := &child{
+			id:          record.ID,
+			pid:         record.ChildPID,
+			now:         s.now,
+			stdin:       files.Stdin,
+			eventsPath:  files.EventsPath,
+			subscribers: map[int]chan Event{},
+			tailDone:    make(chan struct{}),
+			session: Session{
+				ID:        record.ID,
+				State:     StateStarting,
+				Controls:  []Control{ControlMessage},
+				Cwd:       record.Cwd,
+				StartedAt: record.StartedAt,
+			},
+		}
+		if record.Question != nil {
+			// The tool that asked is a grandchild of the child, so it survived the
+			// restart too and is still polling for its answer. Restoring the question
+			// is what keeps that answer deliverable.
+			question := *record.Question
+			c.session.Question = &question
+			c.session.Controls = []Control{ControlAnswer, ControlMessage}
+			s.pending.Register(question.RequestID, question)
+		}
+		s.mutex.Lock()
+		s.sessions[record.ID] = c
+		s.mutex.Unlock()
+		go c.tail()
+		go c.watch()
+		adopted++
+	}
+	return adopted, nil
+}
+
+// DrainReport is what a shutdown found when it waited for turn boundaries.
+type DrainReport struct {
+	// Sessions is one row per child the daemon was holding when it drained.
+	Sessions []DrainResult `json:"sessions"`
+}
+
+// DrainResult is one child's drain outcome.
+type DrainResult struct {
+	ID    string `json:"id"`
+	State State  `json:"state"`
+	// WaitedMillis is how long the drain held this child before giving up.
+	WaitedMillis int64 `json:"waited_millis"`
+	// Interrupted is true when the bound expired while the child was still
+	// mid-turn, and Reason names why.
+	//
+	// Interrupted is a statement about the DRAIN, not about the child: the child
+	// keeps running and is adopted by the next daemon. Recording it is what keeps
+	// "the restart cost a turn boundary" and "the restart cut a turn short" from
+	// reading the same afterwards.
+	Interrupted bool   `json:"interrupted"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// Drain waits for every child to reach a turn boundary, up to bound, and reports
+// what it found. It never kills a child.
+//
+// The children are not this drain's to end: each one owns a durable event file
+// and a FIFO, so it survives the daemon by construction. What a drain buys is the
+// difference between a restart that lands between turns and one that lands inside
+// one — the second is not an error, but a caller that asked for a clean stop is
+// entitled to know which happened.
+func (s *supervisor) Drain(ctx context.Context, bound time.Duration) DrainReport {
+	s.mutex.RLock()
+	children := make([]*child, 0, len(s.sessions))
+	for _, c := range s.sessions {
+		children = append(children, c)
+	}
+	s.mutex.RUnlock()
+
+	results := make([]DrainResult, len(children))
+	var waitGroup sync.WaitGroup
+	for index, c := range children {
+		waitGroup.Add(1)
+		go func(index int, c *child) {
+			defer waitGroup.Done()
+			results[index] = s.drainOne(ctx, c, bound)
+		}(index, c)
+	}
+	waitGroup.Wait()
+	return DrainReport{Sessions: results}
+}
+
+// drainOne waits for one child's turn boundary.
+func (s *supervisor) drainOne(ctx context.Context, c *child, bound time.Duration) DrainResult {
+	deadline := time.Now().Add(bound)
+	for {
+		snapshot := c.snapshot()
+		if snapshot.State != StateGenerating && snapshot.PendingTurns == 0 {
+			return DrainResult{ID: c.id, State: snapshot.State}
+		}
+		if time.Now().After(deadline) {
+			reason := fmt.Sprintf("drain bound %s expired with the turn still open", bound)
+			if err := s.recordInterruption(ctx, c.id, reason); err != nil {
+				log.Printf("WARNING: record interruption for %s failed: %v", c.id, err)
+			}
+			c.mutex.Lock()
+			c.session.Interrupted = reason
+			c.mutex.Unlock()
+			return DrainResult{
+				ID:           c.id,
+				State:        snapshot.State,
+				WaitedMillis: bound.Milliseconds(),
+				Interrupted:  true,
+				Reason:       reason,
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// recordInterruption writes the drain's verdict into the session's durable
+// record, so it survives the daemon that wrote it.
+func (s *supervisor) recordInterruption(ctx context.Context, id string, reason string) error {
+	record, err := s.store.Load(ctx, id)
+	if err != nil {
+		return err
+	}
+	record.Interrupted = reason
+	return s.store.Save(ctx, *record)
+}
+
+// persistQuestion writes the session's current question into its record, so a
+// successor can restore it.
+func (s *supervisor) persistQuestion(ctx context.Context, id string, question *Question) {
+	record, err := s.store.Load(ctx, id)
+	if err != nil {
+		return
+	}
+	record.Question = question
+	if saveErr := s.store.Save(ctx, *record); saveErr != nil {
+		log.Printf("WARNING: persist question for %s failed: %v", id, saveErr)
+	}
 }
 
 func (s *supervisor) Answer(ctx context.Context, id string, requestID string, answer Answer) error {
@@ -245,6 +455,7 @@ func (s *supervisor) Answer(ctx context.Context, id string, requestID string, an
 		return err
 	}
 	c.clearQuestion(requestID)
+	s.persistQuestion(ctx, id, c.snapshot().Question)
 	return nil
 }
 
@@ -318,6 +529,11 @@ func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Q
 	}
 	s.pending.Register(question.RequestID, question)
 	c.setQuestion(question)
+	// Persisted, because the question has to be answerable after a restart: the
+	// tool that raised it is a grandchild of the child and outlives the daemon, so
+	// a successor that forgot the request would make a deliverable answer
+	// undeliverable.
+	s.persistQuestion(ctx, id, &question)
 	return nil
 }
 
@@ -336,6 +552,7 @@ func (s *supervisor) ForgetQuestion(ctx context.Context, id string, requestID st
 	}
 	s.pending.Forget(requestID)
 	c.clearQuestion(requestID)
+	s.persistQuestion(ctx, id, c.snapshot().Question)
 	return nil
 }
 
@@ -378,36 +595,76 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err != nil {
 		return nil, err
 	}
-	// s.ctx, never the caller's ctx: the child must outlive the HTTP request
-	// that spawned it. Binding it to req.Context() killed every child the
-	// instant POST /sessions responded, which read as a spawn that silently
-	// exited.
+	files, err := s.store.Create(ctx, SessionRecord{
+		ID:        id,
+		Cwd:       options.Cwd,
+		Options:   options,
+		StartedAt: s.now.Now().Time().UTC(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	// exec.Command, never exec.CommandContext: a child bound to a context dies
+	// with it, and this child is supposed to outlive the daemon that spawned it.
+	// That binding was the second half of the "every restart kills every worker"
+	// defect — the first half was the daemon dying, which took the pipes with it.
 	// #nosec G204 -- claudeBin is an operator-supplied flag, never request input.
-	cmd := exec.CommandContext(s.ctx, s.claudeBin, buildArgs(id, options, mcpConfig)...)
+	cmd := exec.Command(s.claudeBin, buildArgs(id, options, mcpConfig)...)
 	cmd.Dir = options.Cwd
 	// The child inherits THIS process's environment unless it is given its own,
 	// so a caller's resolved environment would otherwise be discarded without a
 	// word — the child starts, answers, and behaves differently.
 	cmd.Env = childEnv(os.Environ(), options.Env)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, errors.Wrapf(ctx, err, "stdin pipe failed")
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, errors.Wrapf(ctx, err, "stdout pipe failed")
-	}
+	cmd.Stdin = files.Stdin
+	cmd.Stdout = files.EventsWriter
+	// The child is given its OWN write end of its own stdin, so a parent death
+	// never produces an EOF on it. A FIFO reports EOF when its last writer closes,
+	// and without this descriptor the daemon is that writer — so the child would
+	// read EOF the instant the daemon died and finish its input stream, which is
+	// how a survivor would still lose its turn. The descriptor is held, never
+	// written: it exists only to keep the FIFO open from the child's own side.
+	cmd.ExtraFiles = []*os.File{files.Stdin}
+	// Setsid detaches the child from this process's session and process group, so
+	// the group-wide signal launchd sends when the job stops cannot reach it. The
+	// child has to outlive a `launchctl kickstart -k`, and that kill is delivered
+	// to the group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		_ = files.Stdin.Close()
+		_ = files.EventsWriter.Close()
+		_ = s.store.Remove(ctx, id)
 		return nil, errors.Wrapf(ctx, err, "start claude failed")
+	}
+	// The child holds its own copy of both endpoints now, so the spawning side
+	// closes its stdout handle: a regular file needs no reader-side keep-alive, and
+	// leaving it open would keep the file alive for the daemon's lifetime for no
+	// benefit.
+	_ = files.EventsWriter.Close()
+
+	record := SessionRecord{
+		ID:        id,
+		ChildPID:  cmd.Process.Pid,
+		Cwd:       options.Cwd,
+		Options:   options,
+		StartedAt: s.now.Now().Time().UTC(),
+	}
+	if err := s.store.Save(ctx, record); err != nil {
+		// The child is already running and adoptable by its pid only if the record
+		// says so; a record that cannot be written means the next daemon will not
+		// find it. Killing it here would be the old defect, so it keeps running and
+		// the loss is logged.
+		log.Printf("WARNING: session %s is not adoptable: %v", id, err)
 	}
 
 	c := &child{
 		id:          id,
+		pid:         cmd.Process.Pid,
 		now:         s.now,
 		cmd:         cmd,
-		stdin:       stdin,
+		stdin:       files.Stdin,
+		eventsPath:  files.EventsPath,
 		subscribers: map[int]chan Event{},
+		tailDone:    make(chan struct{}),
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
@@ -416,8 +673,8 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 			StartedAt: s.now.Now().Time().UTC(),
 		},
 	}
-	go c.consume(bufio.NewScanner(stdout))
-	go c.reap()
+	go c.tail()
+	go c.watch()
 	return c, nil
 }
 
@@ -601,14 +858,21 @@ type child struct {
 	mutex       sync.RWMutex
 	writeMu     sync.Mutex
 	id          string
+	pid         int
 	now         libtime.CurrentDateTimeGetter
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
+	eventsPath  string
 	lastEventAt time.Time
 	session     Session
 	// events retains what the child has already emitted so a subscriber that
 	// arrives mid-turn still sees the turn it missed.
 	events []Event
+	// firstSeq is the sequence number of events[0]. Sequence numbers are line
+	// indexes in the event file, which is what makes them stable across a restart:
+	// a resume point handed to a client before the restart still names the same
+	// line afterwards.
+	firstSeq int
 	// subscribers holds one channel per live Subscribe caller, keyed by an id
 	// that only exists so cancel can find its own entry.
 	subscribers map[int]chan Event
@@ -619,6 +883,13 @@ type child struct {
 	// child's own message_start: State still reads idle in that window, so a
 	// caller that wrote a turn would be invisible to anything reading State.
 	pendingTurns int
+	// procGone reports that the child's process is no longer running. The tailer
+	// reads it to decide whether an empty read means "wait" or "finished", which is
+	// what lets it drain the last events before the session is settled.
+	procGone atomic.Bool
+	// tailDone closes once the event tailer has returned, so the watcher settles
+	// the session only after every event the child wrote has been applied.
+	tailDone chan struct{}
 }
 
 func (c *child) snapshot() *Session {
@@ -644,7 +915,10 @@ func (c *child) stop(ctx context.Context) error {
 	if c.session.State == StateExited {
 		return errors.Wrapf(ctx, ErrSessionExited, "session %q already exited", c.id)
 	}
-	if err := c.cmd.Process.Kill(); err != nil {
+	// Signalled by pid rather than through *exec.Cmd: an adopted child was started
+	// by a daemon that no longer exists, so this process holds no Cmd for it and
+	// Process would be nil.
+	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
 		return errors.Wrapf(ctx, err, "kill session %q failed", c.id)
 	}
 	return nil
@@ -813,8 +1087,46 @@ func (c *child) clearQuestion(requestID string) {
 	}
 }
 
-func (c *child) reap() {
-	err := c.cmd.Wait()
+// tail reads the child's event file as it grows and folds each line into state.
+func (c *child) tail() {
+	defer close(c.tailDone)
+	tailFile(context.Background(), c.eventsPath, func(seq int, line []byte) {
+		if len(line) == 0 {
+			return
+		}
+		var event map[string]any
+		if err := json.Unmarshal(line, &event); err != nil {
+			return
+		}
+		c.apply(seq, event)
+	}, func() bool { return c.procGone.Load() })
+}
+
+// watch waits for the child's process to leave and then settles the session.
+//
+// It waits for the tailer first: the process can exit while its last events are
+// still unread, and settling before they are applied would report a session as
+// exited without the result event that closed its turn.
+func (c *child) watch() {
+	var exitCode *int
+	if c.cmd != nil {
+		err := c.cmd.Wait()
+		code := 0
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		}
+		exitCode = &code
+	} else {
+		// An adopted child is not this process's child, so there is no exit status
+		// to collect — only a pid that stops existing. Reporting a code here would
+		// invent one.
+		for processAlive(c.pid) {
+			time.Sleep(eventTailPoll)
+		}
+	}
+	c.procGone.Store(true)
+	<-c.tailDone
+
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.session.State = StateExited
@@ -823,29 +1135,13 @@ func (c *child) reap() {
 	c.pendingTurns = 0
 	c.session.Question = nil
 	c.session.Controls = []Control{}
+	c.session.ExitCode = exitCode
 	c.closeSubscribers()
-	code := 0
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		code = exitErr.ExitCode()
-	}
-	c.session.ExitCode = &code
-}
-
-// consume reads the child's stdout as JSONL and folds each event into state.
-func (c *child) consume(scanner *bufio.Scanner) {
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		var event map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			continue
-		}
-		c.apply(event)
-	}
 }
 
 // apply is the single place an event becomes state. Every branch is derived
 // from the event itself; none reads a clock.
-func (c *child) apply(event map[string]any) {
+func (c *child) apply(seq int, event map[string]any) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.lastEventAt = c.now.Now().Time()
@@ -871,7 +1167,7 @@ func (c *child) apply(event map[string]any) {
 			c.pendingTurns--
 		}
 	}
-	c.publish(Event(event))
+	c.publish(seq, Event(event))
 }
 
 // publish retains one event for replay and hands it to every live subscriber.
@@ -884,10 +1180,15 @@ func (c *child) apply(event map[string]any) {
 // A subscriber that has fallen subscriberBuffer events behind is closed rather
 // than skipped: a supervision stream with an invisible hole in it is worse than
 // one that ends and says so.
-func (c *child) publish(event Event) {
+func (c *child) publish(seq int, event Event) {
+	if len(c.events) == 0 {
+		c.firstSeq = seq
+	}
 	c.events = append(c.events, event)
 	if len(c.events) > maxRetainedEvents {
-		c.events = append([]Event{}, c.events[len(c.events)-maxRetainedEvents:]...)
+		drop := len(c.events) - maxRetainedEvents
+		c.events = append([]Event{}, c.events[drop:]...)
+		c.firstSeq += drop
 	}
 	for id, ch := range c.subscribers {
 		select {
@@ -903,13 +1204,36 @@ func (c *child) publish(event Event) {
 // carrying what follows. The replay is copied under the lock, so a caller never
 // races the reader goroutine.
 func (c *child) subscribe() ([]Event, <-chan Event, func()) {
+	replay, _, live, cancel, _ := c.subscribeFrom(-1)
+	return replay, live, cancel
+}
+
+// subscribeFrom returns the events from a resume point onwards.
+//
+// from is a sequence number this child handed out before; a negative value asks
+// for everything retained. firstSeq is the sequence number of replay[0], so a
+// caller can label each replayed event without the child having to carry a
+// number on every event.
+func (c *child) subscribeFrom(from int) ([]Event, int, <-chan Event, func(), error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	replay := append([]Event{}, c.events...)
+	if from >= 0 && from < c.firstSeq {
+		return nil, 0, nil, nil, errors.Wrapf(context.Background(), ErrStreamGap,
+			"session %q no longer retains events before %d", c.id, c.firstSeq)
+	}
+	start := 0
+	if from > c.firstSeq {
+		start = from - c.firstSeq
+	}
+	if start > len(c.events) {
+		start = len(c.events)
+	}
+	replay := append([]Event{}, c.events[start:]...)
+	firstSeq := c.firstSeq + start
 	live := make(chan Event, subscriberBuffer)
 	if c.session.State == StateExited {
 		close(live)
-		return replay, live, func() {}
+		return replay, firstSeq, live, func() {}, nil
 	}
 	id := c.nextSubID
 	c.nextSubID++
@@ -925,7 +1249,7 @@ func (c *child) subscribe() ([]Event, <-chan Event, func()) {
 			}
 		})
 	}
-	return replay, live, cancel
+	return replay, firstSeq, live, cancel, nil
 }
 
 // closeSubscribers ends every live stream. Called once the child is gone, so a
