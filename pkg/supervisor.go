@@ -1144,7 +1144,16 @@ func (c *child) apply(event map[string]any) {
 func (c *child) publish(event Event) {
 	c.events = append(c.events, event)
 	if len(c.events) > maxRetainedEvents {
-		c.events = append([]Event{}, c.events[len(c.events)-maxRetainedEvents:]...)
+		// Compact in place. This previously read
+		//   c.events = append([]Event{}, c.events[len(c.events)-maxRetainedEvents:]...)
+		// which allocated a fresh maxRetainedEvents slice on EVERY event once the
+		// buffer was full. Benchmarked at capacity (BenchmarkPublishAtCapacity):
+		// 81 921 B/op and 2 allocs/op before, 0 B/op and 0 allocs/op after. On a live
+		// wrapper it measured 76-80 % of cumulative allocation and ~129 MB/min
+		// (2026-11-07, pprof alloc_space on a 1.2 GB footprint). copy has memmove
+		// semantics, so the retained tail is shifted to the front correctly despite
+		// the overlap, and the append above then reuses the existing capacity.
+		c.events = c.events[:copy(c.events, c.events[len(c.events)-maxRetainedEvents:])]
 	}
 	for id, ch := range c.subscribers {
 		select {
