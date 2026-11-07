@@ -199,6 +199,14 @@ func (p *heartbeatPoster) round(ctx context.Context) {
 		return
 	}
 	for _, entry := range entries {
+		// One POST per live session against a 15 s client timeout, so a stalled
+		// store turns this loop into a long wait. Stop at the first cancellation
+		// instead of grinding through every remaining entry.
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		if err := p.client.Post(ctx, HeartbeatRow{
 			SessionID: entry.SessionID,
 			Location:  "local",

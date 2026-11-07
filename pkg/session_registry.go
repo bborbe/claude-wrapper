@@ -71,13 +71,13 @@ type registryFile struct {
 	Cwd       string `json:"cwd"`
 }
 
-func (r *sessionRegistry) directory() (string, error) {
+func (r *sessionRegistry) directory(ctx context.Context) (string, error) {
 	if r.dir != "" {
 		return r.dir, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", errors.Wrapf(context.Background(), err, "resolve home dir failed")
+		return "", errors.Wrapf(ctx, err, "resolve home dir failed")
 	}
 	return filepath.Join(home, ".claude", "sessions"), nil
 }
@@ -88,7 +88,7 @@ func (r *sessionRegistry) directory() (string, error) {
 // to fail on, and one bad file must not take every other session's liveness
 // down with it.
 func (r *sessionRegistry) entries(ctx context.Context) ([]registryFile, error) {
-	dir, err := r.directory()
+	dir, err := r.directory(ctx)
 	if err != nil {
 		return nil, err
 	}
