@@ -12,6 +12,8 @@ import (
 	"net/http"
 
 	"github.com/bborbe/errors"
+
+	"github.com/bborbe/claude-wrapper/pkg/a2a"
 )
 
 // SessionHeader is the header a calling session identifies itself with.
@@ -25,17 +27,22 @@ const SessionHeader = "X-Claude-Code-Session-Id"
 
 // Roster tool names, as they appear to an MCP client.
 const (
-	ToolListAgents  ToolName = "list_agents"
-	ToolAgentStatus ToolName = "agent_status"
-	ToolStopAgent   ToolName = "stop_agent"
+	ToolSpawnAgent       ToolName = "spawn_agent"
+	ToolSendAgentMessage ToolName = "send_agent_message"
+	ToolListAgents       ToolName = "list_agents"
+	ToolAgentStatus      ToolName = "agent_status"
+	ToolStopAgent        ToolName = "stop_agent"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
 //
-// Three of the supervisor's nine. The other six are the spawn, message, park and
-// A2A surfaces, which have nothing to act on until the spawn slices land.
+// Five of the supervisor's nine. The remaining four are the park and the local
+// tab/headless spawn surfaces, which have nothing to act on until those slices
+// land.
 func RosterToolNames() []ToolName {
-	return []ToolName{ToolListAgents, ToolAgentStatus, ToolStopAgent}
+	return []ToolName{
+		ToolSpawnAgent, ToolSendAgentMessage, ToolListAgents, ToolAgentStatus, ToolStopAgent,
+	}
 }
 
 // RosterToolServer serves the supervisor's roster tools over streamable HTTP.
@@ -53,6 +60,10 @@ type RosterToolServer struct {
 	// Ledger records the stop attribution. Nil is legal — the tools still serve,
 	// and only the ledger write is skipped.
 	Ledger LedgerReader
+	// A2A owns the docker / k8s workers: the create and stop calls, the turn
+	// plane and the push channel. Nil means the A2A tools refuse, which is the
+	// correct answer for a daemon started without a controller configured.
+	A2A *a2a.Manager
 }
 
 // ServeHTTP serves one roster MCP request.
@@ -173,6 +184,10 @@ func (s *RosterToolServer) invoke(
 	sessionID string,
 ) (string, error) {
 	switch ToolName(name) {
+	case ToolSpawnAgent:
+		return s.spawnAgent(ctx, args)
+	case ToolSendAgentMessage:
+		return s.sendAgentMessage(ctx, args)
 	case ToolListAgents:
 		return s.listAgents(ctx)
 	case ToolAgentStatus:
@@ -189,7 +204,19 @@ func (s *RosterToolServer) listAgents(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "list agents failed")
 	}
-	return marshalJSON(ctx, rows)
+	// The A2A workers this daemon created are appended to the roster: they have
+	// no local child and no ledger row of their own, so the only place a caller
+	// can see them is here.
+	combined := make([]any, 0, len(rows))
+	for _, row := range rows {
+		combined = append(combined, row)
+	}
+	if s.A2A != nil {
+		for _, agent := range s.A2A.List() {
+			combined = append(combined, agent.View(s.A2A.Registry))
+		}
+	}
+	return marshalJSON(ctx, combined)
 }
 
 type agentArgs struct {
@@ -203,6 +230,9 @@ func (s *RosterToolServer) agentStatus(ctx context.Context, args json.RawMessage
 	}
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if agent := s.a2aAgent(ctx, body.AgentID); agent != nil {
+		return marshalJSON(ctx, agent.View(s.A2A.Registry))
 	}
 	row, err := s.Roster.Get(ctx, body.AgentID)
 	if err != nil {
@@ -229,6 +259,17 @@ func (s *RosterToolServer) stopAgent(
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
 	}
+	// An A2A worker is stopped on its controller, keyed on worker id — a task can
+	// be respawned after its first worker died, so the task name is not a handle.
+	if agent := s.a2aAgent(ctx, body.AgentID); agent != nil {
+		if err := s.A2A.Stop(ctx, agent.AgentID); err != nil {
+			return "", err
+		}
+		return marshalJSON(ctx, map[string]string{
+			"agent_id": agent.AgentID,
+			"state":    "stopped",
+		})
+	}
 	row, err := s.Roster.Get(ctx, body.AgentID)
 	if err != nil {
 		return "", err
@@ -252,6 +293,108 @@ func (s *RosterToolServer) stopAgent(
 		"agent_id": body.AgentID,
 		"state":    "stopped",
 	})
+}
+
+// spawnAgentArgs is every argument a spawn call may carry.
+type spawnAgentArgs struct {
+	Target      string            `json:"target"`
+	Task        string            `json:"task"`
+	Vault       string            `json:"vault"`
+	Prompt      string            `json:"prompt"`
+	Resume      bool              `json:"resume"`
+	Policy      string            `json:"policy"`
+	Interactive *bool             `json:"interactive"`
+	WindowID    string            `json:"window_id"`
+	Role        string            `json:"role"`
+	Env         map[string]string `json:"env"`
+	Shipping    bool              `json:"shipping"`
+}
+
+// spawnAgent creates a worker on an a2a-worker-controller.
+//
+// ⚠️ ONLY THE A2A TARGETS ARE PORTED IN THIS SLICE. A `local` spawn — a WezTerm
+// tab or an in-process headless worker — belongs to a later slice, and refusing
+// by name is what keeps a caller from reading a missing feature as a broken one.
+func (s *RosterToolServer) spawnAgent(ctx context.Context, args json.RawMessage) (string, error) {
+	var body spawnAgentArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if !a2a.IsTarget(ctx, body.Target) {
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent with target %q is not available in this daemon: only the A2A "+
+				"targets `docker`, `k8s` and `k8s:<cluster>` are ported. Local tab and "+
+				"headless spawning is a later slice",
+			body.Target,
+		)
+	}
+	if s.A2A == nil {
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent is not wired: no A2A controller configuration was loaded, so no "+
+				"worker could be created. Set `a2a.url` and a controller token",
+		)
+	}
+	agent, err := s.A2A.Spawn(ctx, a2a.SpawnArgs{
+		Target:      body.Target,
+		Task:        body.Task,
+		Vault:       body.Vault,
+		Prompt:      body.Prompt,
+		Resume:      body.Resume,
+		Policy:      body.Policy,
+		Interactive: body.Interactive,
+		WindowID:    body.WindowID,
+		Role:        body.Role,
+		Env:         body.Env,
+		Shipping:    body.Shipping,
+	})
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, agent.View(s.A2A.Registry))
+}
+
+// sendAgentMessage sends one further turn to an existing A2A worker.
+func (s *RosterToolServer) sendAgentMessage(
+	ctx context.Context,
+	args json.RawMessage,
+) (string, error) {
+	var body struct {
+		AgentID string `json:"agent_id"`
+		Text    string `json:"text"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" {
+		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if s.A2A == nil {
+		return "", errors.Errorf(ctx, "send_agent_message is not wired")
+	}
+	result, err := s.A2A.SendMessage(ctx, body.AgentID, body.Text)
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, map[string]any{
+		"agent_id":   body.AgentID,
+		"state":      result.State,
+		"context_id": result.ContextID,
+		"reply":      result.Reply,
+	})
+}
+
+// a2aAgent resolves an agent id to an A2A record, or nil.
+func (s *RosterToolServer) a2aAgent(ctx context.Context, agentID string) *a2a.Agent {
+	if s.A2A == nil || agentID == "" {
+		return nil
+	}
+	agent, err := s.A2A.Get(ctx, agentID)
+	if err != nil {
+		return nil
+	}
+	return agent
 }
 
 // recordStop writes the ledger row a stop would otherwise leave silent.
@@ -299,6 +442,31 @@ func writeRosterError(resp http.ResponseWriter, status int, code string, message
 // rosterToolDefinitions describes the three tools to an MCP client.
 func rosterToolDefinitions() []any {
 	return []any{
+		toolDef(ToolSpawnAgent,
+			"Create one worker on an a2a-worker-controller and return its agent id "+
+				"immediately — the first turn is sent asynchronously, so the record carries "+
+				"no result yet. `target` is `docker` (a container on this Mac), `k8s` (a pod "+
+				"on the default cluster, nuke dev unless `a2a.defaultCluster` says otherwise) "+
+				"or `k8s:<cluster>`. `task` is REQUIRED and names the vault task the worker "+
+				"is opened for. The local-only arguments `interactive`, `resume`, `policy`, "+
+				"`window_id`, `role`, `env` and `shipping` are REFUSED rather than ignored: "+
+				"the controller creates the worker, so there is no local process here to set "+
+				"them on.",
+			map[string]any{
+				"target": stringProp("docker, k8s, or k8s:<cluster>"),
+				"task":   stringProp("the vault task the worker is opened for"),
+				"vault":  stringProp("the vault the task lives in; required when the name is not unique"),
+				"prompt": stringProp("the first turn to send; omitted means create only"),
+			},
+			"target", "task"),
+		toolDef(ToolSendAgentMessage,
+			"Send one further turn to an A2A worker, continuing its conversation by "+
+				"`contextId`. Returns the turn's terminal state and the assistant text.",
+			map[string]any{
+				"agent_id": stringProp("id of the agent to write to"),
+				"text":     stringProp("the user turn to send"),
+			},
+			"agent_id", "text"),
 		toolDef(ToolListAgents,
 			"All sessions with status, the call each is inside right now, and how many "+
 				"are waiting on input. Each row carries `current_tool_call` and "+
