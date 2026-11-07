@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "note": "Declarative approval policy, evaluated by the claude-wrapper daemon in the same process that holds the park. 'allow' and 'deny' answer the worker directly; 'escalate' leaves the request for the manager. Set SUPERVISOR_PERMISSION_LOG=<path> (or --permission-log) to append every request as JSONL — the escalated ones are what to promote into rules here. A user overlay lives at ~/.config/claude-supervisor/policy.json (or SUPERVISOR_POLICY) and is evaluated AHEAD of these defaults, so growing the list means appending there, never copying this file.",
+  "note_bash": "A Bash entry with \"matchType\": \"command\" is an ANCHORED whole-token prefix: `ls` covers `ls -la /tmp` but not `lsblk`, and the tokens AFTER the prefix are unconstrained — so a prefix is listed only when EVERY extension of it is read-only. That is why `sed` and `find` are absent (`sed -n -i`, `find -delete`), why no `git` prefix is listed at all (git runs commands named in the repo's own config; core.fsmonitor fires on `git status`), and why `sort` (`-o`, `--output`, `--compress-program`), `tree` (`-o`), `rg` (`--pre`), `file` (`-C`/`--compile` writes `<name>.mgc`), `diff` (`-l`/`--paginate` runs `pr(1)`) and `uniq` (its second positional is an OUTPUT file) are absent — a prefix rule cannot exclude a flag, so the only honest fix is not to list the command. A chained command is split on && || ; | and allowed only when EVERY segment is allowed on its own, which is what makes `cd` safe to list: `cd /tmp && rm -rf /` still reaches the deny rule.",
+  "rules": [
+    { "tool": "Bash",  "match": "rm -rf", "action": "deny" },
+
+    { "tool": "Read",  "match": "*",      "action": "allow" },
+    { "tool": "Glob",  "match": "*",      "action": "allow" },
+    { "tool": "Grep",  "match": "*",      "action": "allow" },
+    { "tool": "Write", "match": "cwd",    "action": "allow" },
+    { "tool": "Edit",  "match": "cwd",    "action": "allow" },
+
+    { "tool": "Bash", "match": "ls",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "cat",       "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "head",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "tail",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "wc",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "cut",       "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "tr",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "nl",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "seq",       "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "grep",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "jq",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "shasum",    "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "md5",       "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "sha256sum", "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "basename",  "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "dirname",   "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "realpath",  "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "readlink",  "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "stat",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "du",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "df",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "pwd",       "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "date",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "whoami",    "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "id",        "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "uname",     "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "hostname",  "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "which",     "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "type",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "echo",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "printf",    "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "test",      "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "sleep",     "matchType": "command", "action": "allow" },
+    { "tool": "Bash", "match": "pgrep",     "matchType": "command", "action": "allow" },
+
+    { "tool": "Bash", "match": "cd",        "matchType": "command", "action": "allow" },
+
+    { "tool": "*",     "match": "*",      "action": "escalate" }
+  ]
+}

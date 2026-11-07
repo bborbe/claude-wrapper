@@ -21,6 +21,13 @@ type Answer struct {
 	Kind     AnswerKind
 	Behavior string
 	Answers  map[string]string
+	// Message is the text delivered alongside a deny, so an answer carrying the
+	// operator's own words reaches the child rather than the fixed default.
+	//
+	// It exists because a board answer to a question-class card arrives as text,
+	// and a deny whose text was dropped tells the worker it was refused with no
+	// hint of what it was told.
+	Message string
 }
 
 // PendingAnswer is the registry's read view of one request: what the child is
