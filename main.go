@@ -43,8 +43,8 @@ func main() {
 		"how often to stamp a heartbeat for every live session")
 	stateDir := flag.String("state-dir", "",
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
-	drainBound := flag.Duration("drain-bound", 120*time.Second,
-		"how long a SIGTERM waits for each child's turn boundary before recording it as interrupted")
+	drainBound := flag.Duration("drain-bound", 4*time.Second,
+		"overall budget a SIGTERM waits for children to reach a turn boundary before recording each as interrupted; must stay under launchd's ExitTimeOut (5 s) or launchd SIGKILLs the drain before it can report")
 	flag.Parse()
 
 	if *mcpStdio {
@@ -147,7 +147,7 @@ func main() {
 	// A second signal during the drain is not a second chance to die: the children
 	// outlive this process either way, so the drain is allowed to finish its bound.
 	stop()
-	log.Printf("claude-wrapper draining: waiting up to %s per session for a turn boundary", *drainBound)
+	log.Printf("claude-wrapper draining: waiting up to %s overall for turn boundaries", *drainBound)
 	report := supervisor.Drain(context.Background(), *drainBound)
 	for _, result := range report.Sessions {
 		if result.Interrupted {
