@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: the wrapper serves the supervisor's roster tools — `list_agents`, `agent_status` and
+  `stop_agent` — over a new HTTP MCP face at `/supervisor/mcp`, with the calling session read from
+  an `X-Claude-Code-Session-Id` header supplied by a `headersHelper`; a request without it is
+  refused `400 missing_session_header` rather than defaulted, because a roster call attributed to
+  nobody is worse than one refused. `list_agents` answers from the union of this process's own
+  children and every **live** session the attention store's ledger knows, so a worker spawned by
+  another session is visible — the limit a per-process roster has. Liveness is the registry ∪ the
+  heartbeat store, because a headless worker is an in-process query with no pid and therefore no
+  registry entry. `agent_status` reports the tool a worker is inside right now and how long it has
+  held it, read from its transcript tail. `stop_agent` acts only on a child this wrapper spawned
+  and refuses any other id by name.
+- feat: the daemon posts a session heartbeat every 30 s for every live entry in
+  `~/.claude/sessions/`, so a session reads live without having started its own supervisor. Both
+  this and the session-ledger client write one attribution line per outbound POST to stdout, which
+  is what makes the row attributable to this daemon rather than to any caller that could POST the
+  same body.
+
 ## v0.5.3
 
 - fix: a `resume` spawn is keyed by the resumed claude session id instead of a freshly minted one,

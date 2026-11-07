@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -27,6 +29,10 @@ func main() {
 	sessionID := flag.String("session-id", "", "session id this tool answers for")
 	mcpTurnTimeout := flag.Duration("mcp-turn-timeout", 120*time.Second,
 		"how long an MCP send_message waits for the child's turn to close")
+	attentionURL := flag.String("attention-url", "http://localhost:18080",
+		"base URL of attention-controller, which serves the spawn ledger and the session-heartbeat store")
+	heartbeatInterval := flag.Duration("heartbeat-interval", pkg.DefaultHeartbeatInterval,
+		"how often to stamp a heartbeat for every live session")
 	flag.Parse()
 
 	if *mcpStdio {
@@ -73,6 +79,8 @@ func main() {
 		TurnTimeout: *mcpTurnTimeout,
 	})
 
+	startFleetFaces(mux, supervisor, *attentionURL, *heartbeatInterval)
+
 	server := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,
@@ -86,4 +94,52 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("listen failed: %v", err)
 	}
+}
+
+// startFleetFaces mounts the fleet-facing MCP face and starts the central
+// heartbeat poster.
+//
+// Split out of main so the wiring is readable on its own and main stays a flag
+// block plus a server.
+func startFleetFaces(
+	mux *http.ServeMux,
+	supervisor pkg.Supervisor,
+	attentionURL string,
+	heartbeatInterval time.Duration,
+) {
+	now := libtime.NewCurrentDateTime()
+	registry := pkg.NewSessionRegistry("")
+	ledger := pkg.NewLedgerClient(attentionURL, nil, now)
+	heartbeats := pkg.NewHeartbeatClient(attentionURL, nil)
+
+	// The fleet-facing MCP face: a Claude session reading and steering the
+	// roster. A third face beside /mcp and --mcp-stdio, and separate from both on
+	// purpose — /mcp is Codex driving one child, --mcp-stdio is a child asking
+	// for a verdict, and this one answers across sessions.
+	mux.Handle("/supervisor/mcp", &pkg.RosterToolServer{
+		Roster: pkg.NewRoster(
+			supervisor,
+			ledger,
+			pkg.NewRegistryLiveness(registry, heartbeats),
+			pkg.NewTranscriptReader(registry, now),
+			registry,
+		),
+		Supervisor: supervisor,
+		Ledger:     ledger,
+	})
+
+	// The central heartbeat poster. It runs beside the HTTP server rather than
+	// inside a handler because it is a timer, not a request: a session with no
+	// supervisor of its own has nothing posting for it, and this is what makes
+	// liveness independent of which server spawned what.
+	poster := pkg.NewHeartbeatPoster(registry, heartbeats, heartbeatInterval)
+	posterCtx, stopPoster := signal.NotifyContext(
+		context.Background(), os.Interrupt, syscall.SIGTERM,
+	)
+	go func() {
+		defer stopPoster()
+		if err := poster.Run(posterCtx); err != nil {
+			log.Printf("heartbeat poster stopped: %v", err)
+		}
+	}()
 }
