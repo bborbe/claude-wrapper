@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: `spawn_agent` opens a WezTerm tab under the vault's `cc-*` launcher and `send_agent_message`
+  types into that pane, so the supervisor's most-used spawn path — 3,177 of 4,322 ledger rows — runs
+  from the Go daemon instead of the node server. Slice 2 of the port, and the local target the A2A
+  slice left refused by name. Spawn caps are **not** part of this slice: the daemon has no cap code
+  yet, so a port of the spawn-limit module lands separately and the MCP cutover must not precede it.
+
 ## v0.8.0
 
 - feat: the wrapper serves the A2A spawn targets — `spawn_agent`, `send_agent_message` and

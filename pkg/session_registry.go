@@ -31,6 +31,12 @@ type RegistryEntry struct {
 	SessionID string
 	Status    string
 	Cwd       string
+	// Name is the tab title the session registered under.
+	//
+	// It is the only join from a spawned tab back to its session id: a tab worker
+	// is a separate process and never reports its id to us, so the title we set is
+	// what identifies it.
+	Name string
 }
 
 // SessionRegistry reads Claude Code's own session registry.
@@ -50,6 +56,13 @@ type SessionRegistry interface {
 	// An unreadable directory is an error, never an empty slice: the caller
 	// distinguishes "nothing is live" from "the probe could not run".
 	Live(ctx context.Context) ([]RegistryEntry, error)
+	// Named returns the session ids registered under a tab title.
+	//
+	// Deliberately NOT pid-checked, unlike Live. Tab naming asks "is this title
+	// taken", and a stale file for a dead session still holds the title a live
+	// session would collide with; filtering by pid here would hand out a name that
+	// is already on disk. Liveness is a different question, asked by Live.
+	Named(ctx context.Context, name string) ([]string, error)
 }
 
 // NewSessionRegistry creates a SessionRegistry over dir.
@@ -69,6 +82,7 @@ type registryFile struct {
 	SessionID string `json:"sessionId"`
 	Status    string `json:"status"`
 	Cwd       string `json:"cwd"`
+	Name      string `json:"name"`
 }
 
 func (r *sessionRegistry) directory(ctx context.Context) (string, error) {
@@ -163,8 +177,22 @@ func (r *sessionRegistry) Live(ctx context.Context) ([]RegistryEntry, error) {
 	return live, nil
 }
 
-// pidAlive reports whether a pid names a running process.
-//
+// Named returns the session ids registered under a tab title.
+func (r *sessionRegistry) Named(ctx context.Context, name string) ([]string, error) {
+	all, err := r.entries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, 2)
+	for _, entry := range all {
+		if entry.Name == name {
+			ids = append(ids, entry.SessionID)
+		}
+	}
+	return ids, nil
+}
+
+// pidAlive reports whether a pid names a running process.//
 // Signal 0 performs the permission and existence checks without delivering
 // anything. EPERM means "there, but not yours", which is a live process every
 // bit as much as ESRCH is a dead one — folding it into "dead" would make every
