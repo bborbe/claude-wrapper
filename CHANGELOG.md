@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.9.1
+## Unreleased
 
 - feat: `spawn_agent` opens a WezTerm tab under the vault's `cc-*` launcher and `send_agent_message`
   types into that pane, so the supervisor's most-used spawn path — 3,177 of 4,322 ledger rows — runs
@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit `interactive: false` keeps the in-process headless worker from v0.9.0. Spawn caps are
   **not** part of this slice: the daemon has no cap code yet, so a port of the spawn-limit module
   lands separately and the MCP cutover must not precede it.
+
+## v0.9.1
+
 - fix: compact the per-child event replay buffer in place instead of reallocating it, so a
   wrapper past 4096 events per child stops copying the whole retained window on every event.
   Benchmarked at capacity: 81 921 B/op and 2 allocs/op before, 0 B/op and 0 allocs/op after
