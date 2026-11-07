@@ -6,8 +6,11 @@ package pkg
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -105,7 +108,11 @@ type tabSpawner struct {
 	now      libtime.CurrentDateTimeGetter
 	// sleep is the registration poll's wait, injected so a test clock and the
 	// loop's notion of elapsed time are the same source.
-	sleep      func(time.Duration)
+	sleep func(time.Duration)
+	// mu guards inFlight, the set of tab names a spawn here has claimed but not
+	// yet registered.
+	mu         sync.Mutex
+	inFlight   map[string]struct{}
 	exitRecord string
 }
 
@@ -137,17 +144,17 @@ func (s *tabSpawner) Spawn(
 	if err != nil {
 		return nil, err
 	}
-	model, err := LauncherModel(ctx, target.Launcher)
-	if err != nil {
-		return nil, err
-	}
+	model := LauncherModel(target.Launcher)
 
 	label := strings.TrimSpace(request.Label)
 	if label == "" {
 		label = target.Vault
 	}
 	baseName := TabNameFor(label)
-	tabName := UniqueTabName(ctx, s.registry, baseName)
+	tabName := s.reserveTabName(ctx, baseName)
+	// Released once this spawn has resolved its identity: from then on the
+	// registry holds the name and a later spawn sees it there.
+	defer s.releaseTabName(tabName)
 	// Snapshotted AFTER the name is chosen and BEFORE the process starts: a
 	// session that registers under this name in the gap is not ours.
 	preexisting := PreexistingHolders(ctx, s.registry, tabName)
@@ -168,6 +175,19 @@ func (s *tabSpawner) Spawn(
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(paneID) == "" {
+		// A wezterm that answered 0 without a pane id has opened nothing we can
+		// address: no colour, no message, and no handle for the caller.
+		return nil, errors.Errorf(
+			ctx,
+			"the tab spawner reported success but named no pane, so the tab cannot be "+
+				"addressed — treat this as a failed spawn rather than a worker that opened",
+		)
+	}
+	// The tab is OPEN from here on, and everything below is bookkeeping for it. A
+	// client that disconnects mid-call must not orphan an open pane with no colour
+	// and no ledger row, so the tail runs on a context detached from the request.
+	tailCtx := context.WithoutCancel(ctx)
 
 	result := &TabSpawnResult{
 		Label:    label,
@@ -184,18 +204,62 @@ func (s *tabSpawner) Spawn(
 	// The colour is a separate submit AFTER the composer is up, and it never
 	// carries the task prompt with it: `/color` takes the whole trimmed argument,
 	// so `/color pink\n<task>` fails validation.
-	if chip := ChipForRole(role, target.Vault); chip != "" && paneID != "" {
+	if chip := ChipForRole(role, target.Vault); chip != "" {
 		result.Color = chip
 		// Reported, not assumed: the node server logs a failed colour and still
 		// reports the spawn, because a worker in the wrong colour is usable and a
 		// worker that never opened is not. `color_applied` is what the caller reads.
-		result.ColorApplied = s.sendColor(ctx, paneID, chip) == nil
+		result.ColorApplied = s.sendColor(tailCtx, paneID, chip) == nil
 	}
 
-	result.SessionID = s.awaitRegistration(ctx, tabName, preexisting)
+	result.SessionID = s.awaitRegistration(tailCtx, tabName, preexisting)
 	result.AgentID = result.SessionID
-	s.postLedger(ctx, request.SpawnerSessionID, result)
+	s.postLedger(tailCtx, request.SpawnerSessionID, result)
 	return result, nil
+}
+
+// reserveTabName picks a name free in the registry AND not already reserved by a
+// spawn this process has in flight, then reserves it.
+//
+// The reservation is what makes choose-name → snapshot → spawn atomic within the
+// daemon: two spawns with the same label (the default label is the vault name, so
+// two `vault: v1` spawns collide) would otherwise both pick `⚙ v1`, both snapshot
+// an empty exclusion set, and both adopt whichever session registered first — so
+// the second row would carry another worker's session id against its own pane.
+func (s *tabSpawner) reserveTabName(ctx context.Context, baseName string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlight == nil {
+		s.inFlight = map[string]struct{}{}
+	}
+	for n := 0; n < 100; n++ {
+		candidate := baseName
+		if n > 0 {
+			candidate = fmt.Sprintf("%s (%d)", baseName, n+1)
+		}
+		if _, taken := s.inFlight[candidate]; taken {
+			continue
+		}
+		held, err := s.registry.Named(ctx, candidate)
+		if err != nil {
+			// An unreadable registry is survivable: the exclusion snapshot still
+			// guards the poll, and refusing to spawn over a read-only probe would be
+			// the worse outcome.
+			return candidate
+		}
+		if len(held) == 0 {
+			s.inFlight[candidate] = struct{}{}
+			return candidate
+		}
+	}
+	return baseName
+}
+
+// releaseTabName frees a reservation once its spawn has resolved an identity.
+func (s *tabSpawner) releaseTabName(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.inFlight, name)
 }
 
 // postLedger files the spawn row.
@@ -212,7 +276,7 @@ func (s *tabSpawner) postLedger(
 	if result.SessionID == "" || s.ledger == nil {
 		return
 	}
-	_ = s.ledger.Post(ctx, spawnerSessionID, LedgerRow{
+	if err := s.ledger.Post(ctx, spawnerSessionID, LedgerRow{
 		// AgentID is REQUIRED for the row to be adopted: the roster skips an
 		// id-less record, so a row without it leaves the worker invisible to
 		// `list_agents` and unreachable by `send_agent_message`.
@@ -224,7 +288,16 @@ func (s *tabSpawner) postLedger(
 		Launcher:  result.Launcher,
 		PaneID:    result.PaneID,
 		Role:      result.Role,
-	})
+	}); err != nil {
+		// Never fatal — the worker is open — but logged, because a row that never
+		// landed leaves the worker out of the roster and unreachable, and silence
+		// there is indistinguishable from a spawn that filed nothing on purpose.
+		log.Printf(
+			"WARNING: the ledger row for session %s could not be written: %v",
+			result.SessionID,
+			err,
+		)
+	}
 }
 
 // sendColor types the colour command once the composer is ready.

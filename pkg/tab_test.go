@@ -101,4 +101,23 @@ var _ = ginkgo.Describe("SubmissionConfirmed", func() {
 	ginkgo.It("does not confirm when the message never appeared", func() {
 		gomega.Expect(SubmissionConfirmed("❯ \n", "hello there")).To(gomega.BeFalse())
 	})
+
+	ginkgo.It("confirms a message the pane wrapped onto a second line", func() {
+		// The pane wraps, so requiring the whole message on one rendered line
+		// reports a landed message as unsubmitted — and the caller then retries,
+		// delivering the turn twice.
+		message := "please read the whole ledger and tell me which rows are stale, in detail"
+		pane := "❯ \nplease read the whole ledger and tell me which rows are stale, in\n" +
+			"detail\n❯ \n"
+		gomega.Expect(SubmissionConfirmed(pane, message)).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("does not confirm a different message that shares no head", func() {
+		gomega.Expect(SubmissionConfirmed("❯ \nunrelated output\n❯ \n", "hello there")).
+			To(gomega.BeFalse())
+	})
+
+	ginkgo.It("does not confirm an empty message", func() {
+		gomega.Expect(SubmissionConfirmed("❯ \nanything\n❯ \n", "  ")).To(gomega.BeFalse())
+	})
 })

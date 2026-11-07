@@ -398,20 +398,22 @@ var launcherModelFlag = regexp.MustCompile(`(?:^|\s)--model[ \t]+(?:"([^"]*)"|'(
 var launcherModelReference = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$|^\$([A-Za-z_][A-Za-z0-9_]*)$`)
 
 // LauncherModel reads a launcher script and returns its model, or "".
-func LauncherModel(ctx context.Context, launcher string) (string, error) {
+//
+// No error return: a missing or unreadable launcher is a MISSING MODEL, not a
+// failed spawn — the launcher itself may still run, and the model is only a
+// diagnostic for "did this worker come up on what I asked for".
+func LauncherModel(launcher string) string {
 	path := launcher
 	if !strings.Contains(path, "/") {
 		resolved, err := exec.LookPath(path)
 		if err != nil {
-			return "", nil
+			return ""
 		}
 		path = resolved
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		// An unreadable launcher is a missing model, not a failed spawn: the
-		// launcher itself may still run.
-		return "", nil
+		return ""
 	}
-	return ParseLauncherModel(string(raw)), nil
+	return ParseLauncherModel(string(raw))
 }

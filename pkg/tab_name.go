@@ -23,6 +23,11 @@ func TabNameFor(label string) string {
 
 // UniqueTabName returns a tab name no live registry entry currently holds.
 //
+// ⚠️ Not what a spawn should call: it reads the registry but reserves nothing, so
+// two concurrent spawns of one label both get the same answer. The spawn path
+// uses `tabSpawner.reserveTabName`, which holds the name until its spawn has
+// resolved an identity. This is the pure chooser, kept for the naming rule.
+//
 // The name is the join back to a session id — a tab worker never reports its own
 // id — so two workers sharing a title make the join ambiguous and the wrong
 // session id gets written to the ledger. `⚙ foo`, then `⚙ foo (2)`, `(3)`, …

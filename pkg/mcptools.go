@@ -801,3 +801,7 @@ func toolDef(name ToolName, description string, props map[string]any, required .
 func stringProp(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
+
+func mapProp(description string) map[string]any {
+	return map[string]any{"type": "object", "description": description}
+}

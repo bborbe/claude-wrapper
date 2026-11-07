@@ -267,6 +267,24 @@ func ComposerReady(text string) bool {
 	return false
 }
 
+// submissionHead is the part of a message the pane is matched on.
+//
+// A pane WRAPS a long line, so requiring the whole message on one rendered line
+// reports a landed message as unsubmitted — the caller then retries and the
+// worker receives the turn twice. The first line, trimmed and truncated, is what
+// survives wrapping and is still specific enough to identify this send.
+func submissionHead(message string) string {
+	first := message
+	if index := strings.IndexAny(first, "\r\n"); index >= 0 {
+		first = first[:index]
+	}
+	first = strings.TrimSpace(first)
+	if len(first) > 40 {
+		first = first[:40]
+	}
+	return first
+}
+
 // SubmissionConfirmed reports whether the pane shows a fresh prompt below the
 // message, which is what separates a submitted message from a typed one.
 //
@@ -274,11 +292,15 @@ func ComposerReady(text string) bool {
 // shows before anything was typed, so it cannot distinguish "the Enter landed"
 // from "nothing happened yet".
 func SubmissionConfirmed(text string, message string) bool {
+	head := submissionHead(message)
+	if head == "" {
+		return false
+	}
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	messageSeen := false
 	for _, line := range lines {
 		if !messageSeen {
-			if strings.Contains(line, message) {
+			if strings.Contains(line, head) {
 				messageSeen = true
 			}
 			continue

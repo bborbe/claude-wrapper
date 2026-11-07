@@ -205,6 +205,20 @@ var _ = ginkgo.Describe("tabSpawner.Spawn", func() {
 		gomega.Expect(ledger.posts).To(gomega.BeEmpty())
 	})
 
+	ginkgo.It("reserves a distinct name for a second in-flight spawn of the same label", func() {
+		// Two `vault: v1` spawns collide on the default label. Both choosing
+		// `⚙ v1` would let both polls adopt whichever session registered first, so
+		// the second row would name another worker's session against its own pane.
+		reserving := &tabSpawner{registry: &fakeRegistry{names: map[string][]string{}}}
+		first := reserving.reserveTabName(ctx, "⚙ v1")
+		second := reserving.reserveTabName(ctx, "⚙ v1")
+		gomega.Expect(first).To(gomega.Equal("⚙ v1"))
+		gomega.Expect(second).To(gomega.Equal("⚙ v1 (2)"))
+
+		reserving.releaseTabName(first)
+		gomega.Expect(reserving.reserveTabName(ctx, "⚙ v1")).To(gomega.Equal("⚙ v1"))
+	})
+
 	ginkgo.It("suffixes a tab name that is already held", func() {
 		registry.names["⚙ v1"] = []string{"old"}
 		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it"})

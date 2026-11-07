@@ -649,22 +649,29 @@ func writeRosterError(resp http.ResponseWriter, status int, code string, message
 func rosterToolDefinitions() []any {
 	return []any{
 		toolDef(ToolSpawnAgent,
-			"Create one worker on an a2a-worker-controller and return its agent id "+
-				"immediately — the first turn is sent asynchronously, so the record carries "+
-				"no result yet. `target` is `docker` (a container on this Mac), `k8s` (a pod "+
-				"on the default cluster, nuke dev unless `a2a.defaultCluster` says otherwise) "+
-				"or `k8s:<cluster>`. `task` is REQUIRED and names the vault task the worker "+
-				"is opened for. The local-only arguments `interactive`, `resume`, `policy`, "+
-				"`window_id`, `role`, `env` and `shipping` are REFUSED rather than ignored: "+
-				"the controller creates the worker, so there is no local process here to set "+
-				"them on.",
+			"Create one worker and return its agent id. `target` is `local` (a WezTerm "+
+				"tab under the vault's cc-* launcher — the default), `docker` (a container "+
+				"on this Mac), `k8s` (a pod on the default cluster, nuke dev unless "+
+				"`a2a.defaultCluster` says otherwise) or `k8s:<cluster>`. On the A2A "+
+				"targets `task` is REQUIRED and names the vault task the worker is opened "+
+				"for; the first turn is sent asynchronously, so the record carries no "+
+				"result yet. A `local` spawn requires `cwd` or `vault` — omitting both is "+
+				"refused, never defaulted — and accepts `label`, `role`, `window_id` and "+
+				"`env`; `resume`, `policy` and `shipping` reach a headless worker only and "+
+				"are REFUSED on a tab, as is `interactive: false` (headless spawning is a "+
+				"later slice). `env` may not set a worker's permission or spawn mode.",
 			map[string]any{
-				"target": stringProp("docker, k8s, or k8s:<cluster>"),
-				"task":   stringProp("the vault task the worker is opened for"),
-				"vault":  stringProp("the vault the task lives in; required when the name is not unique"),
-				"prompt": stringProp("the first turn to send; omitted means create only"),
+				"target":    stringProp("local, docker, k8s, or k8s:<cluster>"),
+				"task":      stringProp("the vault task the worker is opened for (A2A targets)"),
+				"vault":     stringProp("the vault the worker runs in; resolves its launcher"),
+				"cwd":       stringProp("a directory inside a configured vault, instead of vault"),
+				"label":     stringProp("the tab label; defaults to the vault name"),
+				"role":      stringProp("manager, agent or human; defaults to agent"),
+				"window_id": stringProp("the WezTerm window to open the tab in"),
+				"env":       mapProp("environment exported into the pane before the launcher runs"),
+				"prompt":    stringProp("the first turn to send; omitted means create only"),
 			},
-			"target", "task"),
+			"prompt"),
 		toolDef(ToolSendAgentMessage,
 			"Send one further turn to an A2A worker, continuing its conversation by "+
 				"`contextId`. Returns the turn's terminal state and the assistant text.",
