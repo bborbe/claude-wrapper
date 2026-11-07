@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.9.1
 
 - fix: compact the per-child event replay buffer in place instead of reallocating it, so a
   wrapper past 4096 events per child stops copying the whole retained window on every event.
