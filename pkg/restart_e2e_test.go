@@ -130,6 +130,12 @@ var _ = ginkgo.Describe("restart across a daemon death", ginkgo.Label("e2e"), fu
 		// it continued. A resumed conversation would carry a different child pid.
 		gomega.Expect(recordPID(stateDir, id)).To(gomega.Equal(childPID))
 		postJSON(port, "/api/1.0/sessions/"+id+"/message", `{"text":"again"}`)
+		// Wait for the turn to START before waiting for it to end. Without this the
+		// idle check below is satisfied instantly by the PREVIOUS turn's state, and
+		// the result-event assertion runs while the child is still mid-turn — the
+		// second turn's `message_start` is on disk but its `result` is not yet.
+		gomega.Eventually(func() string { return sessionState(port, id) }, "10s").
+			Should(gomega.Equal("generating"))
 		gomega.Eventually(func() string { return sessionState(port, id) }, "10s").
 			Should(gomega.Equal("idle"))
 
