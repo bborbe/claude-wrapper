@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.10.0
 
 - feat: `spawn_agent` opens a WezTerm tab under the vault's `cc-*` launcher and `send_agent_message`
   types into that pane, so the supervisor's most-used spawn path — 3,177 of 4,322 ledger rows — runs
