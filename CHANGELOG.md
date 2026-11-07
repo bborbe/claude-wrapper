@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a model it never used. Comment lines are now stripped before matching.
 - fix: the tab colour's submission confirmation waits the same 8s the node server allows,
   instead of 2s, so a `/color` that applied is reported as applied rather than a false negative.
-- fix: `spawn_agent`'s schema again marks `prompt` required, matching the tab path that refuses
-  an empty one.
+- fix: a tab `spawn_agent` with no `prompt` is refused with a message naming the headless
+  escape (`interactive: false`), instead of the spawner's generic "invalid spawn options". The
+  schema keeps `prompt` optional because the headless and A2A paths accept an empty one.
 
 ## v0.10.0
 

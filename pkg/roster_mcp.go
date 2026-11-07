@@ -718,6 +718,17 @@ func (s *RosterToolServer) spawnLocalTarget(
 	if err := ValidateTabEnv(ctx, body.Env); err != nil {
 		return "", err
 	}
+	// The schema cannot say "required for a tab, optional for headless", so it says
+	// optional and this refusal carries the tab's requirement — clearer than the
+	// spawner's generic "invalid spawn options", and it names the headless escape.
+	if strings.TrimSpace(body.Prompt) == "" {
+		return "", errors.Errorf(
+			ctx,
+			"a local tab spawn requires `prompt` — the tab launches with it as the "+
+				"worker's first turn. Pass `interactive: false` for a headless worker "+
+				"that may start idle",
+		)
+	}
 	windowID, err := parseWindowID(ctx, body.WindowID)
 	if err != nil {
 		return "", err
@@ -922,8 +933,7 @@ func spawnToolDefinitions() []any {
 				"model":       stringProp("headless only: model to run, or empty for the default"),
 				"policy":      stringProp("headless only: path to a per-spawn policy overlay"),
 				"interactive": boolProp("true opens a tab (the default); false spawns headless in-process"),
-			},
-			"prompt"),
+			}),
 		toolDef(ToolSendAgentMessage,
 			"Send one further turn to an A2A worker, continuing its conversation by "+
 				"`contextId`. Returns the turn's terminal state and the assistant text.",
