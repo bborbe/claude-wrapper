@@ -290,13 +290,16 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget", func() {
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("refuses headless rather than serving it as a tab", func() {
+	ginkgo.It("routes interactive:false to the headless path, not the tab", func() {
 		interactive := false
 		_, err := server.spawnLocalTarget(
 			ctx, spawnAgentArgs{Interactive: &interactive}, "",
 		)
+		// No Supervisor is wired on this server, so the headless path refuses.
+		// The point is that it never reaches the tab spawner.
 		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("headless"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("not wired"))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("refuses resume, which the tab launcher would drop", func() {

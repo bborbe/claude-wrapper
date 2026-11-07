@@ -805,3 +805,7 @@ func stringProp(description string) map[string]any {
 func mapProp(description string) map[string]any {
 	return map[string]any{"type": "object", "description": description}
 }
+
+func boolProp(description string) map[string]any {
+	return map[string]any{"type": "boolean", "description": description}
+}

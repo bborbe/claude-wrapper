@@ -86,11 +86,9 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 			names = append(names, tool.Name)
 		}
 		gomega.Expect(names).To(gomega.ConsistOf(
-			"spawn_agent",
-			"send_agent_message",
-			"list_agents",
-			"agent_status",
-			"stop_agent",
+			"list_agents", "agent_status", "stop_agent",
+			"spawn_agent", "send_agent_message",
+			"answer_permission", "await_permission", "pending_permissions",
 		))
 	})
 

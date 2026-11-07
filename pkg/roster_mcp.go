@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
@@ -28,23 +29,35 @@ import (
 // against a session that does not exist.
 const SessionHeader = "X-Claude-Code-Session-Id"
 
+// maxAwaitPermission bounds how long await_permission holds a request open.
+const maxAwaitPermission = 5 * time.Minute
+
 // Roster tool names, as they appear to an MCP client.
 const (
-	ToolSpawnAgent       ToolName = "spawn_agent"
-	ToolSendAgentMessage ToolName = "send_agent_message"
-	ToolListAgents       ToolName = "list_agents"
-	ToolAgentStatus      ToolName = "agent_status"
-	ToolStopAgent        ToolName = "stop_agent"
+	ToolSpawnAgent         ToolName = "spawn_agent"
+	ToolSendAgentMessage   ToolName = "send_agent_message"
+	ToolListAgents         ToolName = "list_agents"
+	ToolAgentStatus        ToolName = "agent_status"
+	ToolStopAgent          ToolName = "stop_agent"
+	ToolAnswerPermission   ToolName = "answer_permission"
+	ToolAwaitPermission    ToolName = "await_permission"
+	ToolPendingPermissions ToolName = "pending_permissions"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
 //
-// Five of the supervisor's nine. The remaining four are the park and the local
-// tab/headless spawn surfaces, which have nothing to act on until those slices
-// land.
+// Eight of the supervisor's nine. What is still absent is the local tab spawn
+// surface — slice 2 of the same port.
 func RosterToolNames() []ToolName {
 	return []ToolName{
-		ToolSpawnAgent, ToolSendAgentMessage, ToolListAgents, ToolAgentStatus, ToolStopAgent,
+		ToolListAgents,
+		ToolAgentStatus,
+		ToolStopAgent,
+		ToolSpawnAgent,
+		ToolSendAgentMessage,
+		ToolAnswerPermission,
+		ToolAwaitPermission,
+		ToolPendingPermissions,
 	}
 }
 
@@ -63,6 +76,9 @@ type RosterToolServer struct {
 	// Ledger records the stop attribution. Nil is legal — the tools still serve,
 	// and only the ledger write is skipped.
 	Ledger LedgerReader
+	// Decider records a manager answer. Nil is legal — the answer still lands,
+	// and only its audit row is skipped.
+	Decider *PermissionDecider
 	// A2A owns the docker / k8s workers: the create and stop calls, the turn
 	// plane and the push channel. Nil means the A2A tools refuse, which is the
 	// correct answer for a daemon started without a controller configured.
@@ -214,9 +230,230 @@ func (s *RosterToolServer) invoke(
 		return s.agentStatus(ctx, args)
 	case ToolStopAgent:
 		return s.stopAgent(ctx, args, sessionID)
+	case ToolAnswerPermission:
+		return s.answerPermission(ctx, args, sessionID)
+	case ToolAwaitPermission:
+		return s.awaitPermission(ctx, args)
+	case ToolPendingPermissions:
+		return s.pendingPermissions(ctx)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
+}
+
+// spawnLocalAgent creates a wrapper child and delivers its opening turn.
+//
+// ⚠️ It is in-process on purpose: the daemon that answers the call is the daemon
+// that holds the child, so there is no HTTP hop to itself and no second process
+// to keep alive. The child's opening turn is a SEPARATE call because the wrapper
+// has no `prompt` field on spawn — a spawn that only creates the child leaves it
+// idle, which looks exactly like one that is thinking.
+func (s *RosterToolServer) spawnLocalAgent(
+	ctx context.Context,
+	body spawnAgentArgs,
+	sessionID string,
+) (string, error) {
+	if body.Interactive != nil && *body.Interactive {
+		return "", errors.Errorf(
+			ctx,
+			"interactive spawn is not this slice's surface — a tab worker is spawned and steered by the tab-spawn slice",
+		)
+	}
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "spawn_agent is not wired")
+	}
+	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
+		Cwd:    body.Cwd,
+		Model:  body.Model,
+		Label:  body.Label,
+		Policy: body.Policy,
+	})
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "spawn agent failed")
+	}
+	if body.Prompt != "" {
+		if err := s.Supervisor.Send(ctx, session.ID, body.Prompt); err != nil {
+			// The child is live by now and holds stdin. A spawn that throws here
+			// leaves an idle process behind that looks exactly like a thinking
+			// worker, so it is stopped rather than orphaned.
+			_ = s.Supervisor.Stop(context.Background(), session.ID)
+			return "", errors.Wrapf(ctx, err, "deliver opening turn failed")
+		}
+	}
+	s.recordSpawn(ctx, session, sessionID, body.Label)
+	return marshalJSON(ctx, map[string]string{
+		"agent_id":   session.ID,
+		"session_id": session.ID,
+		"state":      string(session.State),
+	})
+}
+
+// recordSpawn files the ledger row a spawned child would otherwise lack.
+func (s *RosterToolServer) recordSpawn(
+	ctx context.Context,
+	session *Session,
+	callerSessionID string,
+	label string,
+) {
+	if s.Ledger == nil {
+		return
+	}
+	if err := s.Ledger.Post(ctx, callerSessionID, LedgerRow{
+		SessionID: session.ID,
+		AgentID:   session.ID,
+		Label:     label,
+		Cwd:       session.Cwd,
+		Mode:      "headless",
+		Location:  "local",
+	}); err != nil {
+		log.Printf("WARNING: ledger post for spawned session %s failed: %v", session.ID, err)
+	}
+}
+
+// answerPermission settles a parked permission request.
+func (s *RosterToolServer) answerPermission(
+	ctx context.Context,
+	args json.RawMessage,
+	sessionID string,
+) (string, error) {
+	var body struct {
+		AgentID   string `json:"agent_id"`
+		RequestID string `json:"request_id"`
+		Behavior  string `json:"behavior"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" || body.RequestID == "" {
+		return "", errors.Errorf(ctx, "agent_id and request_id are required")
+	}
+	if body.Behavior != "allow" && body.Behavior != "deny" {
+		return "", errors.Errorf(ctx, "behavior must be allow or deny, got %q", body.Behavior)
+	}
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "answer_permission is not wired")
+	}
+	session, err := s.Supervisor.Get(ctx, body.AgentID)
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "read agent %s", body.AgentID)
+	}
+	kind := AnswerKindPermission
+	if session.Question != nil && session.Question.Kind != "" {
+		kind = session.Question.Kind
+	}
+	if err := s.Supervisor.Answer(ctx, body.AgentID, body.RequestID, Answer{
+		Kind:     kind,
+		Behavior: body.Behavior,
+	}); err != nil {
+		return "", errors.Wrapf(ctx, err, "answer permission failed")
+	}
+	if s.Decider != nil && session.Question != nil {
+		s.Decider.RecordSettled(
+			ctx, body.AgentID, PolicyContext{Cwd: session.Cwd}, *session.Question,
+			body.Behavior, DecidedByManager, "", nil,
+		)
+	}
+	// Deliberately no per-argument log line: the caller-supplied strings are
+	// attacker-controlled and the decided_by record already carries the verdict.
+	_ = sessionID
+	return marshalJSON(ctx, map[string]string{
+		"agent_id":   body.AgentID,
+		"request_id": body.RequestID,
+		"behavior":   body.Behavior,
+	})
+}
+
+// awaitPermission waits for a park to be settled, or returns a null answer.
+//
+// A null answer is a quiet window, not an error: the park may still be open, and
+// a caller that treats a timeout as failure would re-ask a question already
+// pending.
+func (s *RosterToolServer) awaitPermission(
+	ctx context.Context,
+	args json.RawMessage,
+) (string, error) {
+	var body struct {
+		AgentID        string `json:"agent_id"`
+		RequestID      string `json:"request_id"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" {
+		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "await_permission is not wired")
+	}
+	requestID := body.RequestID
+	if requestID == "" {
+		session, err := s.Supervisor.Get(ctx, body.AgentID)
+		if err != nil {
+			return "", errors.Wrapf(ctx, err, "read agent %s", body.AgentID)
+		}
+		if session.Question == nil {
+			return marshalJSON(ctx, map[string]any{"answered": false, "answer": nil})
+		}
+		requestID = session.Question.RequestID
+	}
+	timeout := time.Duration(body.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	// Bounded: the wait holds a request goroutine, and the caller names the
+	// number. A park's own window is the policy timeout, so waiting past it only
+	// holds a connection open for a gate that has already been decided.
+	if timeout > maxAwaitPermission {
+		timeout = maxAwaitPermission
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		pending, err := s.Supervisor.PollAnswer(ctx, requestID)
+		if err != nil {
+			return "", errors.Wrapf(ctx, err, "poll answer failed")
+		}
+		if pending.Answered {
+			return marshalJSON(ctx, map[string]any{
+				"answered":   true,
+				"request_id": requestID,
+				"behavior":   pending.Answer.Behavior,
+				"answers":    pending.Answer.Answers,
+				"message":    pending.Answer.Message,
+			})
+		}
+		select {
+		case <-ctx.Done():
+			return marshalJSON(ctx, map[string]any{"answered": false, "answer": nil})
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return marshalJSON(ctx, map[string]any{"answered": false, "request_id": requestID, "answer": nil})
+}
+
+// pendingPermissions lists every park this process holds.
+func (s *RosterToolServer) pendingPermissions(ctx context.Context) (string, error) {
+	if s.Supervisor == nil {
+		return "", errors.Errorf(ctx, "pending_permissions is not wired")
+	}
+	sessions, err := s.Supervisor.List(ctx)
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "list sessions failed")
+	}
+	rows := make([]map[string]any, 0, len(sessions))
+	for index := range sessions {
+		if sessions[index].Question == nil {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"agent_id":   sessions[index].ID,
+			"request_id": sessions[index].Question.RequestID,
+			"tool":       sessions[index].Question.ToolName,
+			"kind":       string(sessions[index].Question.Kind),
+			"cwd":        sessions[index].Cwd,
+		})
+	}
+	return marshalJSON(ctx, rows)
 }
 
 func (s *RosterToolServer) listAgents(ctx context.Context) (string, error) {
@@ -326,6 +563,7 @@ type spawnAgentArgs struct {
 	Cwd         string            `json:"cwd"`
 	Label       string            `json:"label"`
 	Prompt      string            `json:"prompt"`
+	Model       string            `json:"model"`
 	Resume      bool              `json:"resume"`
 	Policy      string            `json:"policy"`
 	Interactive *bool             `json:"interactive"`
@@ -337,9 +575,13 @@ type spawnAgentArgs struct {
 
 // spawnAgent creates a worker on an a2a-worker-controller or in a WezTerm tab.
 //
-// Dispatch is by TARGET: the A2A targets go to the controller, `local` (or no
-// target) opens a tab. Headless spawning is still a later slice, and refusing it
-// by name is what keeps a caller from reading a missing feature as a broken one.
+// Dispatch is by TARGET, then by MODE. An A2A target (`docker`, `k8s`,
+// `k8s:<cluster>`) creates a worker on a controller. An absent or `local` target
+// opens a WezTerm tab under the vault's cc-* launcher — the node server's own
+// default (`resolveSpawnMode` falls back to `interactive`) — or, when the caller
+// passes `interactive: false`, an in-process headless worker in THIS daemon, the
+// v0.9.0 path preserved unchanged. An explicit `interactive` always wins; only its
+// absence falls to the tab default.
 func (s *RosterToolServer) spawnAgent(
 	ctx context.Context,
 	args json.RawMessage,
@@ -413,11 +655,12 @@ func (s *RosterToolServer) sendAgentMessage(
 	})
 }
 
-// spawnLocalTarget serves the `local` spawn — a WezTerm tab under a vault's cc-* launcher.
+// spawnLocalTarget serves the `local` spawn: a WezTerm tab under a vault's cc-*
+// launcher by default, or the in-process headless worker when `interactive` is
+// explicitly false.
 //
-// Headless spawning is still a later slice, and any other target is refused by
-// name rather than guessed at: a worker created somewhere the caller did not ask
-// for is discovered only by noticing it.
+// Any other target is refused by name rather than guessed at: a worker created
+// somewhere the caller did not ask for is discovered only by noticing it.
 func (s *RosterToolServer) spawnLocalTarget(
 	ctx context.Context,
 	body spawnAgentArgs,
@@ -429,17 +672,15 @@ func (s *RosterToolServer) spawnLocalTarget(
 		return "", errors.Errorf(
 			ctx,
 			"spawn_agent with target %q is not available in this daemon: the targets "+
-				"are `local` (a WezTerm tab), `docker`, `k8s` and `k8s:<cluster>`. "+
-				"Headless spawning is a later slice",
+				"are `local` (a WezTerm tab, or a headless worker with `interactive: "+
+				"false`), `docker`, `k8s` and `k8s:<cluster>`",
 			body.Target,
 		)
 	}
 	if body.Interactive != nil && !*body.Interactive {
-		return "", errors.Errorf(
-			ctx,
-			"spawn_agent with interactive:false is headless spawning, which is a later "+
-				"slice — omit `interactive`, or pass true for a local tab",
-		)
+		// `interactive: false` is the v0.9.0 headless path, kept unchanged; the
+		// tab is the default so the port matches the node's `resolveSpawnMode`.
+		return s.spawnLocalAgent(ctx, body, sessionID)
 	}
 	if s.Spawner == nil {
 		return "", errors.Errorf(
@@ -647,31 +888,41 @@ func writeRosterError(resp http.ResponseWriter, status int, code string, message
 
 // rosterToolDefinitions describes the three tools to an MCP client.
 func rosterToolDefinitions() []any {
+	return append(spawnToolDefinitions(), parkToolDefinitions()...)
+}
+
+// spawnToolDefinitions describes the spawn and steering tools.
+func spawnToolDefinitions() []any {
 	return []any{
 		toolDef(ToolSpawnAgent,
-			"Create one worker and return its agent id. `target` is `local` (a WezTerm "+
-				"tab under the vault's cc-* launcher — the default), `docker` (a container "+
-				"on this Mac), `k8s` (a pod on the default cluster, nuke dev unless "+
-				"`a2a.defaultCluster` says otherwise) or `k8s:<cluster>`. On the A2A "+
-				"targets `task` is REQUIRED and names the vault task the worker is opened "+
-				"for; the first turn is sent asynchronously, so the record carries no "+
-				"result yet. A `local` spawn requires `cwd` or `vault` — omitting both is "+
-				"refused, never defaulted — and accepts `label`, `role`, `window_id` and "+
-				"`env`; `resume`, `policy` and `shipping` reach a headless worker only and "+
-				"are REFUSED on a tab, as is `interactive: false` (headless spawning is a "+
-				"later slice). `env` may not set a worker's permission or spawn mode.",
+			"Create one worker and return its agent id. `target` selects the shape: "+
+				"`docker` (a container on this Mac), `k8s` (a pod on the default cluster, "+
+				"nuke dev unless `a2a.defaultCluster` says otherwise) or `k8s:<cluster>` "+
+				"creates a worker on an a2a-worker-controller and returns immediately — the "+
+				"first turn is sent asynchronously, so the record carries no result yet, and "+
+				"`task` is REQUIRED naming the vault task the worker is opened for. An absent "+
+				"or `local` target opens a WezTerm tab under the vault's cc-* launcher — the "+
+				"node server's default — unless the caller passes `interactive: false`, which "+
+				"creates an in-process headless worker in THIS daemon (the v0.9.0 path, where "+
+				"`cwd`, `label`, `model` and `policy` apply and the daemon holds its parks and "+
+				"stdin). A `local` spawn requires `cwd` or `vault` — omitting both is refused, "+
+				"never defaulted. A tab accepts `label`, `role`, `window_id` and `env`, and "+
+				"REFUSES `resume`, `policy` and `shipping`, which reach a headless worker only. "+
+				"`env` may not set a worker's permission or spawn mode.",
 			map[string]any{
-				"target":    stringProp("local, docker, k8s, or k8s:<cluster>"),
-				"task":      stringProp("the vault task the worker is opened for (A2A targets)"),
-				"vault":     stringProp("the vault the worker runs in; resolves its launcher"),
-				"cwd":       stringProp("a directory inside a configured vault, instead of vault"),
-				"label":     stringProp("the tab label; defaults to the vault name"),
-				"role":      stringProp("manager, agent or human; defaults to agent"),
-				"window_id": stringProp("the WezTerm window to open the tab in"),
-				"env":       mapProp("environment exported into the pane before the launcher runs"),
-				"prompt":    stringProp("the first turn to send; omitted means create only"),
-			},
-			"prompt"),
+				"target":      stringProp("local, docker, k8s, or k8s:<cluster>"),
+				"task":        stringProp("the vault task the worker is opened for (A2A targets)"),
+				"vault":       stringProp("the vault the worker runs in; resolves its launcher"),
+				"cwd":         stringProp("a directory inside a configured vault, instead of vault"),
+				"label":       stringProp("the tab label; defaults to the vault name"),
+				"role":        stringProp("manager, agent or human; defaults to agent"),
+				"window_id":   stringProp("the WezTerm window to open the tab in"),
+				"env":         mapProp("environment exported into the pane before the launcher runs"),
+				"prompt":      stringProp("the first turn to send; omitted means create only"),
+				"model":       stringProp("headless only: model to run, or empty for the default"),
+				"policy":      stringProp("headless only: path to a per-spawn policy overlay"),
+				"interactive": boolProp("true opens a tab (the default); false spawns headless in-process"),
+			}),
 		toolDef(ToolSendAgentMessage,
 			"Send one further turn to an A2A worker, continuing its conversation by "+
 				"`contextId`. Returns the turn's terminal state and the assistant text.",
@@ -700,5 +951,33 @@ func rosterToolDefinitions() []any {
 				"only its own children.",
 			map[string]any{"agent_id": stringProp("id of the agent to stop")},
 			"agent_id"),
+	}
+}
+
+// parkToolDefinitions describes the permission-park tools.
+func parkToolDefinitions() []any {
+	return []any{
+		toolDef(ToolAnswerPermission,
+			"Settle a parked permission request. Writes a `decided_by: manager` row to "+
+				"permissions.jsonl and returns the answer that was recorded.",
+			map[string]any{
+				"agent_id":   stringProp("id of the parked agent"),
+				"request_id": stringProp("the parked request id"),
+				"behavior":   map[string]any{"type": "string", "enum": []string{"allow", "deny"}},
+			},
+			"agent_id", "request_id", "behavior"),
+		toolDef(ToolAwaitPermission,
+			"Wait for a park to be settled. Returns `answered: true` with the behavior and "+
+				"answers, or `answered: false` when the window closed with the park still open — "+
+				"a quiet window, not an error.",
+			map[string]any{
+				"agent_id":        stringProp("id of the parked agent"),
+				"request_id":      stringProp("the request to wait on; defaults to the agent's current park"),
+				"timeout_seconds": map[string]any{"type": "integer", "description": "how long to wait; defaults to 60"},
+			},
+			"agent_id"),
+		toolDef(ToolPendingPermissions,
+			"Every park this daemon holds right now: agent id, request id, tool and kind.",
+			map[string]any{}),
 	}
 }
