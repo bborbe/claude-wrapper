@@ -13,6 +13,8 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+
+	"github.com/bborbe/claude-wrapper/pkg/a2a"
 )
 
 // rosterForServer builds a server over one own row and one rehydrated row.
@@ -65,7 +67,7 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 		gomega.Expect(body.Error.Message).To(gomega.ContainSubstring("X-Claude-Code-Session-Id"))
 	})
 
-	ginkgo.It("lists exactly the five roster tools", func() {
+	ginkgo.It("lists exactly the nine roster tools", func() {
 		recorder := postRPC(
 			rosterForServer(),
 			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
@@ -89,7 +91,34 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 			"list_agents", "agent_status", "stop_agent",
 			"spawn_agent", "send_agent_message",
 			"answer_permission", "await_permission", "pending_permissions",
+			"read_push_config",
 		))
+	})
+
+	ginkgo.It("refuses read_push_config by name when no A2A controller is wired", func() {
+		// A daemon started without a controller serves the tool and refuses it:
+		// an empty list here would read as "the worker holds nothing".
+		recorder := postRPC(
+			rosterForServer(),
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+
+				`{"name":"read_push_config","arguments":{"agent_id":"agent_1"}}}`,
+			"caller-session",
+		)
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
+		gomega.Expect(recorder.Body.String()).To(gomega.ContainSubstring("not wired"))
+	})
+
+	ginkgo.It("routes read_push_config to the A2A manager, which refuses an unknown agent", func() {
+		server := rosterForServer()
+		server.A2A = a2a.NewManager(nil, nil, a2a.Config{})
+		recorder := postRPC(
+			server,
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+
+				`{"name":"read_push_config","arguments":{"agent_id":"agent_1"}}}`,
+			"caller-session",
+		)
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
+		gomega.Expect(recorder.Body.String()).To(gomega.ContainSubstring("unknown agent"))
 	})
 
 	ginkgo.It("returns a foreign worker alongside its own", func() {

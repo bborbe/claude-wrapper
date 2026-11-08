@@ -35,6 +35,14 @@ type Agent struct {
 	// `attempted-ok` or `attempted-error`.
 	PushRegistration string
 	PushError        string
+	// PushTaskID is the A2A task the push registration was armed against.
+	//
+	// ⚠️ HELD BECAUSE THE READ-BACK NEEDS IT AND NOTHING ELSE DOES. The
+	// registration call learns the task id mid-stream and the read-back is keyed
+	// by it; without a stored copy, `read_push_config` could only answer "a
+	// registration was attempted", which is the exact question it exists to
+	// look past. Not projected by `View` — no caller lists it.
+	PushTaskID string
 }
 
 // View is the projection every tool returns.
@@ -286,6 +294,58 @@ func (m *Manager) registerPush(
 	}
 	agent.PushRegistration = "attempted-ok"
 	agent.PushError = ""
+	agent.PushTaskID = taskID
+}
+
+// ReadPushConfig reads back the push configs a worker HOLDS for its task.
+//
+// ⚠️ THE GATE IS THE POINT, NOT A GUARD AROUND IT. `attempted-ok` proves only
+// that the worker ACCEPTED a registration; reading back a task it never accepted
+// would report "no config" and read as a channel fault. So an absent or failed
+// registration is refused with its state named, and the caller can tell
+// "nothing to read yet" from "read it and it holds nothing".
+func (m *Manager) ReadPushConfig(
+	ctx context.Context,
+	agentID string,
+) (map[string]any, error) {
+	agent, err := m.Get(ctx, agentID)
+	if err != nil {
+		return nil, errors.Errorf(ctx, "unknown agent %s", agentID)
+	}
+	if agent.PushRegistration != "attempted-ok" || agent.PushTaskID == "" {
+		state := agent.PushRegistration
+		if state == "" {
+			state = "none"
+		}
+		return nil, errors.Errorf(
+			ctx,
+			"agent %s has no accepted push registration to read back (state: %s) — "+
+				"a read of a task the worker never accepted would report a missing "+
+				"config as a channel fault",
+			agentID,
+			state,
+		)
+	}
+	if agent.A2AURL == "" || agent.Token == "" {
+		return nil, errors.Errorf(
+			ctx,
+			"agent %s is an A2A worker whose endpoint or bearer token this process "+
+				"does not hold — a row re-adopted after a reconnect can be watched "+
+				"but not read back",
+			agentID,
+		)
+	}
+	configs, err := m.Client.ListPushConfigs(
+		ctx, agent.A2AURL, agent.Token, agent.PushTaskID, agent.ProtocolVersion,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"agent_id": agent.AgentID,
+		"task_id":  agent.PushTaskID,
+		"configs":  configs,
+	}, nil
 }
 
 // SendMessage sends one further turn to an existing worker, continuing its

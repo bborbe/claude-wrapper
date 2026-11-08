@@ -226,3 +226,69 @@ var _ = Describe("RegisterPush", func() {
 		Expect(strings.TrimSpace(fmt.Sprint(body["method"]))).To(Equal(a2a.PushConfigMethod))
 	})
 })
+
+var _ = Describe("ListPushConfigs", func() {
+	ctx := context.Background()
+
+	It("lists by task id and returns the configs the worker holds", func() {
+		var body map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
+			Expect(r.Header.Get("authorization")).To(Equal("Bearer worker-token"))
+			Expect(r.Header.Get("A2A-Version")).To(Equal("1.0"))
+			_, _ = w.Write([]byte(
+				`{"jsonrpc":"2.0","id":1,"result":{"configs":[{"url":"http://push","token":"push-token"}]}}`,
+			))
+		}))
+		defer server.Close()
+
+		configs, err := a2a.NewClient(a2a.NewID).ListPushConfigs(
+			ctx, server.URL, "worker-token", "task-1", "1.0",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(configs).To(HaveLen(1))
+
+		params, ok := body["params"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		// ⚠️ The list is keyed by task id alone — the config id a get would need
+		// is never sent by a registration, so a get could never match.
+		Expect(params).To(Equal(map[string]any{"taskId": "task-1"}))
+		Expect(strings.TrimSpace(fmt.Sprint(body["method"]))).To(Equal(a2a.ListPushConfigMethod))
+	})
+
+	It("reads an empty list as a result, not an error", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"configs":[]}}`))
+		}))
+		defer server.Close()
+
+		configs, err := a2a.NewClient(a2a.NewID).ListPushConfigs(
+			ctx, server.URL, "worker-token", "task-1", "",
+		)
+		// An empty list says the worker holds no config for this task, which is a
+		// different fact from a refused call — the caller must be able to tell them apart.
+		Expect(err).NotTo(HaveOccurred())
+		Expect(configs).To(BeEmpty())
+	})
+
+	It("surfaces the worker's own refusal", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(
+				`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no such task"}}`,
+			))
+		}))
+		defer server.Close()
+
+		_, err := a2a.NewClient(a2a.NewID).ListPushConfigs(
+			ctx, server.URL, "worker-token", "task-1", "",
+		)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no such task"))
+	})
+
+	It("refuses a call with no task id", func() {
+		_, err := a2a.NewClient(a2a.NewID).ListPushConfigs(ctx, "http://worker", "t", "", "")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("taskId"))
+	})
+})
