@@ -43,6 +43,13 @@ const (
 	// different transport, where the params wrap the config in a
 	// `pushNotificationConfig` object. This binding's params are flat.
 	PushConfigMethod = "CreateTaskPushNotificationConfig"
+	// ListPushConfigMethod reads back the push configs a worker HOLDS for a task.
+	//
+	// ⚠️ LIST, NOT GET, AND THAT IS NOT A PREFERENCE. The SDK's get is keyed by a
+	// config id the registration never sends, so a get can never match what the
+	// registration stored — only a list can answer the question this call exists
+	// to answer.
+	ListPushConfigMethod = "ListTaskPushNotificationConfigs"
 	// UserRole is the enum string every part carries — not `"user"`.
 	UserRole = "ROLE_USER"
 	// TaskStateFailed is the controller's failed state.
@@ -826,6 +833,96 @@ func (c *Client) RegisterPush(
 		)
 	}
 	return nil
+}
+
+// ListPushConfigs reads back the push configs a worker HOLDS for one task.
+//
+// ⚠️ THIS IS THE READ HALF OF THE ROUND TRIP. A successful RegisterPush is only
+// evidence that the worker ACCEPTED a registration; an accepted-then-dropped
+// config is indistinguishable from a working one until something reads it back,
+// and this call is that read.
+//
+// ⚠️ AN EMPTY LIST IS A RESULT, NOT AN ERROR. It says the worker holds no config
+// for this task, which is a different fact from a refused call — and the caller
+// must be able to tell them apart.
+func (c *Client) ListPushConfigs(
+	ctx context.Context,
+	endpoint string,
+	token string,
+	taskID string,
+	protocolVersion string,
+) ([]any, error) {
+	if endpoint == "" {
+		return nil, errors.Errorf(ctx, "endpoint is required to read a push callback back over A2A")
+	}
+	if token == "" {
+		return nil, errors.Errorf(ctx, "token is required to read a push callback back over A2A")
+	}
+	if taskID == "" {
+		return nil, errors.Errorf(ctx, "taskId is required to read a push callback back over A2A")
+	}
+	body := jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  ListPushConfigMethod,
+		// `taskId` ALONE — the list is keyed by the task, and the config id the
+		// registration never sends is exactly what a get would need.
+		Params: map[string]any{"taskId": taskID},
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "marshal the push-config read-back failed")
+	}
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, endpoint, bytes.NewReader(encoded),
+	)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "build the push-config read-back failed")
+	}
+	req.Header.Set("content-type", "application/json")
+	// The same header as the registration and for the same reason: this reaches
+	// the worker's own JSONRPC handler, which runs the same version gate.
+	req.Header.Set("authorization", "Bearer "+token)
+	if protocolVersion != "" {
+		req.Header.Set(VersionHeader, protocolVersion)
+	}
+	res, err := c.http().Do(req)
+	if err != nil {
+		return nil, errors.Wrapf(
+			ctx, err, "the push-config read-back to %s failed", redactURL(endpoint),
+		)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, errors.Errorf(
+			ctx,
+			"the worker answered HTTP %d to the push-config read-back: %s",
+			res.StatusCode,
+			truncate(string(raw)),
+		)
+	}
+	var envelope jsonRPCResponse
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, errors.Wrapf(ctx, err, "the push-config read-back body was not JSON")
+	}
+	if envelope.Error != nil {
+		return nil, errors.Errorf(
+			ctx, "the worker refused the push-config read-back: %s", envelope.Error.Error(),
+		)
+	}
+	var result struct {
+		Configs []any `json:"configs"`
+	}
+	if len(envelope.Result) > 0 {
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			return nil, errors.Wrapf(ctx, err, "decode the push-config read-back result failed")
+		}
+	}
+	if result.Configs == nil {
+		return []any{}, nil
+	}
+	return result.Configs, nil
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
