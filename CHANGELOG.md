@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: a `k8s` spawn waits for the worker's agent card instead of reading it once. The card was
+  read immediately after the create call returned, but a worker's ingress is created after that
+  point, so the first read is routinely 404 or 503 — both observed on consecutive nukedev spawns,
+  with the card answering 200 about a minute later. A single read lost the status channel
+  permanently: no card meant no endpoint, no turn, no task id and no push registration, leaving a
+  running, healthy worker reporting `push_registration: not-attempted` forever. The read now
+  retries inside a bounded window (60 attempts 2 s apart, both configurable on `Manager`), stops
+  early on context cancellation, and names the attempt count when the window is spent.
+
 ## v0.11.2
 
 - fix: `spawn_agent` resumes a headless worker by session id again. The MCP adapter typed
