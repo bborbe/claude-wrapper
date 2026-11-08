@@ -552,23 +552,10 @@ func handleEvents(
 			errors.Errorf(ctx, "streaming unsupported"))
 		return
 	}
-	// A resume point is read from Last-Event-ID, the header an SSE client sends
-	// when it reconnects. It is what lets a supervisor whose connection died
-	// continue exactly where it stopped: without it the whole retained session is
-	// replayed, and every event the client already consumed arrives a second time.
-	// ⚠️ `Last-Event-ID` names the last event the client ALREADY HAS, so the first one it
-	// wants is the next. SubscribeFrom takes the first sequence to deliver, inclusive — so a
-	// client resuming from N must ask for N+1. Passing N here would re-deliver event N on
-	// every reconnect, which duplicates a message the loop has already consumed.
-	from := -1
-	if raw := req.Header.Get("Last-Event-ID"); raw != "" {
-		parsed, parseErr := strconv.Atoi(raw)
-		if parseErr != nil {
-			writeError(resp, http.StatusBadRequest,
-				errors.Wrapf(ctx, parseErr, "Last-Event-ID %q is not a sequence number", raw))
-			return
-		}
-		from = parsed + 1
+	from, fromErr := resumePoint(ctx, req)
+	if fromErr != nil {
+		writeError(resp, http.StatusBadRequest, fromErr)
+		return
 	}
 	replay, firstSeq, live, cancel, err := supervisor.SubscribeFrom(req.Context(), id, from)
 	if err != nil {
@@ -600,23 +587,8 @@ func handleEvents(
 	// from "not connected yet".
 	flusher.Flush()
 
-	writeFrame := func(seq int, event pkg.Event) bool {
-		encoded, marshalErr := json.Marshal(event)
-		if marshalErr != nil {
-			return true
-		}
-		// The id is what a reconnecting client resumes from, so it is written on
-		// every frame — a stream whose ids stop at the first reconnect cannot be
-		// resumed a second time.
-		if _, writeErr := fmt.Fprintf(resp, "id: %d\ndata: %s\n\n", seq, encoded); writeErr != nil {
-			return false
-		}
-		flusher.Flush()
-		return true
-	}
-
 	for index, event := range replay {
-		if !writeFrame(firstSeq+index, event) {
+		if !writeEventFrame(resp, flusher, firstSeq+index, event) {
 			return
 		}
 	}
@@ -631,12 +603,63 @@ func handleEvents(
 				flusher.Flush()
 				return
 			}
-			if !writeFrame(next, event) {
+			if !writeEventFrame(resp, flusher, next, event) {
 				return
 			}
 			next++
 		}
 	}
+}
+
+// writeEventFrame writes one SSE frame and flushes it.
+//
+// It reports false when the client is gone, which ends the response. A frame that
+// cannot be marshalled is skipped rather than fatal: one unencodable event must
+// not take down a stream the loop is still consuming.
+func writeEventFrame(
+	resp http.ResponseWriter,
+	flusher http.Flusher,
+	seq int,
+	event pkg.Event,
+) bool {
+	encoded, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		return true
+	}
+	// The id is what a reconnecting client resumes from, so it is written on every
+	// frame — a stream whose ids stop at the first reconnect cannot be resumed a
+	// second time.
+	//nolint:gosec // an SSE frame carrying JSON, not HTML; the client parses it as an event, never as markup
+	if _, writeErr := fmt.Fprintf(resp, "id: %d\ndata: %s\n\n", seq, encoded); writeErr != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
+}
+
+// resumePoint reads the SSE resume header into the first sequence to deliver.
+//
+// A resume point comes from Last-Event-ID, the header an SSE client sends when it
+// reconnects. It is what lets a supervisor whose connection died continue exactly
+// where it stopped: without it the whole retained session is replayed, and every
+// event the client already consumed arrives a second time.
+//
+// ⚠️ `Last-Event-ID` names the last event the client ALREADY HAS, so the first one it
+// wants is the next. SubscribeFrom takes the first sequence to deliver, inclusive — so a
+// client resuming from N must ask for N+1. Passing N would re-deliver event N on every
+// reconnect, which duplicates a message the loop has already consumed.
+//
+// It returns -1 when the client sent no header, which means "from the beginning".
+func resumePoint(ctx context.Context, req *http.Request) (int, error) {
+	raw := req.Header.Get("Last-Event-ID")
+	if raw == "" {
+		return -1, nil
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "Last-Event-ID %q is not a sequence number", raw)
+	}
+	return parsed + 1, nil
 }
 
 type answerRequest struct {

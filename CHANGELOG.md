@@ -39,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `http.Server.Shutdown`. The previous poster-only `NotifyContext` registered and then
   unregistered a handler, so the **first** `SIGTERM` did nothing and the daemon only died on the
   second or on a `SIGKILL`.
+- fix: five defects found in review of the restart work. The replay window numbered a large
+  session's first replayed line one below its own index, so a client resuming at
+  `Last-Event-ID + 1` skipped one event — possibly a `result` — on the first reconnect after a
+  restart once the event file passed 8 MiB, and the drift grew by one per restart. The drain is
+  now followed by a bounded shutdown instead of a 10 s `Shutdown` that waits on live SSE
+  handlers, so the process stays inside launchd's 5 s `ExitTimeOut` and logs its own exit.
+  Re-adoption restores each session's `Mode` — a board answer for an adopted headless worker was
+  refused as if it were a tab worker — and its spawn policy, without which every adopted park
+  escalated and was then denied by the timeout. Concurrent record writes use a per-write temp
+  file and a store lock, so two parks from one child can no longer interleave into an
+  unparseable `record.json` that `List` skips.
+- chore: `make precommit` is clean. The branch's new files tripped `funlen`, `gocognit`,
+  `nestif`, `forcetypeassert`, `unused` and three `gosec` findings; the oversized functions were
+  split, and the three `gosec` findings are annotated where the analysis is wrong (a pid
+  conversion, an SSE frame carrying JSON, and two goroutines that outlive every request).
 
 ## v0.11.1
 

@@ -362,6 +362,20 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			log.Printf("WARNING: adopt session %s failed: %v", record.ID, openErr)
 			continue
 		}
+		// Re-resolved from the same options the spawn used, because an adopted child
+		// parks on the same policy the spawning daemon applied. A zero PolicyContext
+		// is not "no opinion" — it carries no rules, and the decider escalates
+		// everything it cannot match, so every adopted park would wait for a manager
+		// and then be denied by the timeout. That is the opposite of the in-process
+		// behaviour, and it would apply to every session after every restart.
+		policy, policyErr := s.resolvePolicy(ctx, record.Options)
+		if policyErr != nil {
+			// The child is already running. Refusing to adopt would orphan it, which
+			// is the failure this path exists to remove, so it is adopted with no
+			// rules and the loss is named — an empty rule set escalates rather than
+			// silently allowing.
+			log.Printf("WARNING: adopt session %s: policy unavailable: %v", record.ID, policyErr)
+		}
 		c := &child{
 			id:          record.ID,
 			pid:         record.ChildPID,
@@ -370,11 +384,18 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			eventsPath:  files.EventsPath,
 			subscribers: map[int]chan Event{},
 			tailDone:    make(chan struct{}),
+			policy:      policy,
 			session: Session{
-				ID:        record.ID,
-				State:     StateStarting,
-				Controls:  []Control{ControlMessage},
-				Cwd:       record.Cwd,
+				ID:       record.ID,
+				State:    StateStarting,
+				Controls: []Control{ControlMessage},
+				Cwd:      record.Cwd,
+				// Mode is what a board answer is checked against: a permission gate
+				// releases only for a headless producer. Leaving it empty made every
+				// adopted headless worker look like a tab worker, so an answer that
+				// arrived during the restart gap was refused — the exact case this
+				// change exists to make deliverable.
+				Mode:      sessionMode(record.Options.Mode),
 				StartedAt: record.StartedAt,
 			},
 		}
@@ -390,6 +411,7 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 		s.mutex.Lock()
 		s.sessions[record.ID] = c
 		s.mutex.Unlock()
+		//nolint:gosec // the child outlives every request; there is no request ctx to inherit
 		go c.tail()
 		go c.watch()
 		adopted++
@@ -480,24 +502,18 @@ func (s *supervisor) drainOne(ctx context.Context, c *child, bound time.Duration
 // recordInterruption writes the drain's verdict into the session's durable
 // record, so it survives the daemon that wrote it.
 func (s *supervisor) recordInterruption(ctx context.Context, id string, reason string) error {
-	record, err := s.store.Load(ctx, id)
-	if err != nil {
-		return err
-	}
-	record.Interrupted = reason
-	return s.store.Save(ctx, *record)
+	return s.store.Update(ctx, id, func(record *SessionRecord) {
+		record.Interrupted = reason
+	})
 }
 
 // persistQuestion writes the session's current question into its record, so a
 // successor can restore it.
 func (s *supervisor) persistQuestion(ctx context.Context, id string, question *Question) {
-	record, err := s.store.Load(ctx, id)
-	if err != nil {
-		return
-	}
-	record.Question = question
-	if saveErr := s.store.Save(ctx, *record); saveErr != nil {
-		log.Printf("WARNING: persist question for %s failed: %v", id, saveErr)
+	if err := s.store.Update(ctx, id, func(record *SessionRecord) {
+		record.Question = question
+	}); err != nil {
+		log.Printf("WARNING: persist question for %s failed: %v", id, err)
 	}
 }
 
@@ -884,6 +900,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 			StartedAt: s.now.Now().Time().UTC(),
 		},
 	}
+	//nolint:gosec // the child outlives every request; there is no request ctx to inherit
 	go c.tail()
 	go c.watch()
 	return c, nil

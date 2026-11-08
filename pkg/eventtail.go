@@ -54,18 +54,9 @@ func tailFile(
 	}
 	defer func() { _ = file.Close() }()
 
-	seq := 0
-	if start, skipped := backfillWindow(file); start > 0 {
-		if _, seekErr := file.Seek(start, io.SeekStart); seekErr != nil {
-			// A seek that fails leaves the offset where Stat left it; restarting
-			// from zero is always correct, just slower.
-			if _, resetErr := file.Seek(0, io.SeekStart); resetErr != nil {
-				return
-			}
-			seq = 0
-		} else {
-			seq = skipped
-		}
+	seq, ok := replayStart(file)
+	if !ok {
+		return
 	}
 
 	pending := make([]byte, 0, 64*1024)
@@ -80,26 +71,58 @@ func tailFile(
 		n, readErr := file.Read(buf)
 		if n > 0 {
 			pending = append(pending, buf[:n]...)
-			for {
-				index := bytes.IndexByte(pending, '\n')
-				if index < 0 {
-					break
-				}
-				line := pending[:index]
-				pending = pending[index+1:]
-				onLine(seq, line)
-				seq++
-			}
+			pending, seq = emitCompleteLines(pending, seq, onLine)
+			continue
 		}
-		if n == 0 {
-			if readErr != nil && readErr != io.EOF {
-				return
-			}
-			if gone() {
-				return
-			}
-			time.Sleep(eventTailPoll)
+		if readErr != nil && readErr != io.EOF {
+			return
 		}
+		if gone() {
+			return
+		}
+		time.Sleep(eventTailPoll)
+	}
+}
+
+// replayStart seeks to where the replay begins and reports the sequence number the
+// first replayed line carries.
+//
+// ok is false only when neither the window seek nor a reset to zero succeeded,
+// which leaves nothing readable to replay.
+func replayStart(file *os.File) (int, bool) {
+	start, skipped := backfillWindow(file)
+	if start <= 0 {
+		return 0, true
+	}
+	if _, seekErr := file.Seek(start, io.SeekStart); seekErr != nil {
+		// A seek that fails leaves the offset where Stat left it; restarting from
+		// zero is always correct, just slower.
+		if _, resetErr := file.Seek(0, io.SeekStart); resetErr != nil {
+			return 0, false
+		}
+		return 0, true
+	}
+	return skipped, true
+}
+
+// emitCompleteLines hands every newline-terminated line in pending to onLine,
+// starting at seq, and returns the unconsumed tail and the next sequence number.
+//
+// A partial line stays in the tail: the child may be mid-write, and emitting half
+// a JSON object would be worse than emitting it one poll later.
+func emitCompleteLines(
+	pending []byte,
+	seq int,
+	onLine func(seq int, line []byte),
+) ([]byte, int) {
+	for {
+		index := bytes.IndexByte(pending, '\n')
+		if index < 0 {
+			return pending, seq
+		}
+		onLine(seq, pending[:index])
+		pending = pending[index+1:]
+		seq++
 	}
 }
 
@@ -108,20 +131,28 @@ func tailFile(
 //
 // It returns (0, 0) for a file small enough to replay whole. Otherwise it seeks
 // to the last maxBackfillBytes, discards the partial line the window opens on,
-// and counts the newlines in the skipped prefix — the count is what keeps a
-// successor's sequence numbers identical to the ones the spawning daemon used.
+// and counts the newlines before the line it will actually replay — the count is
+// what keeps a successor's sequence numbers identical to the ones the spawning
+// daemon used.
+//
+// The count is taken to the START of the replay, not to the window edge. The
+// line break that terminates the discarded partial line sits inside the window,
+// so counting only the bytes before the window undercounts by exactly one and
+// every replayed line is numbered one lower than its own index. That shift is
+// not cosmetic: a client resuming at Last-Event-ID+1 would then skip one event —
+// possibly a `result` — on the first reconnect after any restart, and the drift
+// would grow by one per restart.
 func backfillWindow(file *os.File) (int64, int) {
 	info, err := file.Stat()
 	if err != nil || info.Size() <= maxBackfillBytes {
 		return 0, 0
 	}
-	skipped := countNewlines(file, info.Size()-maxBackfillBytes)
-	start := info.Size() - maxBackfillBytes
+	windowStart := info.Size() - maxBackfillBytes
 	// Discard the partial line the window opens on: its head is outside the
 	// window, so parsing it would either fail or — worse — succeed on a truncated
 	// object that happens to parse.
 	buf := make([]byte, 4096)
-	offset := start
+	offset := windowStart
 	for offset < info.Size() {
 		if _, seekErr := file.Seek(offset, io.SeekStart); seekErr != nil {
 			return 0, 0
@@ -129,7 +160,8 @@ func backfillWindow(file *os.File) (int64, int) {
 		n, readErr := file.Read(buf)
 		if n > 0 {
 			if index := bytes.IndexByte(buf[:n], '\n'); index >= 0 {
-				return offset + int64(index) + 1, skipped
+				start := offset + int64(index) + 1
+				return start, countNewlines(file, start)
 			}
 			offset += int64(n)
 		}
@@ -137,7 +169,10 @@ func backfillWindow(file *os.File) (int64, int) {
 			return 0, 0
 		}
 	}
-	return info.Size(), skipped
+	// No line break anywhere in the window: the whole tail is one unterminated
+	// line, so replay starts at EOF and every complete line precedes the window.
+	// Counting to windowStart is both correct and cheaper than reading the file.
+	return info.Size(), countNewlines(file, windowStart)
 }
 
 // countNewlines counts the line breaks in the first limit bytes of file.

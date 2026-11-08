@@ -129,6 +129,36 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 		}, "5s").Should(gomega.Equal(StateIdle))
 	})
 
+	ginkgo.It("restores the mode and policy an adopted child was spawned under", func() {
+		sup := newSupervisor(echoChild())
+		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir, Mode: "headless"})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Eventually(func() State {
+			return childFor(sup, session.ID).snapshot().State
+		}, "5s").Should(gomega.Equal(StateIdle))
+
+		spawned := childFor(sup, session.ID)
+
+		successor := newSupervisor(echoChild())
+		adopted, err := successor.Adopt(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(adopted).To(gomega.Equal(1))
+
+		recovered := childFor(successor, session.ID)
+
+		// Mode is what a board answer is checked against: a permission gate releases
+		// only for a headless producer. Left empty, an adopted headless worker looks
+		// like a tab worker and the answer that arrived during the restart gap is
+		// refused — the case adoption exists to serve.
+		gomega.Expect(recovered.snapshot().Mode).To(gomega.Equal("headless"))
+
+		// The policy is the rule set the child was SPAWNED under. An adopted child
+		// with no rules escalates every park and then has it denied by the timeout,
+		// which is the opposite of the in-process behaviour it was spawned with.
+		gomega.Expect(recovered.policy).To(gomega.Equal(spawned.policy))
+		gomega.Expect(recovered.policy.Rules).NotTo(gomega.BeEmpty())
+	})
+
 	ginkgo.It("prunes a record whose child is gone", func() {
 		dead := SessionRecord{
 			ID:        "11111111-2222-4333-8444-555555555555",

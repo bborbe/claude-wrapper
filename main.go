@@ -22,6 +22,12 @@ import (
 	"github.com/bborbe/claude-wrapper/pkg/handler"
 )
 
+// shutdownGrace is how long a response already being written may finish after the
+// drain. Together with the drain bound it must stay under launchd's 5 s
+// ExitTimeOut: the drain defaults to 4 s, so 500 ms leaves the process room to
+// log its own exit instead of being SIGKILLed mid-line.
+const shutdownGrace = 500 * time.Millisecond
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -48,19 +54,7 @@ func main() {
 	flag.Parse()
 
 	if *mcpStdio {
-		server := &pkg.MCPServer{
-			In:         os.Stdin,
-			Out:        os.Stdout,
-			LogPath:    *mcpLog,
-			Now:        libtime.NewCurrentDateTime(),
-			WrapperURL: *wrapperURL,
-			SessionID:  *sessionID,
-			Allow:      true,
-			Hold:       *mcpHold,
-		}
-		if err := server.Run(context.Background()); err != nil {
-			log.Fatalf("mcp server failed: %v", err)
-		}
+		runMCPStdio(*mcpLog, *wrapperURL, *sessionID, *mcpHold)
 		return
 	}
 
@@ -105,25 +99,7 @@ func main() {
 	sequencer := pkg.NewSequencer(
 		supervisor, libtime.NewCurrentDateTime(), locks, 30*time.Minute)
 
-	mux := http.NewServeMux()
-	mux.Handle("/healthz", handler.Healthz())
-	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
-	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer, locks))
-	// The client-facing MCP face: Codex → wrapper, over streamable HTTP on this
-	// same listener. Not to be confused with --mcp-stdio, which is child-facing
-	// (the wrapper giving its own child a permission tool) and runs in a
-	// separate process.
-	mux.Handle("/mcp", &pkg.MCPToolServer{
-		Supervisor:  supervisor,
-		Sequencer:   sequencer,
-		Locks:       locks,
-		TurnTimeout: *mcpTurnTimeout,
-	})
-	// Loopback-gated: a heap profile carries session content and
-	// /debug/pprof/cmdline publishes this process's argv, so the debug surface
-	// is mounted only when the listener cannot be reached from another
-	// interface.
-	handler.RegisterPprofIfLoopback(mux, *listen)
+	mux := newMux(supervisor, sequencer, locks, *listen, *mcpTurnTimeout)
 
 	startFleetFaces(ctx, mux, supervisor, decider, *attentionURL, *heartbeatInterval)
 
@@ -144,11 +120,76 @@ func main() {
 	}()
 
 	<-ctx.Done()
+	drainAndStop(supervisor, server, *drainBound, stop)
+}
+
+// runMCPStdio serves the child-facing permission tool on stdio and returns.
+//
+// It is the whole of --mcp-stdio: a separate process mode, not a route. The
+// wrapper gives its own child a permission tool by spawning this binary again
+// with this flag, so nothing here may start the HTTP daemon.
+func runMCPStdio(logPath, wrapperURL, sessionID string, hold time.Duration) {
+	server := &pkg.MCPServer{
+		In:         os.Stdin,
+		Out:        os.Stdout,
+		LogPath:    logPath,
+		Now:        libtime.NewCurrentDateTime(),
+		WrapperURL: wrapperURL,
+		SessionID:  sessionID,
+		Allow:      true,
+		Hold:       hold,
+	}
+	if err := server.Run(context.Background()); err != nil {
+		log.Fatalf("mcp server failed: %v", err)
+	}
+}
+
+// newMux mounts every route the daemon serves.
+func newMux(
+	supervisor pkg.Supervisor,
+	sequencer pkg.Sequencer,
+	locks *pkg.SessionLocks,
+	listen string,
+	mcpTurnTimeout time.Duration,
+) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/healthz", handler.Healthz())
+	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
+	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer, locks))
+	// The client-facing MCP face: Codex → wrapper, over streamable HTTP on this
+	// same listener. Not to be confused with --mcp-stdio, which is child-facing
+	// (the wrapper giving its own child a permission tool) and runs in a
+	// separate process.
+	mux.Handle("/mcp", &pkg.MCPToolServer{
+		Supervisor:  supervisor,
+		Sequencer:   sequencer,
+		Locks:       locks,
+		TurnTimeout: mcpTurnTimeout,
+	})
+	// Loopback-gated: a heap profile carries session content and
+	// /debug/pprof/cmdline publishes this process's argv, so the debug surface
+	// is mounted only when the listener cannot be reached from another
+	// interface.
+	handler.RegisterPprofIfLoopback(mux, listen)
+	return mux
+}
+
+// drainAndStop takes the process down once a signal has arrived.
+//
+// It is split out of main so the shutdown sequence reads on its own: the order
+// below is the whole point — drain the children first, then close the listener
+// inside what is left of launchd's ExitTimeOut.
+func drainAndStop(
+	supervisor pkg.Supervisor,
+	server *http.Server,
+	drainBound time.Duration,
+	stop func(),
+) {
 	// A second signal during the drain is not a second chance to die: the children
 	// outlive this process either way, so the drain is allowed to finish its bound.
 	stop()
-	log.Printf("claude-wrapper draining: waiting up to %s overall for turn boundaries", *drainBound)
-	report := supervisor.Drain(context.Background(), *drainBound)
+	log.Printf("claude-wrapper draining: waiting up to %s overall for turn boundaries", drainBound)
+	report := supervisor.Drain(context.Background(), drainBound)
 	for _, result := range report.Sessions {
 		if result.Interrupted {
 			log.Printf("drain: session %s interrupted — %s", result.ID, result.Reason)
@@ -157,10 +198,17 @@ func main() {
 		log.Printf("drain: session %s at turn boundary (state %s)", result.ID, result.State)
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	// A graceful Shutdown cannot fit in what the drain leaves of launchd's 5 s
+	// ExitTimeOut. Shutdown waits for active requests to finish, and an SSE handler
+	// blocks until its own request context ends — so with any supervisor subscribed
+	// (the normal state) it runs to its full timeout, launchd SIGKILLs the process
+	// at 5 s, and the final line below is never written. A short grace covers a
+	// response already being written; Close then drops the streams, which is safe
+	// because the child outlives us and its stream resumes from Last-Event-ID.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancelShutdown()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("server shutdown: %v", err)
+		_ = server.Close()
 	}
 	log.Printf("claude-wrapper stopped; %d session(s) continue under the next daemon", len(report.Sessions))
 }

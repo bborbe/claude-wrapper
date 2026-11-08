@@ -163,14 +163,6 @@ func repoRoot() string {
 	return filepath.Dir(dir)
 }
 
-func mustAbs(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	return abs
-}
-
 // freePort asks the kernel for an unused loopback port.
 func freePort() int {
 	listener, err := net.Listen("tcp", "localhost:0")
@@ -178,7 +170,11 @@ func freePort() int {
 		return 18089
 	}
 	defer func() { _ = listener.Close() }()
-	return listener.Addr().(*net.TCPAddr).Port
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 18089
+	}
+	return addr.Port
 }
 
 // waitHealthy blocks until the daemon answers its health route.

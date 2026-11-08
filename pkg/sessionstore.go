@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -88,6 +89,9 @@ type SessionStore interface {
 	Create(ctx context.Context, record SessionRecord) (*SessionFiles, error)
 	Open(ctx context.Context, id string) (*SessionFiles, error)
 	Save(ctx context.Context, record SessionRecord) error
+	// Update applies mutate to the stored record under the store's own lock, so a
+	// read-modify-write cannot interleave with another one.
+	Update(ctx context.Context, id string, mutate func(*SessionRecord)) error
 	Load(ctx context.Context, id string) (*SessionRecord, error)
 	List(ctx context.Context) ([]SessionRecord, error)
 	Remove(ctx context.Context, id string) error
@@ -103,6 +107,10 @@ func NewSessionStore(dir string) SessionStore {
 
 type sessionStore struct {
 	root string
+	// mu serialises record writes. Callers persist from different goroutines — a
+	// question from an HTTP handler, an interruption verdict from the drain — and
+	// both do a read-modify-write of the same file.
+	mu sync.Mutex
 }
 
 func (s *sessionStore) sessionsRoot(ctx context.Context) (string, error) {
@@ -178,6 +186,20 @@ func (s *sessionStore) Open(ctx context.Context, id string) (*SessionFiles, erro
 }
 
 func (s *sessionStore) Save(ctx context.Context, record SessionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(ctx, record)
+}
+
+// saveLocked writes one record; the caller holds s.mu.
+//
+// The temp file carries a random suffix rather than a fixed one. A shared
+// "record.json.tmp" let two concurrent saves open the same path with O_TRUNC and
+// write at the same offsets, which produces an interleaved, unparseable record —
+// and List skips a record it cannot parse, so the child would become unadoptable
+// and its event history orphaned. Rename is atomic, so the last writer wins
+// whole.
+func (s *sessionStore) saveLocked(ctx context.Context, record SessionRecord) error {
 	dir := s.Dir(record.ID)
 	if dir == "" {
 		return errors.Errorf(ctx, "session state directory is not resolvable")
@@ -187,16 +209,47 @@ func (s *sessionStore) Save(ctx context.Context, record SessionRecord) error {
 		return errors.Wrapf(ctx, err, "marshal session record %q failed", record.ID)
 	}
 	path := filepath.Join(dir, sessionRecordName)
-	// Written to a temporary file and renamed, so a successor never reads a
-	// half-written record and concludes the child is gone.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encoded, 0o600); err != nil {
-		return errors.Wrapf(ctx, err, "write session record %q failed", tmp)
+	tmp, err := os.CreateTemp(dir, sessionRecordName+".*.tmp")
+	if err != nil {
+		return errors.Wrapf(ctx, err, "create session record temp for %q failed", record.ID)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(encoded); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return errors.Wrapf(ctx, err, "write session record %q failed", tmpPath)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return errors.Wrapf(ctx, err, "close session record %q failed", tmpPath)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return errors.Wrapf(ctx, err, "rename session record %q failed", path)
 	}
 	return nil
+}
+
+// Update applies mutate to the stored record under the store's lock.
+//
+// The lock spans the whole read-modify-write on purpose. Two callers that each
+// loaded, mutated and saved would both succeed and the later write would drop
+// the earlier one's field, so a question persisted just before the drain's
+// interruption verdict would vanish — and an answer that arrives during the
+// restart gap would then be undeliverable.
+func (s *sessionStore) Update(
+	ctx context.Context,
+	id string,
+	mutate func(*SessionRecord),
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, err := s.Load(ctx, id)
+	if err != nil {
+		return err
+	}
+	mutate(record)
+	return s.saveLocked(ctx, *record)
 }
 
 func (s *sessionStore) Load(ctx context.Context, id string) (*SessionRecord, error) {

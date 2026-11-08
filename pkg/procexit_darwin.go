@@ -38,6 +38,7 @@ func waitForProcessExit(pid int) {
 	defer func() { _ = syscall.Close(kq) }()
 
 	changes := []syscall.Kevent_t{{
+		//nolint:gosec // pid is checked positive above, so the conversion is exact
 		Ident:  uint64(pid),
 		Filter: syscall.EVFILT_PROC,
 		Flags:  syscall.EV_ADD | syscall.EV_ONESHOT,
