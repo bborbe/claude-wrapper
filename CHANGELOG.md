@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- feat: a re-adopted child's exit is observed with kqueue `EVFILT_PROC`/`NOTE_EXIT` instead of a
+  100 ms pid poll. After a restart the child is reparented to pid 1, so there is no `Wait` to
+  collect and the only observable is the pid going away — the watcher now sleeps until the
+  kernel wakes it, so an idle adopted session costs no wakeups and the exit is seen when it
+  happens rather than up to one poll interval later. A pid that already left (or never existed)
+  returns immediately, and a platform without kqueue falls back to polling.
 - fix: a permission park raised **during** a wrapper restart is retried instead of lost. The
   child's MCP sidecar registered a park with one POST; while the daemon was between processes
   that POST failed, `decide` took its failure path, and the tool returned a denial for a

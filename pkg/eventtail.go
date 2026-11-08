@@ -177,3 +177,15 @@ func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
 }
+
+// pollForProcessExit blocks until pid is no longer running, checking every
+// eventTailPoll.
+//
+// It is the fallback for a platform without kqueue and for a kqueue
+// registration that failed — never the primary path on macOS, where
+// waitForProcessExit delivers the exit as an event instead.
+func pollForProcessExit(pid int) {
+	for processAlive(pid) {
+		time.Sleep(eventTailPoll)
+	}
+}

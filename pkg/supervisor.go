@@ -1382,10 +1382,9 @@ func (c *child) watch() {
 	} else {
 		// An adopted child is not this process's child, so there is no exit status
 		// to collect — only a pid that stops existing. Reporting a code here would
-		// invent one.
-		for processAlive(c.pid) {
-			time.Sleep(eventTailPoll)
-		}
+		// invent one. On darwin this is a kqueue NOTE_EXIT wait rather than a poll,
+		// so an idle adopted session costs no wakeups.
+		waitForProcessExit(c.pid)
 	}
 	c.procGone.Store(true)
 	<-c.tailDone
