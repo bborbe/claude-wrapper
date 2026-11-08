@@ -18,6 +18,7 @@ import (
 // scriptedSupervisor answers each Send with the child's own turn events, so a
 // spec observes the sequencer's advance rule without a real child.
 type scriptedSupervisor struct {
+	fakeDurable
 	mutex sync.Mutex
 	sent  []string
 	live  chan Event
