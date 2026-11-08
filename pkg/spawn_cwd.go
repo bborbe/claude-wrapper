@@ -345,6 +345,11 @@ func ParseLauncherModel(scriptText string) string {
 	if strings.TrimSpace(scriptText) == "" {
 		return ""
 	}
+	// A comment can mention `--model` in prose — the real cc-private-deepseek
+	// carries "# … a launch that passes no --model inherits the ambient", which a
+	// naive scan reads as the model "inherits". Strip whole comment lines before
+	// matching so only an executable `--model` can be the answer.
+	scriptText = launcherCommentLine.ReplaceAllString(scriptText, "")
 	flag := launcherModelFlag.FindStringSubmatch(scriptText)
 	if flag == nil {
 		return ""
@@ -390,6 +395,10 @@ func ParseLauncherModel(scriptText string) string {
 // launcherModelFlag matches `--model` at a whitespace boundary, so a hypothetical
 // `--model-name` flag cannot match, in all three quoting shapes.
 var launcherModelFlag = regexp.MustCompile(`(?:^|\s)--model[ \t]+(?:"([^"]*)"|'([^']*)'|(\S+))`)
+
+// launcherCommentLine matches a whole shell comment line, so `--model` mentioned
+// in prose cannot be mistaken for the flag.
+var launcherCommentLine = regexp.MustCompile(`(?m)^[ \t]*#.*$`)
 
 // launcherModelReference matches a whole-value `${VAR}` or `$VAR` expansion.
 //

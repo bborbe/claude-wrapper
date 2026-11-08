@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- fix: `spawn_agent` reports the model the tab actually runs on instead of the literal
+  `inherits` — the parser matched the launcher's own comment prose (`# … a launch that passes
+  no --model inherits the ambient`) before the real `--model` flag, so a correct spawn reported
+  a model it never used. Comment lines are now stripped before matching.
+- fix: the tab colour's submission confirmation waits the same 8s the node server allows,
+  instead of 2s, so a `/color` that applied is reported as applied rather than a false negative.
+- fix: a tab `spawn_agent` with no `prompt` is refused with a message naming the headless
+  escape (`interactive: false`), instead of the spawner's generic "invalid spawn options". The
+  schema keeps `prompt` optional because the headless and A2A paths accept an empty one.
 - fix: read the A2A cluster allowlist from the shape `vaults.json` actually uses.
   `readVaultsConfig` unmarshalled every vault entry as `{"clusters": [...]}`, so the live file's
   flat arrays (`"private-personal": ["nukedev", …]`) failed to parse and the swallowed error left

@@ -73,12 +73,18 @@ var _ = ginkgo.Describe("ParseLauncherModel", func() {
 	})
 
 	ginkgo.It("does not match the real launcher's comment prose", func() {
-		// Verbatim from cc-private-deepseek:30. The backtick closes the flag
-		// immediately, so there is no whitespace for the pattern to match on —
-		// which is the only reason a naive grep over the file does not return
-		// "inherits" as the model.
-		line := "# Pin the model. Without this, a launch that passes no `--model` inherits the ambient\n"
+		// Verbatim from cc-private-deepseek:30 — NO backticks. The earlier fixture
+		// had them, which is why the naive scan looked safe while the real file made
+		// it return "inherits" as the model.
+		line := "# Pin the model. Without this, a launch that passes no --model inherits the ambient\n"
 		gomega.Expect(ParseLauncherModel(line)).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("ignores a comment line above a real --model flag", func() {
+		script := "# Pin the model. Without this, a launch that passes no --model inherits the ambient\n" +
+			"export ANTHROPIC_DEFAULT_OPUS_MODEL=\"deepseek-v4-flash-max[1m]\"\n" +
+			"--model \"${ANTHROPIC_DEFAULT_OPUS_MODEL}\" \\\n"
+		gomega.Expect(ParseLauncherModel(script)).To(gomega.Equal("deepseek-v4-flash-max[1m]"))
 	})
 })
 
