@@ -297,6 +297,41 @@ func (m *Manager) registerPush(
 	agent.PushTaskID = taskID
 }
 
+// PushReadRefusal names why an agent's push registration cannot be read back,
+// or returns nil when it can.
+//
+// ⚠️ THE GATE IS THE POINT, NOT A GUARD AROUND IT. `attempted-ok` proves only
+// that the worker ACCEPTED a registration; reading back a task it never accepted
+// would report "no config" and read as a channel fault. So an absent or failed
+// registration is refused with its state named, and the caller can tell
+// "nothing to read yet" from "read it and it holds nothing".
+func PushReadRefusal(ctx context.Context, agent *Agent) error {
+	if agent.PushRegistration != "attempted-ok" || agent.PushTaskID == "" {
+		state := agent.PushRegistration
+		if state == "" {
+			state = "none"
+		}
+		return errors.Errorf(
+			ctx,
+			"agent %s has no accepted push registration to read back (state: %s) — "+
+				"a read of a task the worker never accepted would report a missing "+
+				"config as a channel fault",
+			agent.AgentID,
+			state,
+		)
+	}
+	if agent.A2AURL == "" || agent.Token == "" {
+		return errors.Errorf(
+			ctx,
+			"agent %s is an A2A worker whose endpoint or bearer token this process "+
+				"does not hold — a row re-adopted after a reconnect can be watched "+
+				"but not read back",
+			agent.AgentID,
+		)
+	}
+	return nil
+}
+
 // ReadPushConfig reads back the push configs a worker HOLDS for its task.
 //
 // ⚠️ THE GATE IS THE POINT, NOT A GUARD AROUND IT. `attempted-ok` proves only
@@ -312,28 +347,8 @@ func (m *Manager) ReadPushConfig(
 	if err != nil {
 		return nil, errors.Errorf(ctx, "unknown agent %s", agentID)
 	}
-	if agent.PushRegistration != "attempted-ok" || agent.PushTaskID == "" {
-		state := agent.PushRegistration
-		if state == "" {
-			state = "none"
-		}
-		return nil, errors.Errorf(
-			ctx,
-			"agent %s has no accepted push registration to read back (state: %s) — "+
-				"a read of a task the worker never accepted would report a missing "+
-				"config as a channel fault",
-			agentID,
-			state,
-		)
-	}
-	if agent.A2AURL == "" || agent.Token == "" {
-		return nil, errors.Errorf(
-			ctx,
-			"agent %s is an A2A worker whose endpoint or bearer token this process "+
-				"does not hold — a row re-adopted after a reconnect can be watched "+
-				"but not read back",
-			agentID,
-		)
+	if err := PushReadRefusal(ctx, agent); err != nil {
+		return nil, err
 	}
 	configs, err := m.Client.ListPushConfigs(
 		ctx, agent.A2AURL, agent.Token, agent.PushTaskID, agent.ProtocolVersion,

@@ -292,3 +292,55 @@ var _ = Describe("ListPushConfigs", func() {
 		Expect(err.Error()).To(ContainSubstring("taskId"))
 	})
 })
+
+var _ = Describe("PushReadRefusal", func() {
+	ctx := context.Background()
+
+	readable := func() *a2a.Agent {
+		return &a2a.Agent{
+			AgentID:          "agent_1",
+			A2AURL:           "http://worker",
+			Token:            "worker-token",
+			PushRegistration: "attempted-ok",
+			PushTaskID:       "task-1",
+		}
+	}
+
+	It("admits an accepted registration holding a task id", func() {
+		Expect(a2a.PushReadRefusal(ctx, readable())).To(Succeed())
+	})
+
+	DescribeTable("refuses without an accepted registration",
+		func(state string) {
+			// ⚠️ `attempted-error` is the state that matters: reading back a task
+			// the worker never accepted would report a missing config as a channel
+			// fault.
+			agent := readable()
+			agent.PushRegistration = state
+			err := a2a.PushReadRefusal(ctx, agent)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no accepted push registration"))
+		},
+		Entry("never attempted", "not-attempted"),
+		Entry("attempted and refused", "attempted-error"),
+		Entry("state absent", ""),
+	)
+
+	It("refuses an accepted registration that recorded no task id", func() {
+		// The list is keyed by the task id, so an accepted registration that never
+		// recorded one cannot be read back either.
+		agent := readable()
+		agent.PushTaskID = ""
+		err := a2a.PushReadRefusal(ctx, agent)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no accepted push registration"))
+	})
+
+	It("refuses a re-adopted row whose endpoint or token is gone", func() {
+		agent := readable()
+		agent.Token = ""
+		err := a2a.PushReadRefusal(ctx, agent)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("does not hold"))
+	})
+})
