@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: `spawn_agent` resumes a headless worker by session id again. The MCP adapter typed
+  `resume` as a bool and `spawnLocalAgent` never forwarded it, so every headless resume
+  opened a fresh conversation, and the tab path refused it outright. A dead `mode: headless`
+  worker therefore could only come back as a tab. `resume` is now the full session id. The
+  headless path passes it to `SpawnOptions.Resume`, which emits `--resume <id>`. The
+  pre-fix `"resume": true` fails to decode and the error names the field, so it can no
+  longer start a silent fresh spawn. The tab path and the A2A targets still refuse a resume,
+  and the tool schema now advertises the field.
+
 ## v0.11.1
 
 - fix: release a child's event replay buffer when it exits. Exited records are never removed
