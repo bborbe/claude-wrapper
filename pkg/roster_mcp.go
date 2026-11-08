@@ -598,10 +598,10 @@ type spawnAgentArgs struct {
 	Label  string `json:"label"`
 	Prompt string `json:"prompt"`
 	Model  string `json:"model"`
-	// Resume is the full session id of the conversation to continue. A string,
-	// not a flag: a boolean cannot name WHICH conversation, so the old shape
-	// could only ever open a fresh one. The pre-fix `"resume": true` now fails
-	// to decode rather than silently spawning a new conversation.
+	// Resume is the full session id of the conversation to continue, or empty
+	// for a fresh one. A boolean `"resume": true` fails to decode, so a caller
+	// that cannot name the conversation is refused instead of silently handed
+	// a new one.
 	Resume      string            `json:"resume"`
 	Policy      string            `json:"policy"`
 	Interactive *bool             `json:"interactive"`

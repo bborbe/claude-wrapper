@@ -13,9 +13,9 @@ import (
 )
 
 // These specs drive spawn_agent through the MCP adapter — raw JSON arguments in,
-// SpawnOptions out — because that boundary is where resume-by-id was lost: the
-// engine underneath already resumed, but the adapter typed `resume` as a bool and
-// never forwarded it, so every headless "resume" opened a fresh conversation.
+// SpawnOptions out — because the adapter is the layer that must carry `resume`
+// from the tool call to the child: a session id that stops here leaves every
+// headless resume opening a fresh conversation.
 var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume", func() {
 	const resumed = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 
