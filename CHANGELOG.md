@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: release a child's event replay buffer when it exits. Exited records are never removed
+  from `s.sessions`, so each dead session held up to `maxRetainedEvents` (4096) decoded
+  `Event` maps for the life of the process — measured at 51.15 % of the live heap across 45
+  records on a 1.2 GB footprint. The `Session` record and its metadata stay for listing; only
+  the event history is released, and `publish` refuses to re-retain it afterwards. Live-session
+  replay is unchanged.
+
 ## v0.11.0
 
 - feat: `read_push_config` reads a worker's push registration back **from the worker**, so
