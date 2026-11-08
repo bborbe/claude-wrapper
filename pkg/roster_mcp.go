@@ -103,6 +103,11 @@ type RosterToolServer struct {
 	// Now bounds the pane-send readiness and confirmation polls. Nil falls back to
 	// the system clock, which is what a test wants to override.
 	Now libtime.CurrentDateTimeGetter
+	// Caps enforces the fleet-wide worker cap, manager cap and start rate before
+	// a local spawn — tab or headless — creates anything. Nil disables
+	// enforcement, which is correct only for a unit test; the daemon always wires
+	// it.
+	Caps SpawnCaps
 }
 
 // currentDateTime returns the clock the pane polls run on.
@@ -278,6 +283,9 @@ func (s *RosterToolServer) spawnLocalAgent(
 	}
 	cwd, err := s.headlessCwd(ctx, body)
 	if err != nil {
+		return "", err
+	}
+	if err := s.enforceCaps(ctx, body); err != nil {
 		return "", err
 	}
 	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
@@ -671,6 +679,10 @@ type spawnAgentArgs struct {
 	Role        string            `json:"role"`
 	Env         map[string]string `json:"env"`
 	Shipping    bool              `json:"shipping"`
+	// OperatorNamed is the CALLER's assertion that the operator named this task
+	// by hand — the exemption that lets one task open between the soft and hard
+	// caps. Never inferred here; absent means an ordinary spawn.
+	OperatorNamed bool `json:"operator_named"`
 }
 
 // spawnAgent creates a worker on an a2a-worker-controller, in a WezTerm tab, or
@@ -849,6 +861,9 @@ func (s *RosterToolServer) spawnTabAgent(
 	if err != nil {
 		return "", err
 	}
+	if err := s.enforceCaps(ctx, body); err != nil {
+		return "", err
+	}
 	result, err := s.Spawner.Spawn(ctx, TabSpawnRequest{
 		Prompt:           body.Prompt,
 		Label:            body.Label,
@@ -864,6 +879,31 @@ func (s *RosterToolServer) spawnTabAgent(
 		return "", err
 	}
 	return marshalJSON(ctx, result)
+}
+
+// enforceCaps runs the fleet-wide caps, then reserves a start slot.
+//
+// It sits after every cheap argument refusal and immediately before the spawn's
+// first side effect, on both local paths: a refusal after a tab opened would
+// leave an orphan pane the caller never learns about, and a start slot consumed
+// by a call that was never going to spawn would charge the next legitimate start
+// for an argument typo.
+//
+// The worker cap applies to every spawn, managers included — the node's order —
+// and the manager cap is consulted only for an explicit `role: manager`.
+func (s *RosterToolServer) enforceCaps(ctx context.Context, body spawnAgentArgs) error {
+	if s.Caps == nil {
+		return nil
+	}
+	if err := s.Caps.CheckWorker(ctx, body.OperatorNamed); err != nil {
+		return err
+	}
+	if strings.TrimSpace(body.Role) == RoleManager {
+		if err := s.Caps.CheckManager(ctx, body.OperatorNamed); err != nil {
+			return err
+		}
+	}
+	return s.Caps.ReserveStart(ctx)
 }
 
 // resolveSpawnMode reads the operator's sources and resolves the spawn's mode.
@@ -1075,6 +1115,12 @@ func spawnToolDefinitions() []any {
 				"interactive": boolProp("per-call override: true opens a tab, false spawns headless in-process. " +
 					"OMIT it to use the fleet's configured mode (SUPERVISOR_SPAWN_MODE, then " +
 					"spawn.mode, then interactive)"),
+				"operator_named": boolProp("whether the OPERATOR named THIS task by hand — the exemption " +
+					"that lets one task open while the fleet sits between its soft and hard worker caps " +
+					"(spawn.maxConcurrent / spawn.maxConcurrentHard; the manager pair likewise for " +
+					"role=manager). The caller resolves it from the task's own operator-set flag and passes " +
+					"it; the server never infers it. Omit for an ordinary spawn, which is refused at the " +
+					"soft cap. An operator-named spawn is still refused at the hard cap."),
 			}),
 		toolDef(ToolSendAgentMessage,
 			"Send one further turn to an A2A worker, continuing its conversation by "+

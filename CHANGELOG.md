@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: a `local` `spawn_agent` — tab or headless — now enforces the node supervisor's fleet
+  caps before anything is created: `spawn.maxConcurrent` / `maxConcurrentHard` (worker
+  soft/hard, defaults 20/50, env `SUPERVISOR_MAX_CONCURRENT[_HARD]`), `spawn.maxManagers` /
+  `maxManagersHard` for `role: manager` (defaults 3/5), and `spawn.maxStartsPerMinute`
+  (default 4, env `SUPERVISOR_MAX_STARTS_PER_MINUTE`, paced up to 5 min, shared
+  `start-rate.json` with the node). A refused spawn returns the node's refusal text — count,
+  limit, source and config path — and opens no pane and no child. New `operator_named`
+  argument lets a spawn open between the soft and hard caps. Config is re-read per spawn;
+  an uncountable fleet refuses rather than reading zero. Known differences from the node:
+  hand-started managers (no ledger row) are not counted, and there is no stale-count fallback.
+- fix: the spawn mode and the caps resolve the config file the node's way —
+  `SUPERVISOR_CONFIG`, else `$XDG_CONFIG_HOME/claude-supervisor/config.json`, else
+  `~/.config/claude-supervisor/config.json` — through one resolver.
+
 ## v0.13.0
 
 - fix: a `local` `spawn_agent` that omits `interactive` now resolves its mode through the node
