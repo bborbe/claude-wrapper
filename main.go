@@ -28,6 +28,10 @@ import (
 // log its own exit instead of being SIGKILLed mid-line.
 const shutdownGrace = 500 * time.Millisecond
 
+// launchdExitTimeout is the job's `exit timeout`, after which launchd SIGKILLs the
+// process. The drain bound and the shutdown grace together must fit inside it.
+const launchdExitTimeout = 5 * time.Second
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -57,6 +61,8 @@ func main() {
 		runMCPStdio(*mcpLog, *wrapperURL, *sessionID, *mcpHold)
 		return
 	}
+
+	warnIfDrainOverrunsExitTimeout(*drainBound)
 
 	// One signal context for the whole process.
 	//
@@ -121,6 +127,23 @@ func main() {
 
 	<-ctx.Done()
 	drainAndStop(supervisor, server, *drainBound, stop)
+}
+
+// warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised
+// --drain-bound past the point where launchd would SIGKILL the process mid-drain.
+//
+// The bound is a flag, so nothing else keeps the drain and the shutdown grace
+// inside launchd's exit timeout — and a silent overrun turns a drain into a kill
+// that still looks like a restart.
+func warnIfDrainOverrunsExitTimeout(drainBound time.Duration) {
+	total := drainBound + shutdownGrace
+	if total < launchdExitTimeout {
+		return
+	}
+	log.Printf(
+		"WARNING: --drain-bound %s + %s shutdown grace = %s, at or over launchd's %s ExitTimeOut; a SIGTERM will be SIGKILLed mid-drain",
+		drainBound, shutdownGrace, total, launchdExitTimeout,
+	)
 }
 
 // runMCPStdio serves the child-facing permission tool on stdio and returns.

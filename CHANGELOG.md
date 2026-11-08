@@ -51,9 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file and a store lock, so two parks from one child can no longer interleave into an
   unparseable `record.json` that `List` skips.
 - chore: `make precommit` is clean. The branch's new files tripped `funlen`, `gocognit`,
-  `nestif`, `forcetypeassert`, `unused` and three `gosec` findings; the oversized functions were
-  split, and the three `gosec` findings are annotated where the analysis is wrong (a pid
+  `nestif`, `forcetypeassert`, `unused` and four `gosec` findings; the oversized functions were
+  split, and the four `gosec` findings are annotated where the analysis is wrong (a pid
   conversion, an SSE frame carrying JSON, and two goroutines that outlive every request).
+- fix: the daemon warns at start when `--drain-bound` plus the shutdown grace would reach
+  launchd's 5 s `ExitTimeOut`. The bound is a flag, so nothing else stops an operator from
+  raising it past the point where launchd SIGKILLs the process mid-drain and the exit is
+  reported as a kill rather than as a drain.
 
 ## v0.11.2
 
