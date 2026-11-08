@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: a tab `spawn_agent` with no `prompt` is refused with a message naming the headless
   escape (`interactive: false`), instead of the spawner's generic "invalid spawn options". The
   schema keeps `prompt` optional because the headless and A2A paths accept an empty one.
+- fix: release a child's event replay buffer when it exits. Exited records are never removed
+  from `s.sessions`, so each dead session held up to `maxRetainedEvents` (4096) decoded
+  `Event` maps for the life of the process — measured at 51.15 % of the live heap across 45
+  records on a 1.2 GB footprint. The `Session` record and its metadata stay for listing; only
+  the event history is released, and `publish` refuses to re-retain it afterwards. Live-session
+  replay is unchanged.
 
 ## v0.10.0
 
