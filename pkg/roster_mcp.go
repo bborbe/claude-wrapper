@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -88,6 +89,14 @@ type RosterToolServer struct {
 	// Spawner opens the WezTerm tab for a `local` spawn_agent. Nil means the local
 	// target refuses, which is the correct answer for a daemon with no terminal.
 	Spawner TabSpawner
+	// SpawnMode reads SUPERVISOR_SPAWN_MODE and `spawn.mode`, the two operator
+	// sources a `local` spawn without an explicit `interactive` resolves through.
+	// Nil means neither is configured, so the chain falls to the argument and the
+	// built-in default only.
+	SpawnMode SpawnModeSourcesReader
+	// Vaults resolves a headless spawn's `vault` to its directory. Nil means a
+	// headless spawn must pass `cwd`.
+	Vaults VaultLister
 	// Tabs types into a tab worker's pane for send_agent_message. Nil means a tab
 	// worker cannot be messaged.
 	Tabs TabClient
@@ -256,6 +265,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 	ctx context.Context,
 	body spawnAgentArgs,
 	sessionID string,
+	resolution SpawnModeResolution,
 ) (string, error) {
 	if body.Interactive != nil && *body.Interactive {
 		return "", errors.Errorf(
@@ -266,8 +276,12 @@ func (s *RosterToolServer) spawnLocalAgent(
 	if s.Supervisor == nil {
 		return "", errors.Errorf(ctx, "spawn_agent is not wired")
 	}
+	cwd, err := s.headlessCwd(ctx, body)
+	if err != nil {
+		return "", err
+	}
 	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
-		Cwd:    body.Cwd,
+		Cwd:    cwd,
 		Model:  body.Model,
 		Label:  body.Label,
 		Policy: body.Policy,
@@ -284,12 +298,58 @@ func (s *RosterToolServer) spawnLocalAgent(
 			return "", errors.Wrapf(ctx, err, "deliver opening turn failed")
 		}
 	}
-	s.recordSpawn(ctx, session, sessionID, body.Label)
+	s.recordSpawn(ctx, session, sessionID, body.Label, resolution.Source)
 	return marshalJSON(ctx, map[string]string{
-		"agent_id":   session.ID,
-		"session_id": session.ID,
-		"state":      string(session.State),
+		"agent_id":    session.ID,
+		"session_id":  session.ID,
+		"state":       string(session.State),
+		"cwd":         session.Cwd,
+		"mode":        SpawnModeHeadless,
+		"mode_source": resolution.Source,
 	})
+}
+
+// headlessCwd resolves the directory a headless worker runs in.
+//
+// An explicit `cwd` alone is used as given — the v0.9.0 headless contract. A
+// `vault` is resolved to its directory, because once `spawn.mode: headless`
+// routes argument-less spawns here, a vault-only call that the tab path would
+// have resolved must not land in this daemon's own working directory: that
+// default started 27 workers in the wrong repo on 2026-10-03. Neither given is
+// refused for the same reason.
+func (s *RosterToolServer) headlessCwd(
+	ctx context.Context,
+	body spawnAgentArgs,
+) (string, error) {
+	if strings.TrimSpace(body.Vault) == "" {
+		if strings.TrimSpace(body.Cwd) == "" {
+			return "", errors.Wrapf(
+				ctx,
+				ErrUnknownVault,
+				"a headless spawn requires `cwd` or `vault` — omitting both would run the "+
+					"worker in this daemon's own working directory",
+			)
+		}
+		return body.Cwd, nil
+	}
+	if s.Vaults == nil {
+		return "", errors.Errorf(
+			ctx,
+			"a headless spawn named vault %q but this daemon has no vault lister wired, "+
+				"so the vault cannot be resolved to a directory — pass `cwd`",
+			body.Vault,
+		)
+	}
+	vaults, err := s.Vaults.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	serverCwd, _ := os.Getwd()
+	target, err := ResolveWorkerTarget(ctx, vaults, body.Cwd, body.Vault, serverCwd)
+	if err != nil {
+		return "", err
+	}
+	return target.Cwd, nil
 }
 
 // recordSpawn files the ledger row a spawned child would otherwise lack.
@@ -298,17 +358,19 @@ func (s *RosterToolServer) recordSpawn(
 	session *Session,
 	callerSessionID string,
 	label string,
+	modeSource string,
 ) {
 	if s.Ledger == nil {
 		return
 	}
 	if err := s.Ledger.Post(ctx, callerSessionID, LedgerRow{
-		SessionID: session.ID,
-		AgentID:   session.ID,
-		Label:     label,
-		Cwd:       session.Cwd,
-		Mode:      "headless",
-		Location:  "local",
+		SessionID:  session.ID,
+		AgentID:    session.ID,
+		Label:      label,
+		Cwd:        session.Cwd,
+		Mode:       SpawnModeHeadless,
+		ModeSource: modeSource,
+		Location:   "local",
 	}); err != nil {
 		log.Printf("WARNING: ledger post for spawned session %s failed: %v", session.ID, err)
 	}
@@ -606,15 +668,15 @@ type spawnAgentArgs struct {
 	Shipping    bool              `json:"shipping"`
 }
 
-// spawnAgent creates a worker on an a2a-worker-controller or in a WezTerm tab.
+// spawnAgent creates a worker on an a2a-worker-controller, in a WezTerm tab, or
+// headless in this daemon.
 //
 // Dispatch is by TARGET, then by MODE. An A2A target (`docker`, `k8s`,
 // `k8s:<cluster>`) creates a worker on a controller. An absent or `local` target
-// opens a WezTerm tab under the vault's cc-* launcher — the node server's own
-// default (`resolveSpawnMode` falls back to `interactive`) — or, when the caller
-// passes `interactive: false`, an in-process headless worker in THIS daemon, the
-// v0.9.0 path preserved unchanged. An explicit `interactive` always wins; only its
-// absence falls to the tab default.
+// resolves its mode through ResolveSpawnMode — explicit `interactive`, then
+// SUPERVISOR_SPAWN_MODE, then `spawn.mode` in the config file, then the
+// `interactive` default — and opens a tab under the vault's cc-* launcher or an
+// in-process headless worker accordingly.
 func (s *RosterToolServer) spawnAgent(
 	ctx context.Context,
 	args json.RawMessage,
@@ -689,8 +751,7 @@ func (s *RosterToolServer) sendAgentMessage(
 }
 
 // spawnLocalTarget serves the `local` spawn: a WezTerm tab under a vault's cc-*
-// launcher by default, or the in-process headless worker when `interactive` is
-// explicitly false.
+// launcher, or the in-process headless worker, as ResolveSpawnMode decides.
 //
 // Any other target is refused by name rather than guessed at: a worker created
 // somewhere the caller did not ask for is discovered only by noticing it.
@@ -705,16 +766,33 @@ func (s *RosterToolServer) spawnLocalTarget(
 		return "", errors.Errorf(
 			ctx,
 			"spawn_agent with target %q is not available in this daemon: the targets "+
-				"are `local` (a WezTerm tab, or a headless worker with `interactive: "+
-				"false`), `docker`, `k8s` and `k8s:<cluster>`",
+				"are `local` (a WezTerm tab or a headless worker), `docker`, `k8s` and "+
+				"`k8s:<cluster>`",
 			body.Target,
 		)
 	}
-	if body.Interactive != nil && !*body.Interactive {
-		// `interactive: false` is the v0.9.0 headless path, kept unchanged; the
-		// tab is the default so the port matches the node's `resolveSpawnMode`.
-		return s.spawnLocalAgent(ctx, body, sessionID)
+	// The mode goes through the node's FULL chain (`resolveSpawnMode`): the
+	// explicit `interactive` argument, then SUPERVISOR_SPAWN_MODE, then
+	// `spawn.mode` in the config file, then the `interactive` default. An earlier
+	// port honoured only the argument and the default, so an operator's
+	// `spawn.mode: headless` opened every argument-less spawn as a tab.
+	resolution, err := s.resolveSpawnMode(ctx, body.Interactive)
+	if err != nil {
+		return "", err
 	}
+	if resolution.Mode == SpawnModeHeadless {
+		return s.spawnLocalAgent(ctx, body, sessionID, resolution)
+	}
+	return s.spawnTabAgent(ctx, body, sessionID, resolution)
+}
+
+// spawnTabAgent opens a WezTerm tab worker under the vault's cc-* launcher.
+func (s *RosterToolServer) spawnTabAgent(
+	ctx context.Context,
+	body spawnAgentArgs,
+	sessionID string,
+	resolution SpawnModeResolution,
+) (string, error) {
 	if s.Spawner == nil {
 		return "", errors.Errorf(
 			ctx,
@@ -775,11 +853,31 @@ func (s *RosterToolServer) spawnLocalTarget(
 		Env:              body.Env,
 		WindowID:         windowID,
 		SpawnerSessionID: sessionID,
+		ModeSource:       resolution.Source,
 	})
 	if err != nil {
 		return "", err
 	}
 	return marshalJSON(ctx, result)
+}
+
+// resolveSpawnMode reads the operator's sources and resolves the spawn's mode.
+//
+// Read on every call, so a `spawn.mode` edit applies to the next spawn. A nil
+// reader means neither operator source is configured.
+func (s *RosterToolServer) resolveSpawnMode(
+	ctx context.Context,
+	interactive *bool,
+) (SpawnModeResolution, error) {
+	var sources SpawnModeSources
+	if s.SpawnMode != nil {
+		read, err := s.SpawnMode.Read(ctx)
+		if err != nil {
+			return SpawnModeResolution{}, err
+		}
+		sources = read
+	}
+	return ResolveSpawnMode(ctx, interactive, sources)
 }
 
 // parseWindowID converts the wire's string window id to the pointer the spawner
@@ -945,27 +1043,31 @@ func spawnToolDefinitions() []any {
 				"creates a worker on an a2a-worker-controller and returns immediately — the "+
 				"first turn is sent asynchronously, so the record carries no result yet, and "+
 				"`task` is REQUIRED naming the vault task the worker is opened for. An absent "+
-				"or `local` target opens a WezTerm tab under the vault's cc-* launcher — the "+
-				"node server's default — unless the caller passes `interactive: false`, which "+
-				"creates an in-process headless worker in THIS daemon (the v0.9.0 path, where "+
-				"`cwd`, `label`, `model` and `policy` apply and the daemon holds its parks and "+
-				"stdin). A `local` spawn requires `cwd` or `vault` — omitting both is refused, "+
+				"or `local` target opens EITHER a WezTerm tab under the vault's cc-* launcher "+
+				"OR an in-process headless worker in THIS daemon (where `cwd`, `vault`, `label`, "+
+				"`model` and `policy` apply and the daemon holds its parks and stdin). The mode "+
+				"resolves in this order: an explicit `interactive`, then SUPERVISOR_SPAWN_MODE, "+
+				"then `spawn.mode` in ~/.config/claude-supervisor/config.json, then the "+
+				"`interactive` default; the response's `mode_source` names the step that "+
+				"decided. A `local` spawn requires `cwd` or `vault` — omitting both is refused, "+
 				"never defaulted. A tab accepts `label`, `role`, `window_id` and `env`, and "+
 				"REFUSES `resume`, `policy` and `shipping`, which reach a headless worker only. "+
 				"`env` may not set a worker's permission or spawn mode.",
 			map[string]any{
-				"target":      stringProp("local, docker, k8s, or k8s:<cluster>"),
-				"task":        stringProp("the vault task the worker is opened for (A2A targets)"),
-				"vault":       stringProp("the vault the worker runs in; resolves its launcher"),
-				"cwd":         stringProp("a directory inside a configured vault, instead of vault"),
-				"label":       stringProp("the tab label; defaults to the vault name"),
-				"role":        stringProp("manager, agent or human; defaults to agent"),
-				"window_id":   stringProp("the WezTerm window to open the tab in"),
-				"env":         mapProp("environment exported into the pane before the launcher runs"),
-				"prompt":      stringProp("the first turn to send; required for a tab (the default), optional for headless"),
-				"model":       stringProp("headless only: model to run, or empty for the default"),
-				"policy":      stringProp("headless only: path to a per-spawn policy overlay"),
-				"interactive": boolProp("true opens a tab (the default); false spawns headless in-process"),
+				"target":    stringProp("local, docker, k8s, or k8s:<cluster>"),
+				"task":      stringProp("the vault task the worker is opened for (A2A targets)"),
+				"vault":     stringProp("the vault the worker runs in; resolves its launcher"),
+				"cwd":       stringProp("a directory inside a configured vault, instead of vault"),
+				"label":     stringProp("the tab label; defaults to the vault name"),
+				"role":      stringProp("manager, agent or human; defaults to agent"),
+				"window_id": stringProp("the WezTerm window to open the tab in"),
+				"env":       mapProp("environment exported into the pane before the launcher runs"),
+				"prompt":    stringProp("the first turn to send; required for a tab, optional for headless"),
+				"model":     stringProp("headless only: model to run, or empty for the default"),
+				"policy":    stringProp("headless only: path to a per-spawn policy overlay"),
+				"interactive": boolProp("per-call override: true opens a tab, false spawns headless in-process. " +
+					"OMIT it to use the fleet's configured mode (SUPERVISOR_SPAWN_MODE, then " +
+					"spawn.mode, then interactive)"),
 			}),
 		toolDef(ToolSendAgentMessage,
 			"Send one further turn to an A2A worker, continuing its conversation by "+

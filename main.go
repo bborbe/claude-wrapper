@@ -179,11 +179,12 @@ func startFleetFaces(
 	// Without these two the daemon refuses every `local` spawn by name, which is
 	// why they are wired here rather than left for a caller to construct.
 	tabs := pkg.NewTabClient("")
+	vaults := pkg.NewVaultCLILister()
 	tabSpawner := pkg.NewTabSpawner(
 		tabs,
 		registry,
 		pkg.NewRoleMapReader(""),
-		pkg.NewVaultCLILister(),
+		vaults,
 		ledger,
 		now,
 		// No exit recorder: the daemon ships no copy of the script, and an empty
@@ -204,8 +205,13 @@ func startFleetFaces(
 		Decider:    decider,
 		A2A:        a2aManager,
 		Spawner:    tabSpawner,
-		Tabs:       tabs,
-		Now:        now,
+		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in
+		// ~/.config/claude-supervisor/config.json. Without it every spawn that
+		// omits `interactive` opens a tab regardless of the configured mode.
+		SpawnMode: pkg.NewSpawnModeSourcesReader("", nil),
+		Vaults:    vaults,
+		Tabs:      tabs,
+		Now:       now,
 	})
 
 	// The central heartbeat poster. It runs beside the HTTP server rather than
