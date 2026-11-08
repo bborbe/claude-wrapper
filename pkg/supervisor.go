@@ -41,6 +41,12 @@ type SpawnOptions struct {
 	// drop PATH and HOME and break the child outright, which is why the
 	// inherited half is always kept.
 	Env map[string]string `json:"env"`
+	// Role is the resolved role the spawn runs under (`agent`, `manager`, …).
+	//
+	// Carried into the session and the ledger row because the fleet caps count BY
+	// it: a record with no role reads as a worker, so a headless manager would be
+	// charged to the worker cap and never to the manager cap.
+	Role string `json:"role,omitempty"`
 	// Resume continues an existing conversation instead of starting one.
 	//
 	// The session's id is then the RESUMED id, so the record id and the child's
@@ -396,6 +402,7 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 				// arrived during the restart gap was refused — the exact case this
 				// change exists to make deliverable.
 				Mode:      sessionMode(record.Options.Mode),
+				Role:      record.Options.Role,
 				StartedAt: record.StartedAt,
 			},
 		}
@@ -897,6 +904,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 			Controls:  []Control{ControlMessage},
 			Cwd:       options.Cwd,
 			Mode:      sessionMode(options.Mode),
+			Role:      options.Role,
 			StartedAt: s.now.Now().Time().UTC(),
 		},
 	}

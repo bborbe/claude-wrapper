@@ -198,7 +198,10 @@ type Session struct {
 	// Mode is "headless" or "interactive", resolved at spawn. It is the flag a
 	// board answer consults before releasing a permission gate: only a headless
 	// park has no pane of its own, so only its gate needs the board.
-	Mode      string    `json:"mode"`
+	Mode string `json:"mode"`
+	// Role is the resolved role the spawn ran under, recorded so the fleet caps
+	// can tell a manager from a worker without re-reading the request.
+	Role      string    `json:"role,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	ExitCode  *int      `json:"exit_code"`
 	// LastEventAgeSeconds is how long the child's stream has been silent.

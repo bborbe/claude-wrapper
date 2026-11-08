@@ -71,13 +71,19 @@ func (s *rosterSupervisor) Subscribe(context.Context, string) ([]Event, <-chan E
 type rosterLedger struct {
 	rows []LedgerRow
 	err  error
+	// posted records every row handed to Post, so a test can read what a spawn
+	// actually filed rather than what it was supposed to file.
+	posted []LedgerRow
 }
 
 func (l *rosterLedger) Rows(context.Context) ([]LedgerRow, error) {
 	return l.rows, l.err
 }
 
-func (l *rosterLedger) Post(context.Context, string, LedgerRow) error { return nil }
+func (l *rosterLedger) Post(_ context.Context, _ string, row LedgerRow) error {
+	l.posted = append(l.posted, row)
+	return nil
+}
 
 // rosterLiveness is a Liveness returning a fixed set.
 type rosterLiveness struct {
