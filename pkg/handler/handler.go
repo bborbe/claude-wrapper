@@ -556,6 +556,10 @@ func handleEvents(
 	// when it reconnects. It is what lets a supervisor whose connection died
 	// continue exactly where it stopped: without it the whole retained session is
 	// replayed, and every event the client already consumed arrives a second time.
+	// ⚠️ `Last-Event-ID` names the last event the client ALREADY HAS, so the first one it
+	// wants is the next. SubscribeFrom takes the first sequence to deliver, inclusive — so a
+	// client resuming from N must ask for N+1. Passing N here would re-deliver event N on
+	// every reconnect, which duplicates a message the loop has already consumed.
 	from := -1
 	if raw := req.Header.Get("Last-Event-ID"); raw != "" {
 		parsed, parseErr := strconv.Atoi(raw)
@@ -564,7 +568,7 @@ func handleEvents(
 				errors.Wrapf(ctx, parseErr, "Last-Event-ID %q is not a sequence number", raw))
 			return
 		}
-		from = parsed
+		from = parsed + 1
 	}
 	replay, firstSeq, live, cancel, err := supervisor.SubscribeFrom(req.Context(), id, from)
 	if err != nil {

@@ -340,6 +340,25 @@ var _ = Describe("handler", func() {
 		Expect(rec.Body.String()).To(ContainSubstring("event: end"))
 	})
 
+	// ⚠️ `Last-Event-ID` names the last event the client ALREADY HAS, so resuming from it must
+	// start at the NEXT one. Off by one here re-delivers an event on every reconnect, and the
+	// loop consumes it a second time — a duplicated assistant message or a double-counted
+	// result. Caught while wiring the supervisor's reconnect against this handler.
+	It("does not re-deliver the event the client already has", func() {
+		sup := &fakeSupervisor{events: []pkg.Event{
+			{"type": "assistant"},
+			{"type": "result"},
+		}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
+		req.Header.Set("Last-Event-ID", "0")
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Body.String()).NotTo(ContainSubstring(`data: {"type":"assistant"}`),
+			"event 0 was already consumed; resuming from 0 must start at 1")
+		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"result"}`))
+	})
+
 	It("refuses a resume point the supervisor no longer retains", func() {
 		sup := &fakeSupervisor{getErr: errors.Wrapf(
 			context.Background(), pkg.ErrStreamGap, "gone")}
