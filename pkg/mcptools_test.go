@@ -29,6 +29,7 @@ type toolSupervisor struct {
 	neverClose   bool
 	errorReply   bool
 	spawnedMode  string
+	spawned      []SpawnOptions
 	state        State
 	pendingTurns int
 	// permissionModes records every mode a set_permission_mode call asked for.
@@ -38,6 +39,7 @@ type toolSupervisor struct {
 func (s *toolSupervisor) Spawn(_ context.Context, options SpawnOptions) (*Session, error) {
 	s.mutex.Lock()
 	s.spawnedMode = options.PermissionMode
+	s.spawned = append(s.spawned, options)
 	s.mutex.Unlock()
 	return &Session{ID: "s1", State: StateStarting, Model: options.Model}, nil
 }
