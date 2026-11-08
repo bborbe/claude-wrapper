@@ -25,6 +25,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `http.Server.Shutdown`. The previous poster-only `NotifyContext` registered and then
   unregistered a handler, so the **first** `SIGTERM` did nothing and the daemon only died on the
   second or on a `SIGKILL`.
+- fix: `spawn_agent` reports the model the tab actually runs on instead of the literal
+  `inherits` — the parser matched the launcher's own comment prose (`# … a launch that passes
+  no --model inherits the ambient`) before the real `--model` flag, so a correct spawn reported
+  a model it never used. Comment lines are now stripped before matching.
+- fix: the tab colour's submission confirmation waits the same 8s the node server allows,
+  instead of 2s, so a `/color` that applied is reported as applied rather than a false negative.
+- fix: a tab `spawn_agent` with no `prompt` is refused with a message naming the headless
+  escape (`interactive: false`), instead of the spawner's generic "invalid spawn options". The
+  schema keeps `prompt` optional because the headless and A2A paths accept an empty one.
+
+## v0.10.0
+
+- feat: `spawn_agent` opens a WezTerm tab under the vault's `cc-*` launcher and `send_agent_message`
+  types into that pane, so the supervisor's most-used spawn path — 3,177 of 4,322 ledger rows — runs
+  from the Go daemon instead of the node server. Slice 2 of the port, and the local target the A2A
+  slice left refused by name. An absent `interactive` opens a tab (the node's own default); an
+  explicit `interactive: false` keeps the in-process headless worker from v0.9.0. Spawn caps are
+  **not** part of this slice: the daemon has no cap code yet, so a port of the spawn-limit module
+  lands separately and the MCP cutover must not precede it.
+
+## v0.9.1
+
+- fix: compact the per-child event replay buffer in place instead of reallocating it, so a
+  wrapper past 4096 events per child stops copying the whole retained window on every event.
+  Benchmarked at capacity: 81 921 B/op and 2 allocs/op before, 0 B/op and 0 allocs/op after
+  (~55-130 µs/op down to ~1.2-3 µs/op). On a live wrapper the old path measured 76-80 % of
+  cumulative allocation and ~129 MB/min against a 1.2 GB footprint. The retained window is
+  unchanged — still the most recent `maxRetainedEvents` in publish order — and two specs pin it.
 
 ## v0.9.0
 

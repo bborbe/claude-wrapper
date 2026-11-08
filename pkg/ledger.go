@@ -50,6 +50,21 @@ type LedgerRow struct {
 	// a worker spawned by another session visible here at all.
 	SpawnerSessionID string `json:"spawner_session_id"`
 	Location         string `json:"location"`
+	// PaneID is the WezTerm pane a tab worker runs in, and the only handle a
+	// follow-up message can be typed into. Empty for a headless worker.
+	PaneID string `json:"pane_id,omitempty"`
+	// Role is the resolved role the spawn ran under.
+	//
+	// A tab spawn's role is what explains its window and colour, so a row without
+	// it cannot answer "why is this worker pink".
+	Role string `json:"role,omitempty"`
+	// ModeSource names the chain step that decided the spawn mode, so a mode that
+	// surprised the caller can be traced to the env, the config file or the
+	// built-in default rather than guessed at.
+	ModeSource string `json:"mode_source,omitempty"`
+	// ResumedFrom is the session id this one continues, or empty for a fresh
+	// conversation.
+	ResumedFrom string `json:"resumed_from,omitempty"`
 	// SpawnedAt is REQUIRED by the store — a POST without it is refused 400
 	// ("validate SpawnedAt failed: spawned_at is unset"), measured 2026-11-07.
 	// The wire name is `spawned_at`, not `created_at`: the file ledger and the

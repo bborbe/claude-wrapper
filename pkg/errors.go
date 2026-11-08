@@ -75,4 +75,19 @@ var (
 	// 4096 events would see a stream with an invisible hole, which is the failure
 	// this whole stream exists to make impossible.
 	ErrStreamGap = stderrors.New("stream resume point is no longer retained")
+	// ErrUnknownRole is returned when a spawn names a role that is not
+	// manager, agent or human.
+	//
+	// It refuses rather than defaulting: a worker opened in the wrong window with
+	// the wrong colour is discovered only by noticing it, so a guess here trades a
+	// refusal the caller can read for a defect they must spot.
+	ErrUnknownRole = stderrors.New("unknown role")
+	// ErrUnknownVault is returned when a spawn names a vault the vault-cli config
+	// does not list, or names neither a vault nor a cwd.
+	ErrUnknownVault = stderrors.New("unknown vault")
+	// ErrNoLauncher is returned when a vault or cwd resolves to no launcher.
+	//
+	// Never defaulted to the bare `claude` binary: that routes around the router
+	// env, the MCP config and the model selection every cc-* script carries.
+	ErrNoLauncher = stderrors.New("no launcher")
 )

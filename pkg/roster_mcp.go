@@ -10,9 +10,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 
 	"github.com/bborbe/claude-wrapper/pkg/a2a"
 )
@@ -80,6 +83,23 @@ type RosterToolServer struct {
 	// plane and the push channel. Nil means the A2A tools refuse, which is the
 	// correct answer for a daemon started without a controller configured.
 	A2A *a2a.Manager
+	// Spawner opens the WezTerm tab for a `local` spawn_agent. Nil means the local
+	// target refuses, which is the correct answer for a daemon with no terminal.
+	Spawner TabSpawner
+	// Tabs types into a tab worker's pane for send_agent_message. Nil means a tab
+	// worker cannot be messaged.
+	Tabs TabClient
+	// Now bounds the pane-send readiness and confirmation polls. Nil falls back to
+	// the system clock, which is what a test wants to override.
+	Now libtime.CurrentDateTimeGetter
+}
+
+// currentDateTime returns the clock the pane polls run on.
+func (s *RosterToolServer) currentDateTime() libtime.CurrentDateTimeGetter {
+	if s.Now == nil {
+		return libtime.NewCurrentDateTime()
+	}
+	return s.Now
 }
 
 // ServeHTTP serves one roster MCP request.
@@ -230,13 +250,9 @@ func (s *RosterToolServer) invoke(
 // idle, which looks exactly like one that is thinking.
 func (s *RosterToolServer) spawnLocalAgent(
 	ctx context.Context,
-	args json.RawMessage,
+	body spawnAgentArgs,
 	sessionID string,
 ) (string, error) {
-	var body spawnAgentArgs
-	if err := json.Unmarshal(args, &body); err != nil {
-		return "", errors.Wrapf(ctx, err, "decode arguments failed")
-	}
 	if body.Interactive != nil && *body.Interactive {
 		return "", errors.Errorf(
 			ctx,
@@ -538,12 +554,15 @@ func (s *RosterToolServer) stopAgent(
 
 // spawnAgentArgs is every argument a spawn call may carry.
 type spawnAgentArgs struct {
-	Target      string            `json:"target"`
-	Task        string            `json:"task"`
-	Vault       string            `json:"vault"`
-	Prompt      string            `json:"prompt"`
+	Target string `json:"target"`
+	Task   string `json:"task"`
+	Vault  string `json:"vault"`
+	// Cwd and Label are the local-tab arguments. Cwd is deliberately separate from
+	// Vault: a tab may run in a subdirectory of its vault, and the launcher still
+	// comes from the vault.
 	Cwd         string            `json:"cwd"`
 	Label       string            `json:"label"`
+	Prompt      string            `json:"prompt"`
 	Model       string            `json:"model"`
 	Resume      bool              `json:"resume"`
 	Policy      string            `json:"policy"`
@@ -554,13 +573,15 @@ type spawnAgentArgs struct {
 	Shipping    bool              `json:"shipping"`
 }
 
-// spawnAgent creates a worker on an a2a-worker-controller.
+// spawnAgent creates a worker on an a2a-worker-controller or in a WezTerm tab.
 //
-// ⚠️ Two shapes share this one tool name, dispatched by `target`. An A2A target
-// (`docker`, `k8s`, `k8s:<cluster>`) creates a worker on a controller; an absent
-// or `local` target creates an in-process headless worker in THIS daemon. A tab
-// spawn belongs to a later slice and is refused by name, which keeps a caller
-// from reading a missing feature as a broken one.
+// Dispatch is by TARGET, then by MODE. An A2A target (`docker`, `k8s`,
+// `k8s:<cluster>`) creates a worker on a controller. An absent or `local` target
+// opens a WezTerm tab under the vault's cc-* launcher — the node server's own
+// default (`resolveSpawnMode` falls back to `interactive`) — or, when the caller
+// passes `interactive: false`, an in-process headless worker in THIS daemon, the
+// v0.9.0 path preserved unchanged. An explicit `interactive` always wins; only its
+// absence falls to the tab default.
 func (s *RosterToolServer) spawnAgent(
 	ctx context.Context,
 	args json.RawMessage,
@@ -571,7 +592,7 @@ func (s *RosterToolServer) spawnAgent(
 		return "", errors.Wrapf(ctx, err, "decode arguments failed")
 	}
 	if !a2a.IsTarget(ctx, body.Target) {
-		return s.spawnLocalAgent(ctx, args, sessionID)
+		return s.spawnLocalTarget(ctx, body, sessionID)
 	}
 	if s.A2A == nil {
 		return "", errors.Errorf(
@@ -614,6 +635,11 @@ func (s *RosterToolServer) sendAgentMessage(
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
 	}
+	// A tab worker has a pane and no A2A record, so it is resolved first: falling
+	// through to A2A would report it as unknown and never type into its tab.
+	if handled, response, err := s.sendToTabPane(ctx, body.AgentID, body.Text); handled {
+		return response, err
+	}
 	if s.A2A == nil {
 		return "", errors.Errorf(ctx, "send_agent_message is not wired")
 	}
@@ -627,6 +653,194 @@ func (s *RosterToolServer) sendAgentMessage(
 		"context_id": result.ContextID,
 		"reply":      result.Reply,
 	})
+}
+
+// spawnLocalTarget serves the `local` spawn: a WezTerm tab under a vault's cc-*
+// launcher by default, or the in-process headless worker when `interactive` is
+// explicitly false.
+//
+// Any other target is refused by name rather than guessed at: a worker created
+// somewhere the caller did not ask for is discovered only by noticing it.
+func (s *RosterToolServer) spawnLocalTarget(
+	ctx context.Context,
+	body spawnAgentArgs,
+	sessionID string,
+) (string, error) {
+	switch body.Target {
+	case "", "local":
+	default:
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent with target %q is not available in this daemon: the targets "+
+				"are `local` (a WezTerm tab, or a headless worker with `interactive: "+
+				"false`), `docker`, `k8s` and `k8s:<cluster>`",
+			body.Target,
+		)
+	}
+	if body.Interactive != nil && !*body.Interactive {
+		// `interactive: false` is the v0.9.0 headless path, kept unchanged; the
+		// tab is the default so the port matches the node's `resolveSpawnMode`.
+		return s.spawnLocalAgent(ctx, body, sessionID)
+	}
+	if s.Spawner == nil {
+		return "", errors.Errorf(
+			ctx,
+			"spawn_agent is not wired: this daemon has no tab spawner, so no local "+
+				"worker could be opened",
+		)
+	}
+	// Arguments the tab path cannot honour are REFUSED, never dropped: the tab
+	// launches a `cc-*` script, which is never handed `--resume` or a policy, so
+	// accepting either would do real work and then discard what was asked for.
+	if body.Resume {
+		return "", errors.Errorf(
+			ctx,
+			"`resume` reaches a headless worker only — the tab path launches the cc-* "+
+				"launcher, which is not handed the flag, so the call would open a fresh "+
+				"conversation while you believed it continued one",
+		)
+	}
+	if body.Policy != "" {
+		return "", errors.Errorf(
+			ctx,
+			"`policy` reaches a headless worker only — a tab worker answers its own "+
+				"prompts in its own tab, so the server never sees them and a policy "+
+				"handed to one would never be consulted",
+		)
+	}
+	if body.Shipping {
+		return "", errors.Errorf(
+			ctx,
+			"`shipping` needs the server to set the worker's permission mode, which "+
+				"this slice does not do for a tab — omit it",
+		)
+	}
+	if err := ValidateTabEnv(ctx, body.Env); err != nil {
+		return "", err
+	}
+	// The schema cannot say "required for a tab, optional for headless", so it says
+	// optional and this refusal carries the tab's requirement — clearer than the
+	// spawner's generic "invalid spawn options", and it names the headless escape.
+	if strings.TrimSpace(body.Prompt) == "" {
+		return "", errors.Errorf(
+			ctx,
+			"a local tab spawn requires `prompt` — the tab launches with it as the "+
+				"worker's first turn. Pass `interactive: false` for a headless worker "+
+				"that may start idle",
+		)
+	}
+	windowID, err := parseWindowID(ctx, body.WindowID)
+	if err != nil {
+		return "", err
+	}
+	result, err := s.Spawner.Spawn(ctx, TabSpawnRequest{
+		Prompt:           body.Prompt,
+		Label:            body.Label,
+		Cwd:              body.Cwd,
+		Vault:            body.Vault,
+		Role:             body.Role,
+		Env:              body.Env,
+		WindowID:         windowID,
+		SpawnerSessionID: sessionID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, result)
+}
+
+// parseWindowID converts the wire's string window id to the pointer the spawner
+// takes, keeping empty and absent distinct from window 0.
+func parseWindowID(ctx context.Context, raw string) (*int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "window_id %q is not a number", raw)
+	}
+	return &parsed, nil
+}
+
+// sendToTabPane types a message into a tab worker's pane.
+//
+// `handled` is false when the id names no tab worker, so the caller falls through
+// to the A2A arm. A tab worker is recognised by its LEDGER row, not its roster
+// row: the roster deliberately carries no pane handle, and the pane is the only
+// thing a message can be typed into.
+//
+// The id may be the roster's own agent id or the session id the spawn returned —
+// both name the same worker, and the spawn response hands the caller the session
+// id because that is the only identity a tab worker has.
+//
+// `sent: true` means the message was typed AND its submit was confirmed in the
+// pane's own output. The send's exit code alone would report keystrokes reaching
+// the pty, which is true whether or not anything ran.
+func (s *RosterToolServer) sendToTabPane(
+	ctx context.Context,
+	agentID string,
+	text string,
+) (bool, string, error) {
+	if s.Tabs == nil || s.Roster == nil || s.Ledger == nil {
+		return false, "", nil
+	}
+	sessionID := ""
+	if rows, err := s.Roster.List(ctx); err != nil {
+		// A roster that cannot be read must not read as "not a tab worker": the
+		// caller would then be told the agent is unknown, which is a different
+		// and false fact. Degrade loudly, as the roster itself does.
+		log.Printf(
+			"WARNING: the roster could not be read (%v) — resolving agent %q against the ledger only",
+			err,
+			agentID,
+		)
+	} else {
+		for _, row := range rows {
+			if row.AgentID == agentID {
+				sessionID = row.SessionID
+				break
+			}
+		}
+	}
+	ledgerRows, err := s.Ledger.Rows(ctx)
+	if err != nil {
+		return false, "", nil
+	}
+	for _, ledgerRow := range ledgerRows {
+		if ledgerRow.SessionID != sessionID && ledgerRow.SessionID != agentID {
+			continue
+		}
+		if ledgerRow.PaneID == "" {
+			// Only a LOCAL row is ours to refuse. `interactive` and `headless` are
+			// both this daemon's own spawns, so a missing pane is a real answer for
+			// them; `cluster` and `a2a` rows belong to a remote controller and carry
+			// no pane either, so claiming them here would answer an A2A worker as
+			// unreachable before the A2A arm ever ran.
+			if ledgerRow.Mode != "interactive" && ledgerRow.Mode != "headless" {
+				continue
+			}
+			return true, "", errors.Errorf(
+				ctx,
+				"agent %s is a %s worker with no pane — there is nothing to type into. "+
+					"Answer its parked prompts with answer_permission, or reach it mid-task "+
+					"with SendMessage",
+				agentID,
+				ledgerRow.Mode,
+			)
+		}
+		if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime()); err != nil {
+			return true, "", err
+		}
+		response, err := marshalJSON(ctx, map[string]any{
+			"agent_id":   agentID,
+			"sent":       true,
+			"pane_id":    ledgerRow.PaneID,
+			"session_id": ledgerRow.SessionID,
+		})
+		return true, response, err
+	}
+	return false, "", nil
 }
 
 // a2aAgent resolves an agent id to an A2A record, or nil.
@@ -692,24 +906,33 @@ func rosterToolDefinitions() []any {
 func spawnToolDefinitions() []any {
 	return []any{
 		toolDef(ToolSpawnAgent,
-			"Create one worker on an a2a-worker-controller and return its agent id "+
-				"immediately — the first turn is sent asynchronously, so the record carries "+
-				"no result yet. `target` is `docker` (a container on this Mac), `k8s` (a pod "+
-				"on the default cluster, nuke dev unless `a2a.defaultCluster` says otherwise) "+
-				"or `k8s:<cluster>`. `task` is REQUIRED and names the vault task the worker "+
-				"is opened for. An absent or `local` target instead creates an in-process "+
-				"headless worker in THIS daemon — `cwd`, `label`, `model` and `policy` apply "+
-				"there, and the daemon holds its parks and its stdin. `interactive: true` "+
-				"is refused: a tab worker belongs to a later slice.",
+			"Create one worker and return its agent id. `target` selects the shape: "+
+				"`docker` (a container on this Mac), `k8s` (a pod on the default cluster, "+
+				"nuke dev unless `a2a.defaultCluster` says otherwise) or `k8s:<cluster>` "+
+				"creates a worker on an a2a-worker-controller and returns immediately — the "+
+				"first turn is sent asynchronously, so the record carries no result yet, and "+
+				"`task` is REQUIRED naming the vault task the worker is opened for. An absent "+
+				"or `local` target opens a WezTerm tab under the vault's cc-* launcher — the "+
+				"node server's default — unless the caller passes `interactive: false`, which "+
+				"creates an in-process headless worker in THIS daemon (the v0.9.0 path, where "+
+				"`cwd`, `label`, `model` and `policy` apply and the daemon holds its parks and "+
+				"stdin). A `local` spawn requires `cwd` or `vault` — omitting both is refused, "+
+				"never defaulted. A tab accepts `label`, `role`, `window_id` and `env`, and "+
+				"REFUSES `resume`, `policy` and `shipping`, which reach a headless worker only. "+
+				"`env` may not set a worker's permission or spawn mode.",
 			map[string]any{
-				"target": stringProp("docker, k8s, k8s:<cluster>, or local"),
-				"task":   stringProp("the vault task the worker is opened for"),
-				"vault":  stringProp("the vault the task lives in; required when the name is not unique"),
-				"prompt": stringProp("the first turn to send; omitted means create only"),
-				"cwd":    stringProp("local only: working directory for the worker"),
-				"label":  stringProp("local only: a human name for the worker"),
-				"model":  stringProp("local only: model to run, or empty for the default"),
-				"policy": stringProp("path to a per-spawn policy overlay"),
+				"target":      stringProp("local, docker, k8s, or k8s:<cluster>"),
+				"task":        stringProp("the vault task the worker is opened for (A2A targets)"),
+				"vault":       stringProp("the vault the worker runs in; resolves its launcher"),
+				"cwd":         stringProp("a directory inside a configured vault, instead of vault"),
+				"label":       stringProp("the tab label; defaults to the vault name"),
+				"role":        stringProp("manager, agent or human; defaults to agent"),
+				"window_id":   stringProp("the WezTerm window to open the tab in"),
+				"env":         mapProp("environment exported into the pane before the launcher runs"),
+				"prompt":      stringProp("the first turn to send; required for a tab (the default), optional for headless"),
+				"model":       stringProp("headless only: model to run, or empty for the default"),
+				"policy":      stringProp("headless only: path to a per-spawn policy overlay"),
+				"interactive": boolProp("true opens a tab (the default); false spawns headless in-process"),
 			}),
 		toolDef(ToolSendAgentMessage,
 			"Send one further turn to an A2A worker, continuing its conversation by "+
