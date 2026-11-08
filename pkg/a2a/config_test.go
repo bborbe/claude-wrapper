@@ -137,3 +137,58 @@ var _ = Describe("ClusterAllowlistRefusal", func() {
 			a2a.Target{Kind: a2a.KindDocker}, a2a.Config{})).To(Succeed())
 	})
 })
+
+// writeVaults writes a vault allowlist file into a temp home.
+func writeVaults(home, body string) {
+	dir := filepath.Join(home, ".config", "claude-supervisor")
+	Expect(os.MkdirAll(dir, 0o755)).To(Succeed())
+	Expect(os.WriteFile(filepath.Join(dir, "vaults.json"), []byte(body), 0o600)).To(Succeed())
+}
+
+var _ = Describe("LoadConfig vault allowlist", func() {
+	ctx := context.Background()
+	var home string
+
+	BeforeEach(func() {
+		var err error
+		home, err = os.MkdirTemp("", "a2a-vaults")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		_ = os.RemoveAll(home)
+	})
+
+	It("reads the flat array shape the live file uses", func() {
+		writeVaults(home, `{"vaults":{"private-personal":["nukedev","nukeprod","sun"]}}`)
+		cfg, err := a2a.LoadConfig(ctx, home)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.VaultClusters["private-personal"]).
+			To(Equal([]string{"nukedev", "nukeprod", "sun"}))
+		Expect(a2a.ClusterAllowlistRefusal(ctx, "private-personal",
+			a2a.Target{Kind: a2a.KindK8s, Cluster: "nukedev"}, cfg)).To(Succeed())
+	})
+
+	It("still reads the nested clusters shape", func() {
+		writeVaults(home, `{"vaults":{"private-personal":{"clusters":["nukedev"]}}}`)
+		cfg, err := a2a.LoadConfig(ctx, home)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.VaultClusters["private-personal"]).To(Equal([]string{"nukedev"}))
+	})
+
+	It("keeps an empty array as a declared vault with no clusters", func() {
+		writeVaults(home, `{"vaults":{"assistant-brogrammers":[]}}`)
+		cfg, err := a2a.LoadConfig(ctx, home)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.VaultClusters).To(HaveKey("assistant-brogrammers"))
+		Expect(a2a.ClusterAllowlistRefusal(ctx, "assistant-brogrammers",
+			a2a.Target{Kind: a2a.KindK8s, Cluster: "nukedev"}, cfg)).NotTo(Succeed())
+	})
+
+	It("fails closed on an entry in neither shape", func() {
+		writeVaults(home, `{"vaults":{"private-personal":"nukedev"}}`)
+		cfg, err := a2a.LoadConfig(ctx, home)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.VaultClusters).To(BeEmpty())
+	})
+})
