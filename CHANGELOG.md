@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.11.3
 
 - fix: a `k8s` spawn waits for the worker's agent card instead of reading it once. The card was
   read immediately after the create call returned, but a worker's ingress is created after that
