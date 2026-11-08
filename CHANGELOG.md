@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- fix: a permission park raised **during** a wrapper restart is retried instead of lost. The
+  child's MCP sidecar registered a park with one POST; while the daemon was between processes
+  that POST failed, `decide` took its failure path, and the tool returned a denial for a
+  question no operator ever saw — even though parks are persisted by request id for the
+  successor to re-serve, which made that persistence unreachable. Registration now retries with
+  exponential backoff (100 ms → 2 s, 15 s budget sized to launchd's SIGTERM → 5 s exit timeout
+  → relaunch), retries a refused connection and a 5xx, and does **not** retry a 4xx or a
+  cancelled caller — those are a rejected request and a verdict nobody can still receive.
 - feat: a `claude-wrapper` restart no longer kills the workers it is streaming. Each child's
   stdin becomes a per-session FIFO and its stdout an append-only `events.jsonl`, both passed as
   descriptors the child itself holds, and the child is started with `SysProcAttr{Setsid: true}`
