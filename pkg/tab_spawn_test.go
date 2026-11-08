@@ -303,7 +303,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget", func() {
 	})
 
 	ginkgo.It("refuses resume, which the tab launcher would drop", func() {
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Resume: true}, "")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Resume: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}, "")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("headless worker only"))
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
