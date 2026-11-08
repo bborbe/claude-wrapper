@@ -328,6 +328,14 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget", func() {
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("not wired"))
 	})
+
+	ginkgo.It("refuses a tab spawn with no prompt, naming the headless escape", func() {
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{}, "")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("requires `prompt`"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive: false"))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
+	})
 })
 
 var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {

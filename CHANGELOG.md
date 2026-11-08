@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `push_registration: attempted-ok` can be told apart from a config the worker actually holds.
   The read half of the A2A push round trip, and the ninth and last of the supervisor's roster
   tools — the MCP cutover asserts nine, so it does not precede this.
+- fix: `spawn_agent` reports the model the tab actually runs on instead of the literal
+  `inherits` — the parser matched the launcher's own comment prose (`# … a launch that passes
+  no --model inherits the ambient`) before the real `--model` flag, so a correct spawn reported
+  a model it never used. Comment lines are now stripped before matching.
+- fix: the tab colour's submission confirmation waits the same 8s the node server allows,
+  instead of 2s, so a `/color` that applied is reported as applied rather than a false negative.
+- fix: a tab `spawn_agent` with no `prompt` is refused with a message naming the headless
+  escape (`interactive: false`), instead of the spawner's generic "invalid spawn options". The
+  schema keeps `prompt` optional because the headless and A2A paths accept an empty one.
 
 ## v0.10.0
 

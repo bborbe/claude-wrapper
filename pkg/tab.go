@@ -319,7 +319,7 @@ func SubmissionConfirmed(text string, message string) bool {
 // text into the shell instead.
 const (
 	composerDeadline = 8 * time.Second
-	confirmDeadline  = 2 * time.Second
+	confirmDeadline  = 8 * time.Second
 	panePollInterval = 100 * time.Millisecond
 )
 
