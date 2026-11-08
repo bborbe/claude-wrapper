@@ -42,12 +42,13 @@ const (
 	ToolAnswerPermission   ToolName = "answer_permission"
 	ToolAwaitPermission    ToolName = "await_permission"
 	ToolPendingPermissions ToolName = "pending_permissions"
+	ToolReadPushConfig     ToolName = "read_push_config"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
 //
-// Eight of the supervisor's nine. What is still absent is the local tab spawn
-// surface — slice 2 of the same port.
+// Nine of the supervisor's nine — the last one, `read_push_config`, is the read
+// half of the A2A push round trip.
 func RosterToolNames() []ToolName {
 	return []ToolName{
 		ToolListAgents,
@@ -58,6 +59,7 @@ func RosterToolNames() []ToolName {
 		ToolAnswerPermission,
 		ToolAwaitPermission,
 		ToolPendingPermissions,
+		ToolReadPushConfig,
 	}
 }
 
@@ -236,6 +238,8 @@ func (s *RosterToolServer) invoke(
 		return s.awaitPermission(ctx, args)
 	case ToolPendingPermissions:
 		return s.pendingPermissions(ctx)
+	case ToolReadPushConfig:
+		return s.readPushConfig(ctx, args)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -454,6 +458,35 @@ func (s *RosterToolServer) pendingPermissions(ctx context.Context) (string, erro
 		})
 	}
 	return marshalJSON(ctx, rows)
+}
+
+// readPushConfig reads a worker's push config back from the worker itself.
+//
+// The A2A manager owns the gate and the call: this method only decodes the
+// argument and refuses a daemon that was started without a controller, so a
+// caller gets a named reason rather than an empty list that would read as "the
+// worker holds nothing".
+func (s *RosterToolServer) readPushConfig(
+	ctx context.Context,
+	args json.RawMessage,
+) (string, error) {
+	var body agentArgs
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" {
+		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if s.A2A == nil {
+		return "", errors.Errorf(
+			ctx, "read_push_config is not wired — this daemon was started without an A2A controller",
+		)
+	}
+	result, err := s.A2A.ReadPushConfig(ctx, body.AgentID)
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, result)
 }
 
 func (s *RosterToolServer) listAgents(ctx context.Context) (string, error) {
@@ -990,5 +1023,19 @@ func parkToolDefinitions() []any {
 		toolDef(ToolPendingPermissions,
 			"Every park this daemon holds right now: agent id, request id, tool and kind.",
 			map[string]any{}),
+		toolDef(ToolReadPushConfig,
+			"Read a worker's registered A2A push config back FROM THE WORKER — "+
+				"`{ configs }` (a list, empty when the worker holds none) or an error. It "+
+				"lists rather than gets: the SDK's get is keyed by a config id the "+
+				"registration never sends, so a get can never match. This is the read half "+
+				"of the push round trip — `push_registration: attempted-ok` proves only that "+
+				"the worker ACCEPTED a registration, not that it holds one, and this call is "+
+				"the only thing that separates those two. It requires an accepted "+
+				"registration to exist for that agent and refuses otherwise, rather than "+
+				"reading an unregistered task. Read-only: nothing on the worker changes.",
+			map[string]any{
+				"agent_id": stringProp("the A2A worker whose push config to read"),
+			},
+			"agent_id"),
 	}
 }
