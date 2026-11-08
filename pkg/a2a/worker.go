@@ -79,6 +79,12 @@ type Manager struct {
 	Config   Config
 	Now      func() time.Time
 
+	// CardReadAttempts and CardReadDelay bound the wait for a freshly created
+	// worker's agent card. Defaults: 60 attempts 2 s apart, so a spawn waits up
+	// to two minutes for the ingress — measured at roughly one minute on nukedev.
+	CardReadAttempts int
+	CardReadDelay    time.Duration
+
 	mu       sync.RWMutex
 	agents   map[string]*Agent
 	order    []string
@@ -89,13 +95,15 @@ type Manager struct {
 // NewManager creates the manager.
 func NewManager(client *Client, registry *PushRegistry, cfg Config) *Manager {
 	return &Manager{
-		Client:   client,
-		Registry: registry,
-		Config:   cfg,
-		Now:      time.Now,
-		agents:   map[string]*Agent{},
-		byTask:   map[string]string{},
-		byWorker: map[string]string{},
+		Client:           client,
+		Registry:         registry,
+		Config:           cfg,
+		Now:              time.Now,
+		CardReadAttempts: 60,
+		CardReadDelay:    2 * time.Second,
+		agents:           map[string]*Agent{},
+		byTask:           map[string]string{},
+		byWorker:         map[string]string{},
 	}
 }
 
@@ -231,6 +239,39 @@ func createdWorker(ctx context.Context, response *ControlResponse) (Worker, stri
 	return worker, response.Create.Token, nil
 }
 
+// readCardWithRetry waits for a freshly created worker's agent card.
+//
+// ⚠️ THE POD EXISTING IS NOT THE CARD ANSWERING. A k8s worker's ingress is
+// created after the create call returns, so the first read is routinely 404 or
+// 503 — both observed on consecutive nukedev spawns, with the card answering 200
+// about a minute later. A single read therefore loses the status channel
+// permanently: no card means no endpoint, no turn, no task id and no push
+// registration, which leaves a running, healthy worker reporting
+// `push_registration: not-attempted` forever. Retry inside a bounded window, and
+// fail only once that window is spent.
+func (m *Manager) readCardWithRetry(ctx context.Context, agent *Agent) (*AgentCard, error) {
+	attempts := m.CardReadAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, errors.Wrapf(ctx, lastErr, "read the worker card was abandoned")
+			case <-time.After(m.CardReadDelay):
+			}
+		}
+		card, err := m.Client.ReadCard(ctx, agent.A2AURL, "")
+		if err == nil {
+			return card, nil
+		}
+		lastErr = err
+	}
+	return nil, errors.Wrapf(ctx, lastErr, "read the worker card failed after %d attempts", attempts)
+}
+
 // firstTurn reads the card, registers the push channel and sends the prompt.
 func (m *Manager) firstTurn(
 	ctx context.Context,
@@ -239,7 +280,7 @@ func (m *Manager) firstTurn(
 	pushURL string,
 	pushToken string,
 ) {
-	card, err := m.Client.ReadCard(ctx, agent.A2AURL, "")
+	card, err := m.readCardWithRetry(ctx, agent)
 	if err != nil {
 		m.fail(agent, "read the worker card failed: "+err.Error())
 		return
