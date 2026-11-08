@@ -203,9 +203,9 @@ var _ = ginkgo.Describe("startChild", func() {
 	ginkgo.It("leaves no mcp temp file when the env is refused", func() {
 		const id = "99999999-8888-4777-8666-555555555555"
 		s := &supervisor{
-			ctx:       context.Background(),
 			claudeBin: "/bin/true",
 			now:       libtime.NewCurrentDateTime(),
+			store:     NewSessionStore(ginkgo.GinkgoT().TempDir()),
 		}
 		_, err := s.startChild(context.Background(), id, SpawnOptions{Env: map[string]string{"": "x"}})
 		gomega.Expect(stderrors.Is(err, ErrInvalidSpawnOptions)).To(gomega.BeTrue())
@@ -237,9 +237,9 @@ var _ = ginkgo.Describe("startChild", func() {
 		})
 
 		s := &supervisor{
-			ctx:       context.Background(),
 			claudeBin: fake,
 			now:       libtime.NewCurrentDateTime(),
+			store:     NewSessionStore(ginkgo.GinkgoT().TempDir()),
 		}
 		_, err := s.startChild(context.Background(), id, SpawnOptions{
 			Cwd: dir,
@@ -271,11 +271,11 @@ var _ = ginkgo.Describe("child.apply", func() {
 	// nothing at all.
 	ginkgo.It("ignores the synthetic model a slash command reports", func() {
 		c := newChild()
-		c.apply(map[string]any{
+		c.apply(0, map[string]any{
 			"type":    "assistant",
 			"message": map[string]any{"model": "deepseek-v4-flash-max"},
 		})
-		c.apply(map[string]any{
+		c.apply(0, map[string]any{
 			"type":    "assistant",
 			"message": map[string]any{"model": syntheticModel},
 		})
@@ -288,9 +288,9 @@ var _ = ginkgo.Describe("child.apply", func() {
 	// the spawn value and report a stale mode as current.
 	ginkgo.It("takes the permission mode from every init event", func() {
 		c := newChild()
-		c.apply(map[string]any{"type": "system", "subtype": "init", "permissionMode": "default"})
+		c.apply(0, map[string]any{"type": "system", "subtype": "init", "permissionMode": "default"})
 		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("default"))
-		c.apply(map[string]any{"type": "system", "subtype": "init", "permissionMode": "acceptEdits"})
+		c.apply(0, map[string]any{"type": "system", "subtype": "init", "permissionMode": "acceptEdits"})
 		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("acceptEdits"))
 	})
 })
@@ -376,7 +376,7 @@ var _ = ginkgo.Describe("child.applyControlResponse", func() {
 	// acceptEdits left the session reporting default until a later turn's init.
 	ginkgo.It("stores the mode a control response reports", func() {
 		c := newChild()
-		c.apply(map[string]any{
+		c.apply(0, map[string]any{
 			"type": "control_response",
 			"response": map[string]any{
 				"subtype":    "success",
@@ -392,7 +392,7 @@ var _ = ginkgo.Describe("child.applyControlResponse", func() {
 	ginkgo.It("leaves the mode alone when the response carries none", func() {
 		c := newChild()
 		c.session.PermissionMode = "default"
-		c.apply(map[string]any{
+		c.apply(0, map[string]any{
 			"type":     "control_response",
 			"response": map[string]any{"subtype": "success", "request_id": "x"},
 		})

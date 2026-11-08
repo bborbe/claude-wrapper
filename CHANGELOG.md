@@ -19,6 +19,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: a headless spawn that names `vault` runs in that vault's directory, and one with neither
   `cwd` nor `vault` is refused instead of running in the daemon's own working directory.
 
+## v0.12.0
+
+- feat: a re-adopted child's exit is observed with kqueue `EVFILT_PROC`/`NOTE_EXIT` instead of a
+  100 ms pid poll. After a restart the child is reparented to pid 1, so there is no `Wait` to
+  collect and the only observable is the pid going away — the watcher now sleeps until the
+  kernel wakes it, so an idle adopted session costs no wakeups and the exit is seen when it
+  happens rather than up to one poll interval later. A pid that already left (or never existed)
+  returns immediately, and a platform without kqueue falls back to polling.
+- fix: a permission park raised **during** a wrapper restart is retried instead of lost. The
+  child's MCP sidecar registered a park with one POST; while the daemon was between processes
+  that POST failed, `decide` took its failure path, and the tool returned a denial for a
+  question no operator ever saw — even though parks are persisted by request id for the
+  successor to re-serve, which made that persistence unreachable. Registration now retries with
+  exponential backoff (100 ms → 2 s, 15 s budget sized to launchd's SIGTERM → 5 s exit timeout
+  → relaunch), retries a refused connection and a 5xx, and does **not** retry a 4xx or a
+  cancelled caller — those are a rejected request and a verdict nobody can still receive.
+- feat: a `claude-wrapper` restart no longer kills the workers it is streaming. Each child's
+  stdin becomes a per-session FIFO and its stdout an append-only `events.jsonl`, both passed as
+  descriptors the child itself holds, and the child is started with `SysProcAttr{Setsid: true}`
+  — so a daemon death leaves it running instead of taking `EPIPE` on its next write. Measured on
+  a scratch launchd job: `kickstart -k` and `bootout` kill the job's own process group and leave
+  a setsid child reparented to pid 1.
+- feat: the daemon persists its session registry under `sessions/<id>/record.json` and
+  re-adopts every live child on start, rebuilding each session from its `events.jsonl` replay.
+  Held permission parks are persisted by request id, so an answer that arrives during the
+  restart gap is still deliverable instead of being lost or denied.
+- feat: SSE frames carry `id:` and the handler honours `Last-Event-ID`, so a reconnecting
+  supervisor resumes from the event it stopped at rather than replaying the whole retained
+  session. A resume point no longer retained returns `409` (`ErrStreamGap`) instead of silently
+  handing back a different point and leaving an invisible hole in the stream.
+- feat: one process-wide `SIGTERM`/`SIGINT` handler with a bounded drain and
+  `http.Server.Shutdown`. The previous poster-only `NotifyContext` registered and then
+  unregistered a handler, so the **first** `SIGTERM` did nothing and the daemon only died on the
+  second or on a `SIGKILL`.
+- fix: five defects found in review of the restart work. The replay window numbered a large
+  session's first replayed line one below its own index, so a client resuming at
+  `Last-Event-ID + 1` skipped one event — possibly a `result` — on the first reconnect after a
+  restart once the event file passed 8 MiB, and the drift grew by one per restart. The drain is
+  now followed by a bounded shutdown instead of a 10 s `Shutdown` that waits on live SSE
+  handlers, so the process stays inside launchd's 5 s `ExitTimeOut` and logs its own exit.
+  Re-adoption restores each session's `Mode` — a board answer for an adopted headless worker was
+  refused as if it were a tab worker — and its spawn policy, without which every adopted park
+  escalated and was then denied by the timeout. Concurrent record writes use a per-write temp
+  file and a store lock, so two parks from one child can no longer interleave into an
+  unparseable `record.json` that `List` skips.
+- chore: `make precommit` is clean. The branch's new files tripped `funlen`, `gocognit`,
+  `nestif`, `forcetypeassert`, `unused` and four `gosec` findings; the oversized functions were
+  split, and the four `gosec` findings are annotated where the analysis is wrong (a pid
+  conversion, an SSE frame carrying JSON, and two goroutines that outlive every request).
+- fix: the daemon warns at start when `--drain-bound` plus the shutdown grace would reach
+  launchd's 5 s `ExitTimeOut`. The bound is a flag, so nothing else stops an operator from
+  raising it past the point where launchd SIGKILLs the process mid-drain and the exit is
+  reported as a kill rather than as a drain.
+
+## v0.11.3
+
+- fix: a `k8s` spawn waits for the worker's agent card instead of reading it once. The card was
+  read immediately after the create call returned, but a worker's ingress is created after that
+  point, so the first read is routinely 404 or 503 — both observed on consecutive nukedev spawns,
+  with the card answering 200 about a minute later. A single read lost the status channel
+  permanently: no card meant no endpoint, no turn, no task id and no push registration, leaving a
+  running, healthy worker reporting `push_registration: not-attempted` forever. The read now
+  retries inside a bounded window (60 attempts 2 s apart, both configurable on `Manager`), stops
+  early on context cancellation, and names the attempt count when the window is spent.
+
 ## v0.11.2
 
 - fix: `spawn_agent` resumes a headless worker by session id again. The MCP adapter typed

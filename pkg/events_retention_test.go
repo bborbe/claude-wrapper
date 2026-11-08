@@ -23,12 +23,17 @@ var _ = ginkgo.Describe("child event retention", func() {
 		c := &child{}
 		const overflow = 10
 		for i := 0; i < maxRetainedEvents+overflow; i++ {
-			c.publish(Event{"seq": float64(i)})
+			c.publish(i, Event{"seq": float64(i)})
 		}
 
 		gomega.Expect(c.events).To(gomega.HaveLen(maxRetainedEvents))
 		gomega.Expect(c.events[0]["seq"]).To(gomega.Equal(float64(overflow)),
 			"the oldest retained event must be the one that fell inside the window")
+		// firstSeq is the absolute sequence of events[0]; a resume point is checked
+		// against it, so a trim that leaves it behind makes a retained event look
+		// like a gap and a dropped one look valid.
+		gomega.Expect(c.firstSeq).To(gomega.Equal(overflow),
+			"trimming must advance firstSeq by the number of events dropped")
 		gomega.Expect(c.events[len(c.events)-1]["seq"]).To(gomega.Equal(float64(maxRetainedEvents+overflow-1)),
 			"the newest event must always be retained")
 	})
@@ -36,7 +41,7 @@ var _ = ginkgo.Describe("child event retention", func() {
 	ginkgo.It("keeps the retained events in the order they were published", func() {
 		c := &child{}
 		for i := 0; i < maxRetainedEvents+1; i++ {
-			c.publish(Event{"seq": float64(i)})
+			c.publish(i, Event{"seq": float64(i)})
 		}
 
 		for i := 1; i < len(c.events); i++ {
@@ -51,12 +56,12 @@ var _ = ginkgo.Describe("child event retention", func() {
 	ginkgo.It("reuses the buffer instead of reallocating once at capacity", func() {
 		c := &child{}
 		for i := 0; i < maxRetainedEvents+1; i++ {
-			c.publish(Event{"seq": float64(i)})
+			c.publish(i, Event{"seq": float64(i)})
 		}
 
 		event := Event{"seq": float64(0)}
 		allocs := testing.AllocsPerRun(100, func() {
-			c.publish(event)
+			c.publish(maxRetainedEvents+1, event)
 		})
 		gomega.Expect(allocs).To(gomega.BeNumerically("<=", 1),
 			"publish at capacity must not allocate a fresh %d-element slice per event", maxRetainedEvents)
@@ -72,11 +77,11 @@ var _ = ginkgo.Describe("child event retention", func() {
 
 		c := &child{cmd: cmd, subscribers: map[int]chan Event{}}
 		for i := 0; i < 32; i++ {
-			c.publish(Event{"seq": float64(i)})
+			c.publish(i, Event{"seq": float64(i)})
 		}
 		gomega.Expect(c.events).To(gomega.HaveLen(32))
 
-		c.reap()
+		c.reap(nil)
 
 		gomega.Expect(c.session.State).To(gomega.Equal(StateExited),
 			"the record itself must survive for listing")
@@ -90,7 +95,7 @@ var _ = ginkgo.Describe("child event retention", func() {
 		c := &child{}
 		c.session.State = StateExited
 
-		c.publish(Event{"seq": float64(0)})
+		c.publish(0, Event{"seq": float64(0)})
 
 		gomega.Expect(c.events).To(gomega.BeEmpty(),
 			"a late event must not rebuild the released buffer")
@@ -103,13 +108,13 @@ var _ = ginkgo.Describe("child event retention", func() {
 func BenchmarkPublishAtCapacity(b *testing.B) {
 	c := &child{}
 	for i := 0; i < maxRetainedEvents+1; i++ {
-		c.publish(Event{"seq": i})
+		c.publish(i, Event{"seq": i})
 	}
 	event := Event{"seq": 0}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.publish(event)
+		c.publish(maxRetainedEvents+1, event)
 	}
 }

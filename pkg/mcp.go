@@ -239,7 +239,56 @@ func (s *MCPServer) forget(requestID string) error {
 	return nil
 }
 
+// Registration is retried across a wrapper restart, because a restart is exactly
+// when it fails and exactly when the park matters.
+//
+// ⚠️ **The window this closes.** `launchctl kickstart -k` stops the daemon for
+// several seconds. A park raised in that window used to fail its POST, take
+// `decide`'s failure path, and return a DENIAL for a question no operator ever
+// saw — even though the design already persists parks by request id so the
+// successor can re-serve them. The persistence was unreachable without the retry,
+// which is what made this the last hole in the restart story.
+//
+// The budget is sized to the restart itself: launchd sends SIGTERM, waits out its
+// 5 s exit timeout, SIGKILLs, then relaunches, and the successor re-adopts the
+// child before it opens its listener. 15 s covers a slow relaunch without holding
+// the child's tool call open on a daemon that is genuinely gone.
+const (
+	registerBudget    = 15 * time.Second
+	registerRetryBase = 100 * time.Millisecond
+	registerRetryMax  = 2 * time.Second
+)
+
+// register posts the question, retrying while the failure is one a restart explains.
 func (s *MCPServer) register(ctx context.Context, requestID string, params json.RawMessage) error {
+	deadline := time.Now().Add(registerBudget)
+	delay := registerRetryBase
+	for {
+		retryable, err := s.registerOnce(ctx, requestID, params)
+		if err == nil {
+			return nil
+		}
+		// A 4xx is a bad request, not an absent daemon: retrying cannot change it.
+		// A cancelled host is the same — the verdict can no longer reach anyone.
+		if !retryable || ctx.Err() != nil {
+			return err
+		}
+		if !time.Now().Add(delay).Before(deadline) {
+			return err
+		}
+		log.Printf("mcp: register %s failed, retrying in %s: %v", requestID, delay, err)
+		time.Sleep(delay)
+		delay *= 2
+		if delay > registerRetryMax {
+			delay = registerRetryMax
+		}
+	}
+}
+
+// registerOnce is one attempt. retryable reports whether the failure is one a
+// restart explains — a refused connection or a 5xx while the daemon is coming
+// back — rather than a request the wrapper rejected on its merits.
+func (s *MCPServer) registerOnce(ctx context.Context, requestID string, params json.RawMessage) (bool, error) {
 	var call struct {
 		Arguments struct {
 			ToolName  string          `json:"tool_name"`
@@ -248,12 +297,12 @@ func (s *MCPServer) register(ctx context.Context, requestID string, params json.
 		} `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
-		return errors.Wrapf(ctx, err, "decode tool call failed")
+		return false, errors.Wrapf(ctx, err, "decode tool call failed")
 	}
 	var input map[string]any
 	if len(call.Arguments.Input) > 0 {
 		if err := json.Unmarshal(call.Arguments.Input, &input); err != nil {
-			return errors.Wrapf(ctx, err, "decode tool input failed")
+			return false, errors.Wrapf(ctx, err, "decode tool input failed")
 		}
 	}
 	// The tool name is forwarded verbatim rather than hardcoded: AskUserQuestion
@@ -270,23 +319,27 @@ func (s *MCPServer) register(ctx context.Context, requestID string, params json.
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return errors.Wrapf(ctx, err, "marshal question failed")
+		return false, errors.Wrapf(ctx, err, "marshal question failed")
 	}
 	url := s.WrapperURL + "/api/1.0/sessions/" + s.SessionID + "/question"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(encoded))
 	if err != nil {
-		return errors.Wrapf(ctx, err, "build question request failed")
+		return false, errors.Wrapf(ctx, err, "build question request failed")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return errors.Wrapf(ctx, err, "post question failed")
+		// A refused connection is the daemon being between processes — the one
+		// failure a restart fully explains, so it is always worth retrying.
+		return true, errors.Wrapf(ctx, err, "post question failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusMultipleChoices {
-		return errors.Errorf(ctx, "question rejected with %d", resp.StatusCode)
+		// 5xx is the daemon coming up or shutting down; 4xx is our request.
+		return resp.StatusCode >= http.StatusInternalServerError,
+			errors.Errorf(ctx, "question rejected with %d", resp.StatusCode)
 	}
-	return nil
+	return false, nil
 }
 
 // pollResult is one read of the wrapper's answer for a pending request.

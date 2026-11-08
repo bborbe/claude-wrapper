@@ -47,7 +47,12 @@ var _ = ginkgo.Describe("Spawn resume", func() {
 	})
 
 	newSupervisor := func(bin string) *supervisor {
-		s, ok := NewSupervisor(ctx, bin, libtime.NewCurrentDateTime(), "http://localhost:0").(*supervisor)
+		s, ok := NewSupervisor(
+			bin,
+			libtime.NewCurrentDateTime(),
+			"http://localhost:0",
+			NewSessionStore(ginkgo.GinkgoT().TempDir()),
+		).(*supervisor)
 		gomega.Expect(ok).To(gomega.BeTrue())
 		return s
 	}

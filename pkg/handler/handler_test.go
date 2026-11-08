@@ -139,6 +139,34 @@ func (f *fakeSupervisor) Subscribe(_ context.Context, _ string) ([]pkg.Event, <-
 	return f.events, live, func() {}, nil
 }
 
+// SubscribeFrom is what the events route actually calls. It honours the resume
+// point the way the real supervisor does — slicing the replay and reporting the
+// sequence number of its first element — because a fake that ignored `from` would
+// make a broken resume path pass.
+func (f *fakeSupervisor) SubscribeFrom(
+	_ context.Context, _ string, from int,
+) ([]pkg.Event, int, <-chan pkg.Event, func(), error) {
+	if f.getErr != nil {
+		return nil, 0, nil, nil, f.getErr
+	}
+	start := 0
+	if from > 0 {
+		start = from
+	}
+	if start > len(f.events) {
+		start = len(f.events)
+	}
+	live := make(chan pkg.Event)
+	close(live)
+	return f.events[start:], start, live, func() {}, nil
+}
+
+func (f *fakeSupervisor) Adopt(_ context.Context) (int, error) { return 0, nil }
+
+func (f *fakeSupervisor) Drain(_ context.Context, _ time.Duration) pkg.DrainReport {
+	return pkg.DrainReport{}
+}
+
 // openSupervisor hands the events route a LIVE channel instead of fakeSupervisor's
 // closed one, so a spec can write to the stream after the server's write deadline has
 // passed. Nothing else about it matters.
@@ -149,6 +177,12 @@ type openSupervisor struct {
 
 func (f *openSupervisor) Subscribe(_ context.Context, _ string) ([]pkg.Event, <-chan pkg.Event, func(), error) {
 	return nil, f.live, func() {}, nil
+}
+
+func (f *openSupervisor) SubscribeFrom(
+	_ context.Context, _ string, _ int,
+) ([]pkg.Event, int, <-chan pkg.Event, func(), error) {
+	return nil, 0, f.live, func() {}, nil
 }
 
 var _ = Describe("handler", func() {
@@ -284,6 +318,64 @@ var _ = Describe("handler", func() {
 		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"assistant"}`))
 		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"result"}`))
 		Expect(rec.Body.String()).To(ContainSubstring("event: end"))
+	})
+
+	// A resume point is what makes a reconnect cheap and correct: the client says
+	// where it stopped and gets only what it missed. Without it a supervisor whose
+	// connection died mid-turn re-reads the session and processes events it has
+	// already consumed.
+	It("resumes after the id the client sends back", func() {
+		sup := &fakeSupervisor{events: []pkg.Event{
+			{"type": "assistant"},
+			{"type": "result"},
+		}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
+		req.Header.Set("Last-Event-ID", "2")
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		// The fake holds two events, numbered 0 and 1; resuming at 2 skips both and
+		// the stream closes because its live channel is already closed.
+		Expect(rec.Body.String()).NotTo(ContainSubstring(`data: {"type":"assistant"}`))
+		Expect(rec.Body.String()).To(ContainSubstring("event: end"))
+	})
+
+	// ⚠️ `Last-Event-ID` names the last event the client ALREADY HAS, so resuming from it must
+	// start at the NEXT one. Off by one here re-delivers an event on every reconnect, and the
+	// loop consumes it a second time — a duplicated assistant message or a double-counted
+	// result. Caught while wiring the supervisor's reconnect against this handler.
+	It("does not re-deliver the event the client already has", func() {
+		sup := &fakeSupervisor{events: []pkg.Event{
+			{"type": "assistant"},
+			{"type": "result"},
+		}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
+		req.Header.Set("Last-Event-ID", "0")
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Body.String()).NotTo(ContainSubstring(`data: {"type":"assistant"}`),
+			"event 0 was already consumed; resuming from 0 must start at 1")
+		Expect(rec.Body.String()).To(ContainSubstring(`data: {"type":"result"}`))
+	})
+
+	It("refuses a resume point the supervisor no longer retains", func() {
+		sup := &fakeSupervisor{getErr: errors.Wrapf(
+			context.Background(), pkg.ErrStreamGap, "gone")}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
+		req.Header.Set("Last-Event-ID", "2")
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
+	})
+
+	It("rejects a Last-Event-ID that is not a sequence number", func() {
+		sup := &fakeSupervisor{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/1.0/sessions/a/events", nil)
+		req.Header.Set("Last-Event-ID", "not-a-number")
+		handler.Session(sup, nil, pkg.NewSessionLocks()).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
 	})
 
 	// ⚠️ The regression this spec exists for. `main.go` sets `WriteTimeout: 60s`, and Go
