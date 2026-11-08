@@ -285,6 +285,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 		Model:  body.Model,
 		Label:  body.Label,
 		Policy: body.Policy,
+		Resume: body.Resume,
 	})
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "spawn agent failed")
@@ -655,11 +656,15 @@ type spawnAgentArgs struct {
 	// Cwd and Label are the local-tab arguments. Cwd is deliberately separate from
 	// Vault: a tab may run in a subdirectory of its vault, and the launcher still
 	// comes from the vault.
-	Cwd         string            `json:"cwd"`
-	Label       string            `json:"label"`
-	Prompt      string            `json:"prompt"`
-	Model       string            `json:"model"`
-	Resume      bool              `json:"resume"`
+	Cwd    string `json:"cwd"`
+	Label  string `json:"label"`
+	Prompt string `json:"prompt"`
+	Model  string `json:"model"`
+	// Resume is the full session id of the conversation to continue, or empty
+	// for a fresh one. A boolean `"resume": true` fails to decode, so a caller
+	// that cannot name the conversation is refused instead of silently handed
+	// a new one.
+	Resume      string            `json:"resume"`
 	Policy      string            `json:"policy"`
 	Interactive *bool             `json:"interactive"`
 	WindowID    string            `json:"window_id"`
@@ -701,7 +706,7 @@ func (s *RosterToolServer) spawnAgent(
 		Task:        body.Task,
 		Vault:       body.Vault,
 		Prompt:      body.Prompt,
-		Resume:      body.Resume,
+		Resume:      body.Resume != "",
 		Policy:      body.Policy,
 		Interactive: body.Interactive,
 		WindowID:    body.WindowID,
@@ -803,7 +808,7 @@ func (s *RosterToolServer) spawnTabAgent(
 	// Arguments the tab path cannot honour are REFUSED, never dropped: the tab
 	// launches a `cc-*` script, which is never handed `--resume` or a policy, so
 	// accepting either would do real work and then discard what was asked for.
-	if body.Resume {
+	if body.Resume != "" {
 		return "", errors.Errorf(
 			ctx,
 			"`resume` reaches a headless worker only — the tab path launches the cc-* "+
@@ -1045,11 +1050,12 @@ func spawnToolDefinitions() []any {
 				"`task` is REQUIRED naming the vault task the worker is opened for. An absent "+
 				"or `local` target opens EITHER a WezTerm tab under the vault's cc-* launcher "+
 				"OR an in-process headless worker in THIS daemon (where `cwd`, `vault`, `label`, "+
-				"`model` and `policy` apply and the daemon holds its parks and stdin). The mode "+
-				"resolves in this order: an explicit `interactive`, then SUPERVISOR_SPAWN_MODE, "+
-				"then `spawn.mode` in ~/.config/claude-supervisor/config.json, then the "+
-				"`interactive` default; the response's `mode_source` names the step that "+
-				"decided. A `local` spawn requires `cwd` or `vault` — omitting both is refused, "+
+				"`model`, `policy` and `resume` (a full session id) apply and the daemon holds "+
+				"its parks and stdin). The mode resolves in this order: an explicit "+
+				"`interactive`, then SUPERVISOR_SPAWN_MODE, then `spawn.mode` in "+
+				"~/.config/claude-supervisor/config.json, then the `interactive` default; the "+
+				"response's `mode_source` names the step that decided. A `local` spawn requires "+
+				"`cwd` or `vault` — omitting both is refused, "+
 				"never defaulted. A tab accepts `label`, `role`, `window_id` and `env`, and "+
 				"REFUSES `resume`, `policy` and `shipping`, which reach a headless worker only. "+
 				"`env` may not set a worker's permission or spawn mode.",
@@ -1064,6 +1070,7 @@ func spawnToolDefinitions() []any {
 				"env":       mapProp("environment exported into the pane before the launcher runs"),
 				"prompt":    stringProp("the first turn to send; required for a tab, optional for headless"),
 				"model":     stringProp("headless only: model to run, or empty for the default"),
+				"resume":    stringProp("headless only: the full session id (UUID) of the conversation to continue"),
 				"policy":    stringProp("headless only: path to a per-spawn policy overlay"),
 				"interactive": boolProp("per-call override: true opens a tab, false spawns headless in-process. " +
 					"OMIT it to use the fleet's configured mode (SUPERVISOR_SPAWN_MODE, then " +
