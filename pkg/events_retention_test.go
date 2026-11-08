@@ -5,6 +5,7 @@
 package pkg
 
 import (
+	"os/exec"
 	"testing"
 
 	"github.com/onsi/ginkgo/v2"
@@ -64,6 +65,40 @@ var _ = ginkgo.Describe("child event retention", func() {
 		})
 		gomega.Expect(allocs).To(gomega.BeNumerically("<=", 1),
 			"publish at capacity must not allocate a fresh %d-element slice per event", maxRetainedEvents)
+	})
+
+	// Retention, not churn, sets the wrapper's footprint: a dead child keeps up to
+	// maxRetainedEvents decoded maps for the rest of the process lifetime because
+	// exited records are never removed from s.sessions. The record must survive —
+	// only the event history goes.
+	ginkgo.It("releases the replay buffer when the child exits", func() {
+		cmd := exec.Command("true")
+		gomega.Expect(cmd.Start()).To(gomega.Succeed())
+
+		c := &child{cmd: cmd, subscribers: map[int]chan Event{}}
+		for i := 0; i < 32; i++ {
+			c.publish(i, Event{"seq": float64(i)})
+		}
+		gomega.Expect(c.events).To(gomega.HaveLen(32))
+
+		c.reap(nil)
+
+		gomega.Expect(c.session.State).To(gomega.Equal(StateExited),
+			"the record itself must survive for listing")
+		gomega.Expect(c.events).To(gomega.BeEmpty(),
+			"an exited child must not keep its decoded event maps for the process lifetime")
+	})
+
+	// reap and consume run concurrently; an event read from stdout after reap
+	// released the buffer must not rebuild it.
+	ginkgo.It("does not re-retain events once the child has exited", func() {
+		c := &child{}
+		c.session.State = StateExited
+
+		c.publish(0, Event{"seq": float64(0)})
+
+		gomega.Expect(c.events).To(gomega.BeEmpty(),
+			"a late event must not rebuild the released buffer")
 	})
 })
 

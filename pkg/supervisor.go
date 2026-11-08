@@ -1388,7 +1388,17 @@ func (c *child) watch() {
 	}
 	c.procGone.Store(true)
 	<-c.tailDone
+	c.reap(exitCode)
+}
 
+// reap settles an exited child: state, counters, subscribers, and the replay buffer.
+//
+// ⚠️ Split out of `watch` so the exit path has ONE home. `watch` reaches it after the
+// tailer has drained (the process can exit while its last events are still unread, and
+// settling before they are applied would report a session as exited without the `result`
+// that closed its turn); a test reaches it directly to pin what settling does to the
+// retained events. `exitCode` is nil for an adopted child, which has no `Wait` to collect.
+func (c *child) reap(exitCode *int) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.session.State = StateExited
@@ -1399,6 +1409,18 @@ func (c *child) watch() {
 	c.session.Controls = []Control{}
 	c.session.ExitCode = exitCode
 	c.closeSubscribers()
+	// Release the replay buffer. A dead child can emit no further events, and this
+	// slice holds up to maxRetainedEvents decoded maps (`Event` is map[string]any)
+	// for the rest of the process lifetime, because exited records are never
+	// removed from s.sessions. Measured at 51.15 % of the live heap across 45
+	// records on a 1.2 GB footprint (2026-11-08). The Session record and its
+	// metadata stay for listing; only the event history goes.
+	//
+	// ⚠️ Master's `consume` (a stdout scanner) is deliberately NOT taken: this
+	// branch reads the child's output through `tailFile` over `events.jsonl`, so a
+	// scanner-based reader would be a second, dead path with the pre-`seq` apply
+	// signature. Only the buffer release is kept.
+	c.events = nil
 }
 
 // apply is the single place an event becomes state. Every branch is derived
@@ -1443,6 +1465,12 @@ func (c *child) apply(seq int, event map[string]any) {
 // than skipped: a supervision stream with an invisible hole in it is worse than
 // one that ends and says so.
 func (c *child) publish(seq int, event Event) {
+	// reap released the buffer when this child exited; a late event from the
+	// reader goroutine must not re-retain it. reap sets State under the same lock
+	// and closes every subscriber first, so nothing is delivered by returning here.
+	if c.session.State == StateExited {
+		return
+	}
 	if len(c.events) == 0 {
 		c.firstSeq = seq
 	}
