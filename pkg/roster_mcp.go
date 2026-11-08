@@ -164,6 +164,15 @@ func (s *RosterToolServer) handlePost(
 	sessionID string,
 ) {
 	ctx := req.Context()
+	// The spawn caps may PACE a start for up to MaxStartDelay (5 minutes), which
+	// outlasts the server's 60-second WriteTimeout. A response written after that
+	// deadline never reaches the caller, who then retries — producing the very
+	// burst the start rate exists to bound. Same idiom, same reason, as the
+	// /commands route and the Codex MCP face.
+	if err := clearRosterWriteDeadline(ctx, resp); err != nil {
+		writeRPC(resp, nil, nil, &rpcError{Code: -32603, Message: err.Error()})
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, maxMCPBody+1))
 	if err != nil {
 		writeRPC(resp, nil, nil, &rpcError{Code: -32700, Message: "read body failed"})
@@ -185,6 +194,19 @@ func (s *RosterToolServer) handlePost(
 		return
 	}
 	writeRPC(resp, request.ID, result, rpcErr)
+}
+
+// clearRosterWriteDeadline removes the server's WriteTimeout for this response.
+//
+// Best effort: a recorder under test does not implement deadlines, and refusing
+// the call over an unsupported deadline would make the face untestable for no
+// gain.
+func clearRosterWriteDeadline(ctx context.Context, resp http.ResponseWriter) error {
+	if err := http.NewResponseController(resp).SetWriteDeadline(time.Time{}); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) {
+		return errors.Wrapf(ctx, err, "clear write deadline failed")
+	}
+	return nil
 }
 
 func (s *RosterToolServer) dispatch(
@@ -292,6 +314,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 		Cwd:    cwd,
 		Model:  body.Model,
 		Label:  body.Label,
+		Role:   body.Role,
 		Policy: body.Policy,
 		Resume: body.Resume,
 	})
@@ -307,7 +330,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 			return "", errors.Wrapf(ctx, err, "deliver opening turn failed")
 		}
 	}
-	s.recordSpawn(ctx, session, sessionID, body.Label, resolution.Source)
+	s.recordSpawn(ctx, session, sessionID, body, resolution.Source)
 	return marshalJSON(ctx, map[string]string{
 		"agent_id":    session.ID,
 		"session_id":  session.ID,
@@ -362,11 +385,16 @@ func (s *RosterToolServer) headlessCwd(
 }
 
 // recordSpawn files the ledger row a spawned child would otherwise lack.
+//
+// Role and ResumedFrom are recorded because the caps count BY them: a row with
+// no role reads as a worker (so a headless manager would be charged to the
+// worker cap and never to the manager cap), and a row with no `resumed_from`
+// cannot be excluded as an auto-resume.
 func (s *RosterToolServer) recordSpawn(
 	ctx context.Context,
 	session *Session,
 	callerSessionID string,
-	label string,
+	body spawnAgentArgs,
 	modeSource string,
 ) {
 	if s.Ledger == nil {
@@ -375,11 +403,16 @@ func (s *RosterToolServer) recordSpawn(
 	if err := s.Ledger.Post(ctx, callerSessionID, LedgerRow{
 		SessionID:  session.ID,
 		AgentID:    session.ID,
-		Label:      label,
+		Label:      body.Label,
 		Cwd:        session.Cwd,
 		Mode:       SpawnModeHeadless,
 		ModeSource: modeSource,
-		Location:   "local",
+		// The REQUEST's role, not the session snapshot's: the row describes what was
+		// asked for, and a session type that does not carry a role would otherwise
+		// file a manager as a worker.
+		Role:        body.Role,
+		ResumedFrom: body.Resume,
+		Location:    "local",
 	}); err != nil {
 		log.Printf("WARNING: ledger post for spawned session %s failed: %v", session.ID, err)
 	}
@@ -713,6 +746,12 @@ func (s *RosterToolServer) spawnAgent(
 				"worker could be created. Set `a2a.url` and a controller token",
 		)
 	}
+	// The node's `spawnA2AWorker` checks the worker cap and the start rate too: a
+	// cluster worker is a different SHAPE of worker, not a different population.
+	// The manager cap stays local-only, as it is there.
+	if err := s.enforceWorkerCaps(ctx, body); err != nil {
+		return "", err
+	}
 	agent, err := s.A2A.Spawn(ctx, a2a.SpawnArgs{
 		Target:      body.Target,
 		Task:        body.Task,
@@ -902,6 +941,25 @@ func (s *RosterToolServer) enforceCaps(ctx context.Context, body spawnAgentArgs)
 		if err := s.Caps.CheckManager(ctx, body.OperatorNamed); err != nil {
 			return err
 		}
+	}
+	// Last, as the node has it: a spawn refused by a cap above must not spend a
+	// start slot the next legitimate spawn then waits for.
+	return s.Caps.ReserveStart(ctx)
+}
+
+// enforceWorkerCaps runs the worker cap and reserves a start slot.
+//
+// Shared with the A2A path, which the node holds to these two and not to the
+// manager cap.
+func (s *RosterToolServer) enforceWorkerCaps(
+	ctx context.Context,
+	body spawnAgentArgs,
+) error {
+	if s.Caps == nil {
+		return nil
+	}
+	if err := s.Caps.CheckWorker(ctx, body.OperatorNamed); err != nil {
+		return err
 	}
 	return s.Caps.ReserveStart(ctx)
 }

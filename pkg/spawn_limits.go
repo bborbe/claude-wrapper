@@ -18,6 +18,8 @@ import (
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
+
+	"github.com/bborbe/claude-wrapper/pkg/supervisorconfig"
 )
 
 // The fleet-wide spawn caps, ported from the node supervisor's `spawn-mode.mjs`,
@@ -319,6 +321,11 @@ func (c *spawnCaps) ledgerAndLive(
 			ctx, "the session-ledger endpoint could not be read: %v", err,
 		)
 	}
+	// One row per session, the last one winning — the node's `ledgerBySessionId`
+	// collapse. The endpoint serves a LIST, and a session that was spawned,
+	// stopped and re-recorded appears more than once; counting per row would
+	// charge the same worker twice and refuse a fleet that is not full.
+	rows = collapseLedgerRows(rows)
 	beats, err := c.heartbeats.Rows(ctx)
 	if err != nil {
 		return nil, nil, errors.Errorf(
@@ -345,61 +352,45 @@ func (c *spawnCaps) ledgerAndLive(
 	return rows, live, nil
 }
 
-// SupervisorConfigPath returns the supervisor config file, resolved exactly as
-// the node supervisor's `config.mjs` resolves it: SUPERVISOR_CONFIG, else
-// `$XDG_CONFIG_HOME/claude-supervisor/config.json`, else
-// `~/.config/claude-supervisor/config.json`.
+// collapseLedgerRows keeps one row per session id, the last occurrence winning,
+// in first-seen order.
+func collapseLedgerRows(rows []LedgerRow) []LedgerRow {
+	index := make(map[string]int, len(rows))
+	collapsed := make([]LedgerRow, 0, len(rows))
+	for _, row := range rows {
+		if row.SessionID == "" {
+			collapsed = append(collapsed, row)
+			continue
+		}
+		if at, seen := index[row.SessionID]; seen {
+			collapsed[at] = row
+			continue
+		}
+		index[row.SessionID] = len(collapsed)
+		collapsed = append(collapsed, row)
+	}
+	return collapsed
+}
+
+// SupervisorConfigPath returns the supervisor config file.
+//
+// Delegates to the shared resolver the A2A client also uses, so a scratch config
+// and an XDG home reach every reader of this file, not only the roster.
 func SupervisorConfigPath(
 	ctx context.Context,
 	home string,
 	getenv func(string) string,
 ) (string, error) {
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	if explicit := strings.TrimSpace(getenv("SUPERVISOR_CONFIG")); explicit != "" {
-		return explicit, nil
-	}
-	if xdg := strings.TrimSpace(getenv("XDG_CONFIG_HOME")); xdg != "" {
-		return filepath.Join(xdg, "claude-supervisor", "config.json"), nil
-	}
-	resolved, err := resolveHome(ctx, home)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(resolved, ".config", "claude-supervisor", "config.json"), nil
+	return supervisorconfig.Path(ctx, home, getenv)
 }
 
-// SupervisorStateDir returns the supervisor state directory, as the node
-// resolves it: `$XDG_STATE_HOME/claude-supervisor`, else
-// `~/.local/state/claude-supervisor`.
+// SupervisorStateDir returns the supervisor state directory.
 func SupervisorStateDir(
 	ctx context.Context,
 	home string,
 	getenv func(string) string,
 ) (string, error) {
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	if xdg := strings.TrimSpace(getenv("XDG_STATE_HOME")); xdg != "" {
-		return filepath.Join(xdg, "claude-supervisor"), nil
-	}
-	resolved, err := resolveHome(ctx, home)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(resolved, ".local", "state", "claude-supervisor"), nil
-}
-
-func resolveHome(ctx context.Context, home string) (string, error) {
-	if home != "" {
-		return home, nil
-	}
-	detected, err := os.UserHomeDir()
-	if err != nil {
-		return "", errors.Wrapf(ctx, err, "resolve home directory failed")
-	}
-	return detected, nil
+	return supervisorconfig.StateDir(ctx, home, getenv)
 }
 
 // SpawnConfigFile is the part of the supervisor config the caps read.

@@ -8,13 +8,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+
+	"github.com/bborbe/claude-wrapper/pkg/a2a"
 )
 
 // writeSpawnConfig writes a config file and returns its path.
@@ -686,6 +692,8 @@ type fakeSpawnCaps struct {
 	workerCalls  []bool
 	managerCalls []bool
 	startCalls   int
+	// startDelay makes ReserveStart block, standing in for a paced start.
+	startDelay time.Duration
 }
 
 func (f *fakeSpawnCaps) CheckWorker(_ context.Context, operatorNamed bool) error {
@@ -698,8 +706,15 @@ func (f *fakeSpawnCaps) CheckManager(_ context.Context, operatorNamed bool) erro
 	return f.managerErr
 }
 
-func (f *fakeSpawnCaps) ReserveStart(context.Context) error {
+func (f *fakeSpawnCaps) ReserveStart(ctx context.Context) error {
 	f.startCalls++
+	if f.startDelay > 0 {
+		select {
+		case <-time.After(f.startDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return f.startErr
 }
 
@@ -828,5 +843,136 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 		var parsed map[string]any
 		gomega.Expect(json.Unmarshal([]byte(result), &parsed)).To(gomega.Succeed())
 		gomega.Expect(parsed["agent_id"]).To(gomega.Equal("s1"))
+	})
+})
+
+var _ = ginkgo.Describe("spawn caps after review", func() {
+	var ctx context.Context
+
+	ginkgo.BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	ginkgo.It("counts a session recorded twice once, the last row winning", func() {
+		caps := testCaps(
+			&rosterLedger{rows: []LedgerRow{
+				{SessionID: "a"},
+				{SessionID: "a", Role: RoleManager},
+			}},
+			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("a")}},
+			writeSpawnConfig(`{}`),
+			ginkgo.GinkgoT().TempDir(),
+		)
+
+		workers, err := caps.countWorkers(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(workers).To(gomega.Equal(0))
+
+		managers, err := caps.countManagers(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(managers).To(gomega.Equal(1))
+	})
+
+	ginkgo.It("records role and resumed_from on the headless ledger row", func() {
+		ledger := &rosterLedger{}
+		server := &RosterToolServer{Supervisor: &toolSupervisor{}, Ledger: ledger}
+
+		_, err := server.spawnAgent(ctx, json.RawMessage(
+			`{"interactive":false,"cwd":"/tmp","role":"manager",`+
+				`"resume":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`,
+		), "caller")
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(ledger.posted).To(gomega.HaveLen(1))
+		gomega.Expect(ledger.posted[0].Role).To(gomega.Equal(RoleManager))
+		gomega.Expect(ledger.posted[0].ResumedFrom).To(gomega.Equal("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"))
+	})
+
+	ginkgo.It("charges a headless manager spawn to the manager cap, not the worker cap", func() {
+		ledger := &rosterLedger{}
+		server := &RosterToolServer{Supervisor: &toolSupervisor{}, Ledger: ledger}
+
+		_, err := server.spawnAgent(ctx, json.RawMessage(
+			`{"interactive":false,"cwd":"/tmp","role":"manager"}`,
+		), "caller")
+		gomega.Expect(err).To(gomega.BeNil())
+
+		// The recorded row IS the ledger's content, and every spawned session is live.
+		ledger.rows = ledger.posted
+		beats := make([]HeartbeatRow, 0, len(ledger.posted))
+		for _, row := range ledger.posted {
+			beats = append(beats, liveBeat(row.SessionID))
+		}
+		caps := testCaps(ledger, &stubHeartbeats{rows: beats}, writeSpawnConfig(`{}`), ginkgo.GinkgoT().TempDir())
+		workers, err := caps.countWorkers(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(workers).To(gomega.Equal(0))
+		managers, err := caps.countManagers(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(managers).To(gomega.Equal(1))
+	})
+
+	ginkgo.It("refuses an A2A spawn at the worker cap before the controller is called", func() {
+		caps := &fakeSpawnCaps{workerErr: errors.New("the fleet-wide concurrent-worker limit is reached")}
+		server := &RosterToolServer{
+			A2A:  a2a.NewManager(a2a.NewClient(a2a.NewID), a2a.NewPushRegistry("host.docker.internal"), a2a.Config{}),
+			Caps: caps,
+		}
+
+		_, err := server.spawnAgent(ctx, json.RawMessage(`{"target":"docker","task":"t","prompt":"x"}`), "caller")
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("concurrent-worker limit is reached"))
+		gomega.Expect(caps.startCalls).To(gomega.Equal(0))
+	})
+
+	ginkgo.It("reserves a start on the A2A path too", func() {
+		caps := &fakeSpawnCaps{startErr: errors.New("refused rather than parked")}
+		server := &RosterToolServer{
+			A2A:  a2a.NewManager(a2a.NewClient(a2a.NewID), a2a.NewPushRegistry("host.docker.internal"), a2a.Config{}),
+			Caps: caps,
+		}
+
+		_, err := server.spawnAgent(ctx, json.RawMessage(`{"target":"docker","task":"t","prompt":"x"}`), "caller")
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("refused rather than parked"))
+		gomega.Expect(caps.startCalls).To(gomega.Equal(1))
+	})
+
+	// The HIGH finding: a paced start may block far past the server's
+	// WriteTimeout, and the caller must still receive its response. A 1 s server
+	// timeout against a 2 s paced start fails without the deadline clear.
+	ginkgo.It("delivers the response of a start paced past the server's WriteTimeout", func() {
+		caps := &fakeSpawnCaps{startDelay: 2 * time.Second}
+		server := &RosterToolServer{
+			Roster:  NewRoster(&rosterSupervisor{sessions: []Session{}}, &rosterLedger{}, &rosterLiveness{}, nil, nil),
+			Spawner: &fakeSpawner{},
+			Caps:    caps,
+		}
+		httpServer := httptest.NewUnstartedServer(server)
+		httpServer.Config.WriteTimeout = time.Second
+		httpServer.Start()
+		defer httpServer.Close()
+
+		request, err := http.NewRequest(
+			http.MethodPost,
+			httpServer.URL+"/supervisor/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call",`+
+				`"params":{"name":"spawn_agent","arguments":{"prompt":"x"}}}`),
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(SessionHeader, "caller")
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		response, err := client.Do(request)
+		gomega.Expect(err).To(gomega.BeNil())
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(response.StatusCode).To(gomega.Equal(http.StatusOK))
+		gomega.Expect(string(body)).To(gomega.ContainSubstring(`"result"`))
+		gomega.Expect(string(body)).To(gomega.ContainSubstring("s1"))
 	})
 })
