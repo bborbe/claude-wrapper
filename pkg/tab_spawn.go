@@ -29,6 +29,9 @@ type TabSpawnRequest struct {
 	// SpawnerSessionID is the caller's own session, taken from the MCP request
 	// header. It becomes the row's attribution and is never defaulted.
 	SpawnerSessionID string
+	// ModeSource is the ResolveSpawnMode step that chose the tab, carried into the
+	// response and the ledger row so a tab worker can be traced to its cause.
+	ModeSource string
 }
 
 // TabSpawnResult is what a tab spawn produced.
@@ -57,6 +60,8 @@ type TabSpawnResult struct {
 	TabName      string `json:"tab_name"`
 	Color        string `json:"color,omitempty"`
 	ColorApplied bool   `json:"color_applied"`
+	Mode         string `json:"mode"`
+	ModeSource   string `json:"mode_source"`
 }
 
 // TabSpawner opens a named WezTerm tab for a worker.
@@ -190,15 +195,17 @@ func (s *tabSpawner) Spawn(
 	tailCtx := context.WithoutCancel(ctx)
 
 	result := &TabSpawnResult{
-		Label:    label,
-		Cwd:      target.Cwd,
-		Vault:    target.Vault,
-		Launcher: target.Launcher,
-		Source:   target.Source,
-		Model:    model,
-		Role:     role.Role,
-		PaneID:   paneID,
-		TabName:  tabName,
+		Label:      label,
+		Cwd:        target.Cwd,
+		Vault:      target.Vault,
+		Launcher:   target.Launcher,
+		Source:     target.Source,
+		Model:      model,
+		Role:       role.Role,
+		PaneID:     paneID,
+		TabName:    tabName,
+		Mode:       SpawnModeInteractive,
+		ModeSource: request.ModeSource,
 	}
 
 	// The colour is a separate submit AFTER the composer is up, and it never
@@ -280,14 +287,15 @@ func (s *tabSpawner) postLedger(
 		// AgentID is REQUIRED for the row to be adopted: the roster skips an
 		// id-less record, so a row without it leaves the worker invisible to
 		// `list_agents` and unreachable by `send_agent_message`.
-		AgentID:   result.AgentID,
-		SessionID: result.SessionID,
-		Label:     result.Label,
-		Cwd:       result.Cwd,
-		Mode:      "interactive",
-		Launcher:  result.Launcher,
-		PaneID:    result.PaneID,
-		Role:      result.Role,
+		AgentID:    result.AgentID,
+		SessionID:  result.SessionID,
+		Label:      result.Label,
+		Cwd:        result.Cwd,
+		Mode:       SpawnModeInteractive,
+		ModeSource: result.ModeSource,
+		Launcher:   result.Launcher,
+		PaneID:     result.PaneID,
+		Role:       result.Role,
 	}); err != nil {
 		// Never fatal — the worker is open — but logged, because a row that never
 		// landed leaves the worker out of the roster and unreachable, and silence

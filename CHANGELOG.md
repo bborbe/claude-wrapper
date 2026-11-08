@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: a `local` `spawn_agent` that omits `interactive` now resolves its mode through the node
+  supervisor's full chain — explicit `interactive`, then `SUPERVISOR_SPAWN_MODE`, then
+  `spawn.mode` in `~/.config/claude-supervisor/config.json`, then the `interactive` default.
+  The port honoured only the argument and the default, so with `spawn.mode: headless`
+  configured every argument-less spawn opened a WezTerm tab. An invalid value in either
+  operator source refuses the spawn, even when `interactive` is passed, as the node does.
+- feat: the spawn response and the ledger row carry `mode` and `mode_source`
+  (`argument` / `env` / `config` / `default`), so the step that chose a worker's mode is
+  reported rather than inferred.
+- fix: a headless spawn that names `vault` runs in that vault's directory, and one with neither
+  `cwd` nor `vault` is refused instead of running in the daemon's own working directory.
+
 ## v0.12.0
 
 - feat: a re-adopted child's exit is observed with kqueue `EVFILT_PROC`/`NOTE_EXIT` instead of a
