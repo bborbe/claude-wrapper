@@ -343,7 +343,11 @@ func startFleetFaces(
 	// inside a handler because it is a timer, not a request: a session with no
 	// supervisor of its own has nothing posting for it, and this is what makes
 	// liveness independent of which server spawned what.
-	poster := pkg.NewHeartbeatPoster(registry, heartbeats, heartbeatInterval)
+	// The ledger goes in so the poster can tell a finished session from a live one.
+	// The registry answers "does this pid exist?", which is true for a headless
+	// worker's child long after its turn ended — see pkg/heartbeat.go's
+	// terminalLedgerStatuses.
+	poster := pkg.NewHeartbeatPoster(registry, heartbeats, ledger, heartbeatInterval)
 	go func() {
 		if err := poster.Run(ctx); err != nil {
 			log.Printf("heartbeat poster stopped: %v", err)

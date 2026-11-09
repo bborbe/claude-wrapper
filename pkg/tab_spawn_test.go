@@ -83,13 +83,20 @@ type fakeVaults struct {
 func (f *fakeVaults) List(context.Context) ([]Vault, error) { return f.vaults, f.err }
 
 // fakeLedger records posts and serves a fixed set of rows.
+//
+// calls counts Rows invocations, so a spec can pin that the heartbeat poster reads
+// the ledger ONCE per round rather than once per live session.
 type fakeLedger struct {
 	posts []LedgerRow
 	rows  []LedgerRow
 	err   error
+	calls int
 }
 
-func (f *fakeLedger) Rows(context.Context) ([]LedgerRow, error) { return f.rows, f.err }
+func (f *fakeLedger) Rows(context.Context) ([]LedgerRow, error) {
+	f.calls++
+	return f.rows, f.err
+}
 
 func (f *fakeLedger) Post(_ context.Context, _ string, row LedgerRow) error {
 	f.posts = append(f.posts, row)

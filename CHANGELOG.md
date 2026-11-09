@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the central heartbeat poster no longer re-stamps a session the spawn ledger records
+  as ended.** A headless worker's turn and its child process have different lifetimes: the
+  supervisor clears the worker's stamp when the turn ends and the ledger records `done`, but
+  the child holds its stdin and keeps its pid, so `sessionRegistry.Live()` still reported it
+  and the poster re-created the cleared stamp within one tick. Measured 2026-11-08: session
+  `a60db816` read `status: done` with `ended_at 12:25:31Z` while its stamp was rewritten at
+  `19:37:53Z` — and again at `22:42:33Z`, 10 h 17 min after it ended. Every reader therefore
+  saw a finished worker as LIVE: the auto-resume gate refused to resume it, and
+  `worker-sessions.py --count` counted it against the spawn cap. ⚠️ **The rule is
+  ONE-DIRECTIONAL, and inverting it is worse than the bug.** A terminal status (`done`,
+  `error`) proves the session ended; a missing row, an unreadable ledger and every other
+  status prove nothing, and all of them still post. Skipping on an unknown would stop stamping
+  most of the fleet, because nothing closes a record whose server went away. The ledger is
+  read once per round, and a failed read logs `WARNING: heartbeat ledger could not be read —
+  posting every live session` and suppresses nothing. `LedgerRow` gains `status`, which this client previously
+  discarded, and `NewHeartbeatPoster` takes the reader as its third argument.
+- fix: `source: mcp-timer` was documented in `attention-controller` as *the only source that
+  proves a session is posting for itself*, and this poster writes that value for sessions it
+  stamps on their behalf. The field is therefore descriptive only; no reader may treat it as
+  evidence of self-posting until the producer distinction is carried on the wire.
+
 ## v0.14.0
 
 - feat: a `local` `spawn_agent` — tab or headless — now enforces the node supervisor's fleet

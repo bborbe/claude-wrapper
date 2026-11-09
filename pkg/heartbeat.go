@@ -152,18 +152,37 @@ type HeartbeatPoster interface {
 func NewHeartbeatPoster(
 	registry SessionRegistry,
 	client HeartbeatClient,
+	ledger LedgerReader,
 	interval time.Duration,
 ) HeartbeatPoster {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
 	}
-	return &heartbeatPoster{registry: registry, client: client, interval: interval}
+	return &heartbeatPoster{registry: registry, client: client, ledger: ledger, interval: interval}
 }
 
 type heartbeatPoster struct {
 	registry SessionRegistry
 	client   HeartbeatClient
+	// ledger says which sessions have ENDED. It is the only channel that can tell a
+	// worker whose turn finished from one whose turn is still running, because the
+	// registry answers about a pid and a headless worker's child outlives its turn.
+	ledger   LedgerReader
 	interval time.Duration
+}
+
+// terminalLedgerStatuses is the ledger's terminal vocabulary — the statuses that
+// prove a session has ended.
+//
+// ⚠️ **ONE-DIRECTIONAL, and inverting it is worse than the bug it fixes.** A status
+// in this set means "ended"; a status absent from it, a row that does not exist, and
+// a ledger that cannot be read all mean "unknown", never "ended". Skipping on an
+// unknown would stop stamping every session the ledger has not closed — most of the
+// fleet, since nothing closes a record whose server went away — and a heartbeat
+// reader acting on that would resume a live conversation.
+var terminalLedgerStatuses = map[string]bool{
+	"done":  true,
+	"error": true,
 }
 
 // Run posts once immediately and then on every tick, until ctx is cancelled.
@@ -198,6 +217,10 @@ func (p *heartbeatPoster) round(ctx context.Context) {
 		log.Printf("WARNING: heartbeat round skipped — the session registry could not be read: %v", err)
 		return
 	}
+	// The sessions the ledger records as ENDED. Read once for the whole round rather
+	// than once per entry: the store serves this from a snapshot, and one list read
+	// beats one request per live session.
+	ended := p.endedSessions(ctx)
 	for _, entry := range entries {
 		// One POST per live session against a 15 s client timeout, so a stalled
 		// store turns this loop into a long wait. Stop at the first cancellation
@@ -206,6 +229,14 @@ func (p *heartbeatPoster) round(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+		}
+		// A session the ledger records as ended gets no heartbeat, so its liveness
+		// falls back to whatever its owner left behind — which is nothing, because
+		// the supervisor clears the stamp when the turn ends. Without this the poster
+		// re-creates that cleared stamp within one tick, and a finished worker reads
+		// LIVE for as long as its child process holds stdin.
+		if ended[entry.SessionID] {
+			continue
 		}
 		if err := p.client.Post(ctx, HeartbeatRow{
 			SessionID: entry.SessionID,
@@ -216,4 +247,45 @@ func (p *heartbeatPoster) round(ctx context.Context) {
 			log.Printf("WARNING: heartbeat for session %s failed: %v", entry.SessionID, err)
 		}
 	}
+}
+
+// endedSessions is the set of session ids the spawn ledger records as ENDED.
+//
+// ⚠️ **A failure here suppresses NOTHING, and that direction is deliberate.** The
+// returned set is empty whenever the ledger is absent or unreadable, so the round
+// posts for every live session exactly as it did before this filter existed. The
+// alternative — treating an unreadable store as "everything ended" — would stop
+// stamping the whole fleet on an I/O error, and a reader acting on that would
+// resume live conversations. The failure is logged once per round rather than
+// swallowed, because the degraded answer is otherwise indistinguishable from the
+// correct one.
+//
+// ⚠️ **The LAST row for a session id wins.** A resumed session keeps its id, so a
+// stale terminal row followed by a new `running` row must read as live; a non-terminal
+// row therefore CLEARS the id rather than being ignored.
+func (p *heartbeatPoster) endedSessions(ctx context.Context) map[string]bool {
+	ended := map[string]bool{}
+	if p.ledger == nil {
+		return ended
+	}
+	rows, err := p.ledger.Rows(ctx)
+	if err != nil {
+		// ⚠️ NOT "round skipped". The round continues and posts for every live
+		// session; only the ledger step was abandoned. Saying "skipped" here would
+		// read as "nothing was stamped this round" — the opposite of what happens —
+		// and the existing registry message already owns that wording for the case
+		// where the round really does stop.
+		log.Printf("WARNING: heartbeat ledger could not be read — posting every live session: %v", err)
+		return ended
+	}
+	for _, row := range rows {
+		if !terminalLedgerStatuses[row.Status] {
+			// Not terminal: unknown, not ended. Clears any earlier terminal row for the
+			// same id — see the last-row-wins note above.
+			delete(ended, row.SessionID)
+			continue
+		}
+		ended[row.SessionID] = true
+	}
+	return ended
 }

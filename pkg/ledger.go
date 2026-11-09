@@ -71,6 +71,17 @@ type LedgerRow struct {
 	// endpoint spell the same instant differently, and the endpoint's spelling
 	// is the one that validates.
 	SpawnedAt string `json:"spawned_at"`
+	// Status is the spawn's outcome as the ledger records it: `running` while the
+	// server that spawned the session still holds it, and `done` or `error` once
+	// that server closed the record.
+	//
+	// ⚠️ It is trustworthy in ONE direction only, and that asymmetry is the whole
+	// reason the heartbeat poster reads it. A terminal status proves the session
+	// ENDED; every other value proves nothing, because nothing closes a record
+	// whose server went away (measured 2026-10-06: 1110 of 1372 records still
+	// asserted `running`). So a reader may skip on a terminal status and must
+	// never skip on the absence of one — see `terminalLedgerStatuses`.
+	Status string `json:"status"`
 }
 
 // LedgerReader reads and writes the spawn ledger.
