@@ -1299,12 +1299,17 @@ func (c *child) send(ctx context.Context, text string) error {
 	//
 	// A row that does not exist yet is normal on a spawn's opening turn: the spawn
 	// row is POSTed after this call returns, and it is non-terminal, so nothing is
-	// lost. That case is logged without a WARNING by writeVerdict.
+	// lost. That case is logged without a WARNING by patchVerdict.
+	//
+	// ⚠️ **Bounded, and never queued behind a verdict.** This is the one ledger write
+	// on a caller's critical path — the turn cannot be written until it returns —
+	// so a store slowdown must not become a fleet-wide stall. It therefore takes a
+	// short deadline AND refuses to wait for ledgerMu: a write already in flight
+	// means the row is about to be re-opened by nobody, and the turn's own result
+	// will set it a moment later. The caller's ctx is used so a cancelled request
+	// leaves no write behind it.
 	if c.ledger != nil {
-		// The CALLER's ctx, not the process's: this write is part of a request the
-		// caller is waiting on, so a cancelled request must not leave a write in
-		// flight behind it.
-		c.patchVerdict(turn, ctx, NewTurnStartedLedgerPatch())
+		c.tryPatchVerdict(turn, ctx, NewTurnStartedLedgerPatch())
 	}
 
 	c.writeMu.Lock()
@@ -1688,9 +1693,45 @@ func (c *child) fileAbandonedVerdict(turn uint64, encoded json.RawMessage) {
 // An absent row is logged without a WARNING: a child this daemon adopted may have
 // no row at all, and that is a fact about the fleet's history rather than a fault
 // in this write. Every other failure is a store problem and is named as one.
+// verdictReopenTimeout bounds the one ledger write on a caller's critical path.
+//
+// It is deliberately much shorter than the ledger client's own 15 s: this write
+// only has to precede the turn, and a store that cannot answer in three seconds
+// is a store whose answer the turn should not wait for. The turn's own result
+// writes the row a moment later regardless.
+const verdictReopenTimeout = 3 * time.Second
+
+// tryPatchVerdict applies a patch without waiting for an in-flight write.
+//
+// It is the send path's variant: a caller writing a turn must never queue behind a
+// verdict goroutine, so an occupied ledgerMu means "skip this one" rather than
+// "wait". Skipping is safe in the only direction that matters — the row keeps its
+// previous verdict until this turn's result replaces it, and the supersede guard
+// still drops anything older.
+func (c *child) tryPatchVerdict(turn uint64, ctx context.Context, patch LedgerPatch) {
+	if !c.ledgerMu.TryLock() {
+		log.Printf(
+			"claude-wrapper: ledger write in flight for session %s — the next turn opens without re-opening the row",
+			c.id,
+		)
+		return
+	}
+	defer c.ledgerMu.Unlock()
+	bounded, cancel := context.WithTimeout(ctx, verdictReopenTimeout)
+	defer cancel()
+	c.applyVerdict(turn, bounded, patch)
+}
+
 func (c *child) patchVerdict(turn uint64, ctx context.Context, patch LedgerPatch) {
 	c.ledgerMu.Lock()
 	defer c.ledgerMu.Unlock()
+	c.applyVerdict(turn, ctx, patch)
+}
+
+// applyVerdict is the shared body: the supersede guard, then the write.
+//
+// The caller holds ledgerMu.
+func (c *child) applyVerdict(turn uint64, ctx context.Context, patch LedgerPatch) {
 	// A write for a turn that has already been superseded is DROPPED, not applied.
 	//
 	// ⚠️ The store has no compare-and-set, so the row cannot be guarded where it is
