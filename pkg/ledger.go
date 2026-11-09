@@ -305,23 +305,23 @@ func (c *ledgerClient) Patch(
 		return errors.Wrapf(ctx, err, "build ledger patch failed")
 	}
 	request.Header.Set("Content-Type", "application/json")
-	started := time.Now()
+	started := c.now.Now().Time()
 	resp, err := c.httpClient.Do(request)
 	if err != nil {
 		return errors.Wrapf(ctx, err, "patch ledger failed")
 	}
-	defer func() { _ = resp.Body.Close() }()
-	// Drain so the connection is reusable; the body carries no field this caller
-	// reads beyond the status code.
-	_, _ = io.Copy(io.Discard, resp.Body)
 	// The OUTCOME line, beside the attribution line above: the pair is what makes a
 	// verdict traceable — which process sent it, and what the store answered. A
 	// request-only log cannot tell a written verdict from a refused one.
 	log.Printf(
 		"claude-wrapper: PATCH %s/%s session_id=%s answered %d in %s",
 		LedgerPath, sessionID, sessionID, resp.StatusCode,
-		time.Since(started).Round(time.Millisecond),
+		c.now.Now().Time().Sub(started).Round(time.Millisecond),
 	)
+	defer func() { _ = resp.Body.Close() }()
+	// Drain so the connection is reusable; the body carries no field this caller
+	// reads beyond the status code.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
 		return errors.Wrapf(
 			ctx, ErrLedgerRowAbsent, "ledger row for session %s does not exist", sessionID,
