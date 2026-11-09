@@ -20,8 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `error`) proves the session ended; a missing row, an unreadable ledger and every other
   status prove nothing, and all of them still post. Skipping on an unknown would stop stamping
   most of the fleet, because nothing closes a record whose server went away. The ledger is
-  read once per round, and a failed read logs `WARNING: heartbeat round skipped — the spawn
-  ledger …` and suppresses nothing. `LedgerRow` gains `status`, which this client previously
+  read once per round, and a failed read logs `WARNING: heartbeat ledger could not be read —
+  posting every live session` and suppresses nothing. `LedgerRow` gains `status`, which this client previously
   discarded, and `NewHeartbeatPoster` takes the reader as its third argument.
 - fix: `source: mcp-timer` was documented in `attention-controller` as *the only source that
   proves a session is posting for itself*, and this poster writes that value for sessions it

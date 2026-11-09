@@ -270,7 +270,12 @@ func (p *heartbeatPoster) endedSessions(ctx context.Context) map[string]bool {
 	}
 	rows, err := p.ledger.Rows(ctx)
 	if err != nil {
-		log.Printf("WARNING: heartbeat round skipped — the spawn ledger could not be read: %v", err)
+		// ⚠️ NOT "round skipped". The round continues and posts for every live
+		// session; only the ledger step was abandoned. Saying "skipped" here would
+		// read as "nothing was stamped this round" — the opposite of what happens —
+		// and the existing registry message already owns that wording for the case
+		// where the round really does stop.
+		log.Printf("WARNING: heartbeat ledger could not be read — posting every live session: %v", err)
 		return ended
 	}
 	for _, row := range rows {
