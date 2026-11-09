@@ -24,9 +24,11 @@ func (f *fakeRoleMap) Read(context.Context) (map[string]RoleMapEntry, error) {
 	return f.entries, f.err
 }
 
-// fakeRegistry is a SessionRegistry over a fixed name→ids map.
+// fakeRegistry is a SessionRegistry over a fixed name→ids map, and optionally a
+// fixed live set so a spec can have several live sessions without real processes.
 type fakeRegistry struct {
 	names map[string][]string
+	live  []RegistryEntry
 	err   error
 }
 
@@ -34,7 +36,7 @@ func (f *fakeRegistry) Status(context.Context, string) (*string, error) { return
 
 func (f *fakeRegistry) Cwd(context.Context, string) (*string, error) { return nil, nil }
 
-func (f *fakeRegistry) Live(context.Context) ([]RegistryEntry, error) { return nil, nil }
+func (f *fakeRegistry) Live(context.Context) ([]RegistryEntry, error) { return f.live, nil }
 
 func (f *fakeRegistry) Named(_ context.Context, name string) ([]string, error) {
 	if f.err != nil {
