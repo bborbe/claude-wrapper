@@ -145,6 +145,21 @@ func writeVaults(home, body string) {
 	Expect(os.WriteFile(filepath.Join(dir, "vaults.json"), []byte(body), 0o600)).To(Succeed())
 }
 
+var _ = Describe("LoadConfig config path", func() {
+	ctx := context.Background()
+
+	It("reads SUPERVISOR_CONFIG, the same file the roster's spawn caps read", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "config.json")
+		Expect(os.WriteFile(path, []byte(`{"a2a":{"url":{"docker":"http://scratch/a2a"}}}`), 0o600)).To(Succeed())
+		GinkgoT().Setenv("SUPERVISOR_CONFIG", path)
+
+		cfg, err := a2a.LoadConfig(ctx, "/nonexistent-home")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.ConfigPath).To(Equal(path))
+		Expect(cfg.URLs["docker"]).To(Equal("http://scratch/a2a"))
+	})
+})
+
 var _ = Describe("LoadConfig vault allowlist", func() {
 	ctx := context.Background()
 	var home string

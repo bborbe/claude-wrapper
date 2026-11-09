@@ -12,14 +12,13 @@ import (
 	"strings"
 
 	"github.com/bborbe/errors"
+
+	"github.com/bborbe/claude-wrapper/pkg/supervisorconfig"
 )
 
-// SupervisorConfigPath is the config file the node supervisor already owns.
-//
-// Reading the same file rather than inventing a second one is deliberate: the
-// per-target URLs live there today, and a second configuration surface would
-// disagree with the first the moment either moved.
-const SupervisorConfigPath = ".config/claude-supervisor/config.json"
+// The config file this package reads is resolved by supervisorconfig.Path — the
+// same resolver the roster's spawn caps use, so SUPERVISOR_CONFIG and an XDG
+// config home point every reader at one file rather than only some of them.
 
 // VaultsConfigPath is the vault -> allowed clusters allowlist.
 const VaultsConfigPath = ".config/claude-supervisor/vaults.json"
@@ -72,12 +71,16 @@ func LoadConfig(ctx context.Context, home string) (Config, error) {
 		}
 		home = detected
 	}
+	configPath, err := supervisorconfig.Path(ctx, home, nil)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		URLs:          map[string]string{},
 		EnvURLs:       map[string]string{},
 		EnvTokens:     map[string]string{},
 		VaultClusters: map[string][]string{},
-		ConfigPath:    filepath.Join(home, SupervisorConfigPath),
+		ConfigPath:    configPath,
 	}
 	if err := cfg.readSupervisorConfig(ctx); err != nil {
 		return Config{}, err

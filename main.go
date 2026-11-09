@@ -332,6 +332,11 @@ func startFleetFaces(
 		Vaults:    vaults,
 		Tabs:      tabs,
 		Now:       now,
+		// The fleet-wide caps (spawn.maxConcurrent / maxConcurrentHard /
+		// maxManagers / maxManagersHard / maxStartsPerMinute), read per spawn from
+		// the same config file as the spawn mode. Without it a spawn past the cap
+		// opens instead of being refused.
+		Caps: pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil),
 	})
 
 	// The central heartbeat poster. It runs beside the HTTP server rather than

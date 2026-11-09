@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -160,7 +159,9 @@ type SpawnModeSourcesReader interface {
 }
 
 // NewSpawnModeSourcesReader reads SUPERVISOR_SPAWN_MODE and `spawn.mode` from
-// `~/.config/claude-supervisor/config.json` (the node supervisor's own file).
+// the node supervisor's own config file, located by SupervisorConfigPath
+// (SUPERVISOR_CONFIG, else `$XDG_CONFIG_HOME` or `~/.config`, then
+// `claude-supervisor/config.json`).
 //
 // An empty home resolves to the user's home directory. A nil getenv reads the
 // process environment.
@@ -184,17 +185,15 @@ type spawnModeSourcesReader struct {
 // default`) — while a parseable file with a bad `spawn.mode` VALUE refuses in
 // ResolveSpawnMode.
 func (r *spawnModeSourcesReader) Read(ctx context.Context) (SpawnModeSources, error) {
-	home := r.home
-	if home == "" {
-		detected, err := os.UserHomeDir()
-		if err != nil {
-			return SpawnModeSources{}, errors.Wrapf(ctx, err, "resolve home directory failed")
-		}
-		home = detected
+	// One resolver for the config path, shared with the spawn caps, so the mode
+	// and the caps can never be read from two different files.
+	configPath, err := SupervisorConfigPath(ctx, r.home, r.getenv)
+	if err != nil {
+		return SpawnModeSources{}, err
 	}
 	sources := SpawnModeSources{
 		Env:        strings.TrimSpace(r.getenv(SpawnModeEnv)),
-		ConfigPath: filepath.Join(home, ".config", "claude-supervisor", "config.json"),
+		ConfigPath: configPath,
 	}
 	raw, err := os.ReadFile(sources.ConfigPath)
 	if err != nil {

@@ -28,6 +28,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stamps on their behalf. The field is therefore descriptive only; no reader may treat it as
   evidence of self-posting until the producer distinction is carried on the wire.
 
+## v0.14.0
+
+- feat: a `local` `spawn_agent` — tab or headless — now enforces the node supervisor's fleet
+  caps before anything is created: `spawn.maxConcurrent` / `maxConcurrentHard` (worker
+  soft/hard, defaults 20/50, env `SUPERVISOR_MAX_CONCURRENT[_HARD]`), `spawn.maxManagers` /
+  `maxManagersHard` for `role: manager` (defaults 3/5), and `spawn.maxStartsPerMinute`
+  (default 4, env `SUPERVISOR_MAX_STARTS_PER_MINUTE`, paced up to 5 min, shared
+  `start-rate.json` with the node). A refused spawn returns the node's refusal text — count,
+  limit, source and config path — and opens no pane and no child. New `operator_named`
+  argument lets a spawn open between the soft and hard caps. Config is re-read per spawn;
+  an uncountable fleet refuses rather than reading zero. Known differences from the node:
+  hand-started managers (no ledger row) are not counted, and there is no stale-count fallback.
+- fix: a paced start no longer loses its response. The roster cleared the
+  server's 60 s write deadline before dispatching, so a start held by the rate
+  limit (up to 5 min) still answers the caller instead of making it retry into
+  the burst the limit exists to bound.
+- fix: a headless spawn records its `role` and `resumed_from` on the ledger row,
+  so a `role: manager` worker is counted against the manager cap and an
+  auto-resume is excluded from the worker cap. Ledger rows are collapsed per
+  session id, as the node does, so one session recorded twice counts once.
+- feat: A2A (`docker` / `k8s`) spawns answer to the worker cap and the start
+  rate too, as the node's `spawnA2AWorker` does.
+- fix: the spawn mode and the caps resolve the config file the node's way —
+  `SUPERVISOR_CONFIG`, else `$XDG_CONFIG_HOME/claude-supervisor/config.json`, else
+  `~/.config/claude-supervisor/config.json` — through one resolver, which the
+  A2A client now shares instead of holding its own hardcoded path.
+
 ## v0.13.0
 
 - fix: a `local` `spawn_agent` that omits `interactive` now resolves its mode through the node
