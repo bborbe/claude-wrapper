@@ -42,10 +42,15 @@ const maxBackfillBytes = 8 << 20
 // the file has been read to its end, the tailer returns — a dead child will
 // never append again, so continuing to poll would only leak a goroutine per
 // exited session.
+//
+// onLine's `replayed` reports that the line was already in the file when it was
+// opened. It is what lets a successor distinguish history it is re-reading from a
+// turn that just closed, which is the difference between filing a verdict and
+// re-filing one the row already carries.
 func tailFile(
 	ctx context.Context,
 	path string,
-	onLine func(seq int, line []byte),
+	onLine func(seq int, line []byte, replayed bool),
 	gone func() bool,
 ) {
 	file, err := os.Open(path)
@@ -58,6 +63,18 @@ func tailFile(
 	if !ok {
 		return
 	}
+	// Everything below this offset existed when the file was opened; everything at
+	// or beyond it was appended after. Taken AFTER the seek, so a large file's
+	// skipped head is excluded from the replay range rather than counted as live.
+	var replayEnd int64
+	sizeKnown := false
+	if info, statErr := file.Stat(); statErr == nil {
+		replayEnd = info.Size()
+		sizeKnown = true
+	}
+	// The fallback is the sequence number, which is only right for an unskipped
+	// file; the seek is what actually knows where the read will start.
+	offset := seekOffset(file, int64(seq))
 
 	pending := make([]byte, 0, 64*1024)
 	buf := make([]byte, 64*1024)
@@ -71,17 +88,40 @@ func tailFile(
 		n, readErr := file.Read(buf)
 		if n > 0 {
 			pending = append(pending, buf[:n]...)
-			pending, seq = emitCompleteLines(pending, seq, onLine)
+			var consumed int64
+			pending, seq, consumed = emitCompleteLines(pending, seq, offset, replayEnd, onLine)
+			offset += consumed
 			continue
 		}
 		if readErr != nil && readErr != io.EOF {
 			return
+		}
+		// An unreadable size must NOT mean "nothing was replayed": replayEnd would
+		// stay 0, every historical line would be classified live, and a successor
+		// would re-file a verdict for a turn that ended before it started. The first
+		// EOF is the boundary instead — everything read up to it was already on disk.
+		if !sizeKnown {
+			replayEnd = offset
+			sizeKnown = true
 		}
 		if gone() {
 			return
 		}
 		time.Sleep(eventTailPoll)
 	}
+}
+
+// seekOffset reports the file offset the tailer is positioned at.
+//
+// The seek already happened in replayStart, so this reads it back rather than
+// recomputing it: the two must agree, and asking the file is the only way to know
+// where the read will actually start.
+func seekOffset(file *os.File, fallback int64) int64 {
+	offset, err := file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fallback
+	}
+	return offset
 }
 
 // replayStart seeks to where the replay begins and reports the sequence number the
@@ -106,21 +146,31 @@ func replayStart(file *os.File) (int, bool) {
 }
 
 // emitCompleteLines hands every newline-terminated line in pending to onLine,
-// starting at seq, and returns the unconsumed tail and the next sequence number.
+// starting at seq, and returns the unconsumed tail, the next sequence number and
+// how many bytes it consumed.
 //
 // A partial line stays in the tail: the child may be mid-write, and emitting half
 // a JSON object would be worse than emitting it one poll later.
+//
+// `offset` is the file offset of pending[0] and `replayEnd` the size the file had
+// when it was opened; a line that starts before replayEnd was already there. The
+// consumed count is what keeps `offset` honest for the next call — without it
+// every line in a later read would be classified against the wrong position.
 func emitCompleteLines(
 	pending []byte,
 	seq int,
-	onLine func(seq int, line []byte),
-) ([]byte, int) {
+	offset int64,
+	replayEnd int64,
+	onLine func(seq int, line []byte, replayed bool),
+) ([]byte, int, int64) {
+	var consumed int64
 	for {
 		index := bytes.IndexByte(pending, '\n')
 		if index < 0 {
-			return pending, seq
+			return pending, seq, consumed
 		}
-		onLine(seq, pending[:index])
+		onLine(seq, pending[:index], offset+consumed < replayEnd)
+		consumed += int64(index) + 1
 		pending = pending[index+1:]
 		seq++
 	}

@@ -80,7 +80,7 @@ var _ = ginkgo.Describe("replaying a large event file", func() {
 			tailFile(
 				ctx,
 				path,
-				func(seq int, line []byte) {
+				func(seq int, line []byte, _ bool) {
 					mu.Lock()
 					defer mu.Unlock()
 					if !seen {

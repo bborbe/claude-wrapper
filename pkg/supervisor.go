@@ -160,6 +160,15 @@ type SupervisorPolicy struct {
 	// so this is where the 15-minute window the node server enforced now lives.
 	// Zero disables the timeout entirely.
 	PermissionTimeout time.Duration
+	// Ledger receives the terminal verdict of every turn this supervisor closes.
+	//
+	// ⚠️ It belongs HERE, on the process that holds the child, and nowhere else.
+	// The child's turn end is observable only from inside this process — the
+	// event stream is read by the child's own tailer — so a second writer would
+	// have to guess at it, and the node server's own terminal patch is retired in
+	// favour of this one. Nil is legal: the child runs, and only the verdict is
+	// unrecorded.
+	Ledger LedgerReader
 }
 
 // NewSupervisorWithPolicy creates a Supervisor with an approval policy.
@@ -181,6 +190,7 @@ func NewSupervisorWithPolicy(
 		sessions:  map[string]*child{},
 		pending:   NewPending(),
 		policy:    policy,
+		ledger:    policy.Ledger,
 	}
 }
 
@@ -212,6 +222,10 @@ type supervisor struct {
 	// policy is the in-process approval policy; the zero value leaves every park
 	// for the manager.
 	policy SupervisorPolicy
+	// ledger is where a turn end files its terminal verdict. It is the policy's
+	// own Ledger, copied here so a child does not read a struct the caller could
+	// still mutate.
+	ledger LedgerReader
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -391,6 +405,8 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			subscribers: map[int]chan Event{},
 			tailDone:    make(chan struct{}),
 			policy:      policy,
+			ledger:      s.ledger,
+			ctx:         s.ctx,
 			session: Session{
 				ID:       record.ID,
 				State:    StateStarting,
@@ -898,6 +914,8 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		subscribers: map[int]chan Event{},
 		tailDone:    make(chan struct{}),
 		policy:      policy,
+		ledger:      s.ledger,
+		ctx:         s.ctx,
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
@@ -1178,6 +1196,37 @@ type child struct {
 	// judged by the overlay in force at spawn rather than by whatever the files
 	// say when it parks.
 	policy PolicyContext
+	// ledger receives this child's terminal verdicts. Nil is legal — the child
+	// runs and only the verdict goes unrecorded.
+	ledger LedgerReader
+	// ledgerMu serializes this child's ledger writes, and ledgerSeq is the turn
+	// sequence of the newest one already written.
+	//
+	// ⚠️ **The pair exists because the writes are asynchronous and turns are not.**
+	// A turn's verdict is filed off the event loop, so it can still be in flight
+	// when the manager writes the NEXT turn — and a late verdict landing after that
+	// turn's re-open would leave a running worker reading `done`. Guarding the row
+	// with the turn's own sequence drops the stale write instead of reordering the
+	// row, which the store has no compare-and-set to prevent.
+	ledgerMu  sync.Mutex
+	ledgerSeq uint64
+	// ledgerTerminalTurn is the newest turn whose TERMINAL verdict has been written.
+	//
+	// ⚠️ It exists because `ledgerSeq` alone cannot order a re-open against a
+	// verdict for the SAME turn: the send path re-opens turn N with `running` and
+	// reap may write turn N's `error` first if the child dies in between, after
+	// which a late `running` write would pass a `turn < ledgerSeq` guard and leave a
+	// dead turn reading live. A re-open therefore never overwrites a terminal write
+	// for its own turn; a terminal write always may.
+	ledgerTerminalTurn uint64
+	// turnSeq counts the turns this child has been asked for, under c.mutex. It is
+	// the ordering key above, and the last value names the turn that was open when
+	// the child left.
+	turnSeq uint64
+	// ctx is the process lifetime, so a ledger write still in flight when the
+	// daemon stops is cancelled with it instead of outliving the process that
+	// could report it.
+	ctx context.Context
 }
 
 func (c *child) snapshot() *Session {
@@ -1240,7 +1289,36 @@ func (c *child) send(ctx context.Context, text string) error {
 	// first makes the window impossible; a failed write rolls it back.
 	c.mutex.Lock()
 	c.pendingTurns++
+	// The turn's own sequence, taken here so it precedes any result that can close
+	// it: the row's writes are ordered by this number, and a turn that has not been
+	// numbered yet cannot be superseded.
+	c.turnSeq++
+	turn := c.turnSeq
 	c.mutex.Unlock()
+
+	// Re-open the ledger row BEFORE the turn is written, and synchronously.
+	//
+	// ⚠️ **The order is load-bearing, not tidy.** A child can answer within
+	// milliseconds, and its `result` closes the turn with a terminal patch. If the
+	// re-open were fired off in the background it could land AFTER that verdict and
+	// leave a finished turn reading `running` — the exact inversion this change
+	// exists to remove. Writing it first makes the result's verdict the later
+	// write by construction, whatever the store's latency.
+	//
+	// A row that does not exist yet is normal on a spawn's opening turn: the spawn
+	// row is POSTed after this call returns, and it is non-terminal, so nothing is
+	// lost. That case is logged without a WARNING by patchVerdict.
+	//
+	// ⚠️ **Bounded, and never queued behind a verdict.** This is the one ledger write
+	// on a caller's critical path — the turn cannot be written until it returns —
+	// so a store slowdown must not become a fleet-wide stall. It therefore takes a
+	// short deadline AND refuses to wait for ledgerMu: a write already in flight
+	// means the row is about to be re-opened by nobody, and the turn's own result
+	// will set it a moment later. The caller's ctx is used so a cancelled request
+	// leaves no write behind it.
+	if c.ledger != nil {
+		c.tryPatchVerdict(turn, false, ctx, NewTurnStartedLedgerPatch())
+	}
 
 	c.writeMu.Lock()
 	_, writeErr := c.stdin.Write(append(encoded, '\n'))
@@ -1249,6 +1327,11 @@ func (c *child) send(ctx context.Context, text string) error {
 		c.mutex.Lock()
 		c.pendingTurns--
 		c.mutex.Unlock()
+		// The row was re-opened to `running` a moment ago, and rolling the counter
+		// back is not enough: `reap` only writes an abandoned verdict for an open
+		// turn, so a child that dies on this failed write would leave the row
+		// asserting a turn that was never delivered — a dead worker reading live.
+		c.recordFailedTurn(turn, writeErr)
 		return errors.Wrapf(ctx, writeErr, "write message to session %q failed", c.id)
 	}
 	return nil
@@ -1378,7 +1461,7 @@ func (c *child) clearQuestion(requestID string) {
 // tail reads the child's event file as it grows and folds each line into state.
 func (c *child) tail() {
 	defer close(c.tailDone)
-	tailFile(context.Background(), c.eventsPath, func(seq int, line []byte) {
+	tailFile(context.Background(), c.eventsPath, func(seq int, line []byte, replayed bool) {
 		if len(line) == 0 {
 			return
 		}
@@ -1386,7 +1469,7 @@ func (c *child) tail() {
 		if err := json.Unmarshal(line, &event); err != nil {
 			return
 		}
-		c.apply(seq, event)
+		c.apply(seq, event, replayed)
 	}, func() bool { return c.procGone.Load() })
 }
 
@@ -1426,6 +1509,20 @@ func (c *child) watch() {
 func (c *child) reap(exitCode *int) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	// A child that leaves mid-turn closes nothing, so its turn's verdict has to be
+	// written here or it is never written at all. Read BEFORE the counter is
+	// cleared, and only for a turn that was actually open: a worker that finished
+	// its turn and then exited already has its `done` row, and writing `error` over
+	// it would turn every clean shutdown into a failure.
+	//
+	// ⚠️ **`StateGenerating` is the second half, and it is the adopted child's
+	// only signal.** An adopted child was handed no turn by THIS process, so its
+	// counter is zero even when the replayed stream shows a turn still open — the
+	// state is what the events say, and a stream whose last word was a
+	// `message_start` is a turn nobody closed.
+	if c.pendingTurns > 0 || c.session.State == StateGenerating {
+		c.recordAbandonedTurn(exitCode)
+	}
 	c.session.State = StateExited
 	// A child killed mid-turn closes nothing, so the counter would otherwise
 	// stay positive for the life of the process and misreport the field.
@@ -1450,7 +1547,14 @@ func (c *child) reap(exitCode *int) {
 
 // apply is the single place an event becomes state. Every branch is derived
 // from the event itself; none reads a clock.
-func (c *child) apply(seq int, event map[string]any) {
+//
+// `replayed` marks a line that was already in the event file when this process
+// opened it — the history an adopted child re-reads, never a turn that just
+// closed here. It changes exactly one thing: a replayed result files NO ledger
+// verdict, because the row already carries whatever that turn settled and
+// re-writing it would stamp a fresh `ended_at` on an old turn (and, worse, flip a
+// live mid-turn `running` row to `done` on every restart).
+func (c *child) apply(seq int, event map[string]any, replayed bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.lastEventAt = c.now.Now().Time()
@@ -1474,6 +1578,9 @@ func (c *child) apply(seq int, event map[string]any) {
 		c.session.State = StateIdle
 		if c.pendingTurns > 0 {
 			c.pendingTurns--
+		}
+		if !replayed {
+			c.recordTurnVerdict(event, c.closedTurnLocked())
 		}
 	}
 	c.publish(seq, Event(event))

@@ -11,6 +11,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,6 +84,79 @@ type LedgerRow struct {
 	// asserted `running`). So a reader may skip on a terminal status and must
 	// never skip on the absence of one — see `terminalLedgerStatuses`.
 	Status string `json:"status"`
+	// Result is the child's own terminal `result` event, carried verbatim, absent
+	// on a spawn row and on every row whose turn never closed.
+	//
+	// ⚠️ OPAQUE, for the same reason attention-controller carries it as
+	// `json.RawMessage`: the store never reads inside the value and this process
+	// does not either, so typing it would only invite a second interpretation of a
+	// shape the child owns. It is also the only place an error can be carried —
+	// the store has no `error` column, and a patch naming one is refused outright
+	// (`DisallowUnknownFields`), which is why the error half of a terminal verdict
+	// is written as a synthetic result object.
+	Result json.RawMessage `json:"result,omitempty"`
+	// EndedAt is when the turn that produced the verdict ended, absent on a spawn
+	// row and cleared again when the next turn opens.
+	//
+	// ⚠️ A POINTER, so "still mid-turn" and "ended at the zero instant" stay
+	// distinguishable on the wire — the same rule the store applies to its own
+	// `ended_at`. Empty is omitted rather than written as `""`, because the store
+	// parses the value as an RFC3339 instant and an empty string is a 400.
+	EndedAt *string `json:"ended_at,omitempty"`
+}
+
+// LedgerPatch is a partial update to one ledger row: the fields to change, and
+// nothing else.
+//
+// ⚠️ **A map of raw fields rather than a struct, and that is the store's own
+// contract rather than a preference.** The two writes this client makes are
+// opposites — a turn END sets `ended_at` and `result`, while a new turn CLEARS
+// them — and `null` is how the store spells "clear" (`SessionLedgerPatch.Apply`
+// deletes the key rather than storing a null). A struct with `omitempty` cannot
+// express that distinction: an absent key and a null key are different writes.
+//
+// ⚠️ **PATCH, never POST.** A POST replaces the whole row, so a terminal write
+// through it would blank every field the spawn recorded — label, cwd, mode,
+// role, spawner. That is the defect the node client grew a PATCH to remove, and
+// it is why `recordStop` refuses to re-post an existing row.
+type LedgerPatch map[string]json.RawMessage
+
+// NewTerminalLedgerPatch builds the verdict a turn end records: the status, the
+// child's own `result` event, and when the turn ended.
+//
+// `result` is omitted only when the caller has none, because writing an empty
+// value would assert a result the child never produced.
+func NewTerminalLedgerPatch(
+	status string,
+	result json.RawMessage,
+	endedAt string,
+) LedgerPatch {
+	patch := LedgerPatch{
+		"status":   json.RawMessage(strconv.Quote(status)),
+		"ended_at": json.RawMessage(strconv.Quote(endedAt)),
+	}
+	if len(result) > 0 {
+		patch["result"] = result
+	}
+	return patch
+}
+
+// NewTurnStartedLedgerPatch re-opens a row whose turn has just been written.
+//
+// ⚠️ **The re-open is not bookkeeping — without it a live worker reads dead.** A
+// terminal row is what stops the heartbeat poster stamping a session
+// (`terminalLedgerStatuses`), and a headless worker in this wrapper outlives its
+// turn: it keeps its child, its stdin and its reachability, and the next turn is
+// one `send` away. Leaving `done` behind would make every reader that trusts the
+// ledger treat a reachable worker as finished. `null` clears `ended_at` and
+// `result` on the store side, which is what "this turn has no verdict yet" means
+// on the wire.
+func NewTurnStartedLedgerPatch() LedgerPatch {
+	return LedgerPatch{
+		"status":   json.RawMessage(`"running"`),
+		"ended_at": json.RawMessage("null"),
+		"result":   json.RawMessage("null"),
+	}
 }
 
 // LedgerReader reads and writes the spawn ledger.
@@ -102,6 +177,15 @@ type LedgerReader interface {
 	// that line is the only thing that attributes the row to THIS process, since
 	// the store writes a row whoever POSTs it.
 	Post(ctx context.Context, spawnerSessionID string, row LedgerRow) error
+	// Patch writes a partial update to the row for sessionID.
+	//
+	// It is the write a turn end needs and a POST cannot be: the spawn row is
+	// owned by the spawn, and a full replace would blank the fields it recorded.
+	// A row that does not exist answers ErrLedgerRowAbsent — a normal outcome for
+	// a child this process adopted without ever having spawned it, and never
+	// folded into success, because a verdict written nowhere is the defect this
+	// method exists to remove.
+	Patch(ctx context.Context, sessionID string, patch LedgerPatch) error
 }
 
 // NewLedgerClient creates a LedgerReader backed by attention-controller.
@@ -181,4 +265,87 @@ func (c *ledgerClient) Post(
 		return errors.Errorf(ctx, "ledger post answered %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// Patch writes a partial update to one row.
+func (c *ledgerClient) Patch(
+	ctx context.Context,
+	sessionID string,
+	patch LedgerPatch,
+) error {
+	if c.baseURL == "" {
+		return errors.Errorf(ctx, "no attention-controller endpoint configured")
+	}
+	if sessionID == "" {
+		return errors.Errorf(ctx, "ledger patch without a session id")
+	}
+	if len(patch) == 0 {
+		// An empty patch is a 200 that changed nothing, which reads as a written
+		// verdict to the caller. Refusing it keeps "the write landed" honest.
+		return errors.Errorf(ctx, "ledger patch for session %s carries no fields", sessionID)
+	}
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "marshal ledger patch failed")
+	}
+	// The attribution line, written BEFORE the request for the same reason Post
+	// writes one: the store answers a row whoever PATCHes it, so only this line
+	// says which process wrote the verdict.
+	log.Printf(
+		"claude-wrapper: PATCH %s/%s session_id=%s status=%s",
+		LedgerPath, sessionID, sessionID, patchStatus(patch),
+	)
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPatch,
+		c.baseURL+LedgerPath+"/"+url.PathEscape(sessionID),
+		bytes.NewReader(encoded),
+	)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "build ledger patch failed")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	started := c.now.Now().Time()
+	resp, err := c.httpClient.Do(request)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "patch ledger failed")
+	}
+	// The OUTCOME line, beside the attribution line above: the pair is what makes a
+	// verdict traceable — which process sent it, and what the store answered. A
+	// request-only log cannot tell a written verdict from a refused one.
+	log.Printf(
+		"claude-wrapper: PATCH %s/%s session_id=%s answered %d in %s",
+		LedgerPath, sessionID, sessionID, resp.StatusCode,
+		c.now.Now().Time().Sub(started).Round(time.Millisecond),
+	)
+	defer func() { _ = resp.Body.Close() }()
+	// Drain so the connection is reusable; the body carries no field this caller
+	// reads beyond the status code.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return errors.Wrapf(
+			ctx, ErrLedgerRowAbsent, "ledger row for session %s does not exist", sessionID,
+		)
+	}
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return errors.Errorf(ctx, "ledger patch answered %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// patchStatus renders the status a patch carries, for the attribution line.
+//
+// It reads the raw field rather than taking a parameter so the log cannot drift
+// from what was actually sent; an unparseable value is reported as-is instead of
+// being dropped from the line.
+func patchStatus(patch LedgerPatch) string {
+	raw, ok := patch["status"]
+	if !ok {
+		return "-"
+	}
+	status, err := strconv.Unquote(string(raw))
+	if err != nil {
+		return string(raw)
+	}
+	return status
 }

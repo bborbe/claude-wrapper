@@ -80,16 +80,8 @@ func main() {
 	// half-open files.
 	decider := &pkg.PermissionDecider{Log: pkg.NewPermissionLog(*permissionLog, now), Now: now}
 	store := pkg.NewSessionStore(*stateDir)
-	supervisor := pkg.NewSupervisorWithPolicy(
-		ctx,
-		*claudeBin,
-		now,
-		pkg.SelfURL(*listen),
-		store,
-		pkg.SupervisorPolicy{
-			Decider:           decider,
-			PermissionTimeout: *permissionTimeout,
-		},
+	supervisor, ledger := newSupervisor(
+		ctx, *claudeBin, *listen, *attentionURL, store, decider, *permissionTimeout, now,
 	)
 	// Re-adoption runs before the listener opens, so a supervisor that connects the
 	// instant the port is up already sees the sessions that survived the restart.
@@ -107,7 +99,7 @@ func main() {
 
 	mux := newMux(supervisor, sequencer, locks, *listen, *mcpTurnTimeout)
 
-	startFleetFaces(ctx, mux, supervisor, decider, *attentionURL, *heartbeatInterval)
+	startFleetFaces(ctx, mux, supervisor, decider, ledger, *attentionURL, *heartbeatInterval)
 
 	server := &http.Server{
 		Addr:              *listen,
@@ -127,6 +119,39 @@ func main() {
 
 	<-ctx.Done()
 	drainAndStop(supervisor, server, *drainBound, stop)
+}
+
+// newSupervisor builds the supervisor together with the one ledger client its
+// turn-end verdicts are written through.
+//
+// ⚠️ The client is built HERE rather than in startFleetFaces because the
+// supervisor needs it FIRST. The process that holds the child is the only one
+// that can see its turn end, so it is the one that files the verdict; the same
+// client is handed to the fleet faces afterwards, which is what keeps the spawn
+// POST and the terminal PATCH one writer rather than two.
+func newSupervisor(
+	ctx context.Context,
+	claudeBin string,
+	listen string,
+	attentionURL string,
+	store pkg.SessionStore,
+	decider *pkg.PermissionDecider,
+	permissionTimeout time.Duration,
+	now libtime.CurrentDateTimeGetter,
+) (pkg.Supervisor, pkg.LedgerReader) {
+	ledger := pkg.NewLedgerClient(attentionURL, nil, now)
+	return pkg.NewSupervisorWithPolicy(
+		ctx,
+		claudeBin,
+		now,
+		pkg.SelfURL(listen),
+		store,
+		pkg.SupervisorPolicy{
+			Decider:           decider,
+			PermissionTimeout: permissionTimeout,
+			Ledger:            ledger,
+		},
+	), ledger
 }
 
 // warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised
@@ -246,12 +271,15 @@ func startFleetFaces(
 	mux *http.ServeMux,
 	supervisor pkg.Supervisor,
 	decider *pkg.PermissionDecider,
+	// ledger is the process's one ledger client. It arrives as a parameter rather
+	// than being built here because the supervisor writes the turn-end verdict
+	// through the same client — one writer, one timeout, one attribution line.
+	ledger pkg.LedgerReader,
 	attentionURL string,
 	heartbeatInterval time.Duration,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
-	ledger := pkg.NewLedgerClient(attentionURL, nil, now)
 	heartbeats := pkg.NewHeartbeatClient(attentionURL, nil)
 
 	// The board arms. One process reads the store for every child it holds, which

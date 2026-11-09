@@ -15,6 +15,14 @@ import stderrors "errors"
 var (
 	// ErrSessionNotFound is returned for an id the supervisor does not hold.
 	ErrSessionNotFound = stderrors.New("session not found")
+	// ErrLedgerRowAbsent is returned when a ledger patch names a session the
+	// store has no row for.
+	//
+	// It is a sentinel rather than a bare 404 string because the caller's correct
+	// answer differs from a transport failure: an absent row is expected for a
+	// child adopted without a spawn row, and it is logged rather than retried,
+	// while any other failure is a store problem worth a WARNING.
+	ErrLedgerRowAbsent = stderrors.New("session ledger row absent")
 	// ErrSessionExited is returned when the child has already left.
 	ErrSessionExited = stderrors.New("session exited")
 	// ErrSessionLive is returned when a resume targets a conversation whose

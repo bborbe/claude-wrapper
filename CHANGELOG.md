@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **a turn end files a terminal verdict on the spawn ledger, so a finished worker leaves a
+  `done` row instead of nothing.** The port kept the spawn `POST` and dropped the node server's
+  terminal patch: 151 of 151 rows spawned on 2026-11-09 read `status: ""` with no `result`, and no
+  reader could tell a worker that finished from one that never started. `LedgerRow` gains
+  `result` and `ended_at`, `LedgerReader` gains `Patch` (the store already carries the fields and
+  serves `PATCH /api/1.0/session-ledger/{session_id}`; a POST would blank the spawn's own
+  fields), and the supervisor that holds the child writes the verdict at its `result` event —
+  `done`, or `error` when that event says `is_error`.
+- feat: the error half is ported too. A child that leaves with a turn open files `status: error`
+  with the cause inside `result`, because the store has no `error` column and refuses a patch
+  naming one.
+- fix: a new turn re-opens the row (`running`, `ended_at`/`result` cleared) before the turn
+  reaches the child. A terminal row stops the heartbeat poster stamping a session, and a headless
+  worker here outlives its turn — `done` left behind would read a reachable worker as finished.
+- docs: `claude-supervisor`'s `server/agent-loop.mjs` terminal patch is documented as the
+  node-only path; the ledger's terminal writer is the process that holds the child.
+
 ## v0.14.3
 
 - test: **the headless model precedence is now pinned by a test, not only by the spawn handler's prose.** `pkg/roster_mcp_model_test.go` drives `headlessModel` against a temp vault: the caller's explicit `model` wins unchanged, the task's own `launcher:` frontmatter resolves through that script's export, a task naming none falls back to the vault's `worker_launcher`, an absent task does the same, and a server with no vault lister returns empty rather than a guess. Written because the v0.14.2 review flagged the precedence wiring as untested — the fix itself was verified against a live spawn, which cannot be re-run on demand at the worker cap.
