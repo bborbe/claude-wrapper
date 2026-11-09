@@ -312,3 +312,53 @@ var _ = ginkgo.Describe("SessionRegistry.Named", func() {
 		gomega.Expect(ids).To(gomega.BeEmpty())
 	})
 })
+
+var _ = ginkgo.Describe("TaskLauncher", func() {
+	var dir string
+
+	ginkgo.BeforeEach(func() {
+		var err error
+		dir, err = os.MkdirTemp("", "task-launcher-*")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(os.MkdirAll(filepath.Join(dir, "25 Tasks"), 0o755)).To(gomega.BeNil())
+	})
+
+	ginkgo.AfterEach(func() {
+		_ = os.RemoveAll(dir)
+	})
+
+	writeTask := func(name, body string) {
+		gomega.Expect(os.WriteFile(filepath.Join(dir, "25 Tasks", name), []byte(body), 0o600)).
+			To(gomega.BeNil())
+	}
+
+	ginkgo.It("reads the launcher a task names in its frontmatter", func() {
+		writeTask("A Task.md", "---\nstatus: in_progress\nlauncher: cc-private-deepseek\n---\nbody\n")
+		gomega.Expect(TaskLauncher(dir, "A Task")).To(gomega.Equal("cc-private-deepseek"))
+	})
+
+	ginkgo.It("returns empty when the task names no launcher", func() {
+		writeTask("A Task.md", "---\nstatus: in_progress\n---\nbody\n")
+		gomega.Expect(TaskLauncher(dir, "A Task")).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("returns empty when the task file does not exist", func() {
+		gomega.Expect(TaskLauncher(dir, "Missing")).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("does not read a launcher named in the body rather than the frontmatter", func() {
+		writeTask("A Task.md", "---\nstatus: in_progress\n---\nlauncher: cc-private-claude\n")
+		gomega.Expect(TaskLauncher(dir, "A Task")).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("resolves the task launcher's model through its own export", func() {
+		launcher := filepath.Join(dir, "cc-test-deepseek")
+		gomega.Expect(os.WriteFile(launcher, []byte(
+			"export ANTHROPIC_DEFAULT_OPUS_MODEL=\"deepseek-v4-flash-max[1m]\"\n"+
+				"# a launch that passes no --model inherits the ambient\n"+
+				"claude --model \"${ANTHROPIC_DEFAULT_OPUS_MODEL}\" \"$@\"\n"), 0o600)).
+			To(gomega.BeNil())
+		writeTask("A Task.md", "---\nlauncher: "+launcher+"\n---\nbody\n")
+		gomega.Expect(TaskLauncherModel(dir, "A Task")).To(gomega.Equal("deepseek-v4-flash-max[1m]"))
+	})
+})
