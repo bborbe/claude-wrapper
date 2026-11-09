@@ -312,7 +312,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 	}
 	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
 		Cwd:    cwd,
-		Model:  body.Model,
+		Model:  s.headlessModel(ctx, body, cwd),
 		Label:  body.Label,
 		Role:   body.Role,
 		Policy: body.Policy,
@@ -382,6 +382,67 @@ func (s *RosterToolServer) headlessCwd(
 		return "", err
 	}
 	return target.Cwd, nil
+}
+
+// headlessModel returns the model a headless spawn must pass to the child.
+//
+// The caller's explicit `model` always wins. Otherwise the task's own
+// `launcher:` is read, then the vault's worker launcher — the same chain a tab
+// spawn follows, which a headless worker otherwise bypasses completely because
+// its child is a bare `claude --print` and the launcher script is never
+// executed. Measured 2026-11-09: every headless worker ran on Claude Code's
+// default model while every interactive tab read deepseek, because nothing ever
+// passed `--model`.
+//
+// "" means no model could be resolved, and the child keeps its own default —
+// never a guess, for the same reason ParseLauncherModel refuses one.
+func (s *RosterToolServer) headlessModel(
+	ctx context.Context,
+	body spawnAgentArgs,
+	cwd string,
+) string {
+	if model := strings.TrimSpace(body.Model); model != "" {
+		return model
+	}
+	vault, err := s.vaultFor(ctx, body, cwd)
+	if err != nil || vault == nil {
+		return ""
+	}
+	if model := TaskLauncherModel(vault.Path, body.Task); model != "" {
+		return model
+	}
+	launcher, _, err := launcherForVault(ctx, vault)
+	if err != nil {
+		return ""
+	}
+	return LauncherModel(launcher)
+}
+
+// vaultFor resolves the vault a spawn belongs to: the one it named, else the most
+// specific configured vault containing the cwd. nil when neither resolves — a
+// spawn with only a cwd outside every vault keeps its default model rather than
+// borrowing another vault's launcher.
+func (s *RosterToolServer) vaultFor(
+	ctx context.Context,
+	body spawnAgentArgs,
+	cwd string,
+) (*Vault, error) {
+	if s.Vaults == nil {
+		return nil, nil
+	}
+	vaults, err := s.Vaults.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	named, err := findVault(ctx, vaults, body.Vault)
+	if err != nil || named != nil {
+		return named, err
+	}
+	target, err := resolveByCwd(ctx, vaults, cwd, body.Vault)
+	if err != nil {
+		return nil, err
+	}
+	return findVault(ctx, vaults, target.Vault)
 }
 
 // recordSpawn files the ledger row a spawned child would otherwise lack.

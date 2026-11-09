@@ -426,3 +426,61 @@ func LauncherModel(launcher string) string {
 	}
 	return ParseLauncherModel(string(raw))
 }
+
+// TaskLauncher returns the launcher a task names in its own `launcher:`
+// frontmatter, or "" when it names none.
+//
+// A headless worker never executes a launcher script — the child is a bare
+// `claude --print` — so this field is the ONLY per-task model choice the
+// headless arm can honour. The lookup is by file name under the vault's task
+// folder because the spawn body carries the task TITLE (`task`), not a path.
+func TaskLauncher(vaultPath, task string) string {
+	title := strings.TrimSpace(task)
+	root := strings.TrimSpace(vaultPath)
+	if title == "" || root == "" {
+		return ""
+	}
+	// `25 Tasks` is the current folder; `24 Tasks` is kept because an older vault
+	// still uses it, and a wrong folder must not silently disable the field.
+	for _, folder := range []string{"25 Tasks", "24 Tasks"} {
+		raw, err := os.ReadFile(filepath.Join(root, folder, title+".md"))
+		if err != nil {
+			continue
+		}
+		return frontmatterValue(string(raw), "launcher")
+	}
+	return ""
+}
+
+// TaskLauncherModel returns the model the task's own launcher names, or "".
+func TaskLauncherModel(vaultPath, task string) string {
+	launcher := TaskLauncher(vaultPath, task)
+	if launcher == "" {
+		return ""
+	}
+	return LauncherModel(launcher)
+}
+
+// frontmatterValue returns the value of `key:` inside the leading YAML block.
+//
+// Deliberately a line scan rather than a YAML decode: the task files are written
+// by several producers, and a strict decoder would refuse the whole file over one
+// unrelated field — turning a missing model into a failed spawn.
+func frontmatterValue(text, key string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return ""
+	}
+	prefix := key + ":"
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			return ""
+		}
+		if strings.HasPrefix(trimmed, prefix) {
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+			return strings.Trim(value, `"'`)
+		}
+	}
+	return ""
+}
