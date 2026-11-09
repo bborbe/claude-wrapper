@@ -55,7 +55,15 @@ var _ = ginkgo.Describe("RosterToolServer.headlessModel", func() {
 			[]byte(body), 0o600)).To(gomega.BeNil())
 	}
 
-	ginkgo.It("returns the caller's explicit model unchanged", func() {
+	ginkgo.It("returns the caller's explicit model even when the task names another", func() {
+		// The task's launcher deliberately names a DIFFERENT model, so a regression that
+		// reordered TaskLauncherModel above body.Model would fail here instead of passing
+		// on a task that names none.
+		other := filepath.Join(dir, "cc-test-claude")
+		gomega.Expect(os.WriteFile(other, []byte(
+			"claude --model claude-opus-5-5[1m] \"$@\"\n"), 0o600)).To(gomega.BeNil())
+		writeTask("---\nlauncher: " + other + "\n---\nbody\n")
+
 		model := server.headlessModel(ctx, spawnAgentArgs{
 			Vault: "test-vault", Task: taskTitle, Model: "claude-sonnet-5-5",
 		}, dir)
