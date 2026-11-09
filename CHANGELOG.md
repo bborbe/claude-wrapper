@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.14.3
 
 - test: **the headless model precedence is now pinned by a test, not only by the spawn handler's prose.** `pkg/roster_mcp_model_test.go` drives `headlessModel` against a temp vault: the caller's explicit `model` wins unchanged, the task's own `launcher:` frontmatter resolves through that script's export, a task naming none falls back to the vault's `worker_launcher`, an absent task does the same, and a server with no vault lister returns empty rather than a guess. Written because the v0.14.2 review flagged the precedence wiring as untested — the fix itself was verified against a live spawn, which cannot be re-run on demand at the worker cap.
 
