@@ -255,14 +255,58 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 	ginkgo.It("drops a verdict whose turn has already been superseded", func() {
 		ledger := &fakeLedger{}
 		c := &child{id: "s1", now: libtime.NewCurrentDateTime(), ledger: ledger, ctx: ctx}
-		c.patchVerdict(2, ctx, NewTurnStartedLedgerPatch())
+		c.patchVerdict(2, false, ctx, NewTurnStartedLedgerPatch())
 		c.patchVerdict(
-			1, ctx,
+			1, true, ctx,
 			NewTerminalLedgerPatch(
 				"done", json.RawMessage(`{"subtype":"success"}`), "2026-11-09T00:00:00Z",
 			),
 		)
 		gomega.Expect(ledger.patchRecords()).To(gomega.HaveLen(1))
 		gomega.Expect(patchStatusOf(ledger.patchRecords()[0].patch)).To(gomega.Equal("running"))
+	})
+
+	// The mirror of the supersede rule, and the one a `turn < ledgerSeq` guard alone
+	// gets wrong: a re-open for a turn that ALREADY has a terminal verdict must not
+	// land, or a child that died between the counter increment and the re-open
+	// leaves a dead turn reading `running`.
+	ginkgo.It("never re-opens a turn that already has a terminal verdict", func() {
+		ledger := &fakeLedger{}
+		c := &child{id: "s1", now: libtime.NewCurrentDateTime(), ledger: ledger, ctx: ctx}
+		c.patchVerdict(
+			3, true, ctx,
+			NewTerminalLedgerPatch(
+				"error", json.RawMessage(`{"subtype":"error"}`), "2026-11-09T00:00:00Z",
+			),
+		)
+		c.patchVerdict(3, false, ctx, NewTurnStartedLedgerPatch())
+		gomega.Expect(ledger.patchRecords()).To(gomega.HaveLen(1))
+		gomega.Expect(patchStatusOf(ledger.patchRecords()[0].patch)).To(gomega.Equal("error"))
+	})
+
+	// The send path must never queue behind a verdict write: a turn is a caller's
+	// critical path, and a slow store would otherwise serialize every turn.
+	ginkgo.It("skips the re-open rather than waiting for a write in flight", func() {
+		ledger := &fakeLedger{}
+		c := &child{id: "s1", now: libtime.NewCurrentDateTime(), ledger: ledger, ctx: ctx}
+		c.ledgerMu.Lock()
+		c.tryPatchVerdict(1, false, ctx, NewTurnStartedLedgerPatch())
+		c.ledgerMu.Unlock()
+		gomega.Expect(ledger.patchRecords()).To(gomega.BeEmpty())
+	})
+
+	// A result closes the OLDEST open turn, not the newest one requested. Taking
+	// turnSeq here is the defect that let a stale result overwrite a newer turn's
+	// re-open.
+	ginkgo.It("associates a result with the turn it closes, not the newest one", func() {
+		c := &child{}
+		c.turnSeq = 2
+		c.pendingTurns = 2
+		// First result: two were open, so this closes turn 1 and leaves one open.
+		c.pendingTurns--
+		gomega.Expect(c.closedTurnLocked()).To(gomega.Equal(uint64(1)))
+		// Second result closes turn 2.
+		c.pendingTurns--
+		gomega.Expect(c.closedTurnLocked()).To(gomega.Equal(uint64(2)))
 	})
 })

@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	stderrors "errors"
 	"fmt"
 	"io"
 	"log"
@@ -1211,6 +1210,15 @@ type child struct {
 	// row, which the store has no compare-and-set to prevent.
 	ledgerMu  sync.Mutex
 	ledgerSeq uint64
+	// ledgerTerminalTurn is the newest turn whose TERMINAL verdict has been written.
+	//
+	// ⚠️ It exists because `ledgerSeq` alone cannot order a re-open against a
+	// verdict for the SAME turn: the send path re-opens turn N with `running` and
+	// reap may write turn N's `error` first if the child dies in between, after
+	// which a late `running` write would pass a `turn < ledgerSeq` guard and leave a
+	// dead turn reading live. A re-open therefore never overwrites a terminal write
+	// for its own turn; a terminal write always may.
+	ledgerTerminalTurn uint64
 	// turnSeq counts the turns this child has been asked for, under c.mutex. It is
 	// the ordering key above, and the last value names the turn that was open when
 	// the child left.
@@ -1309,7 +1317,7 @@ func (c *child) send(ctx context.Context, text string) error {
 	// will set it a moment later. The caller's ctx is used so a cancelled request
 	// leaves no write behind it.
 	if c.ledger != nil {
-		c.tryPatchVerdict(turn, ctx, NewTurnStartedLedgerPatch())
+		c.tryPatchVerdict(turn, false, ctx, NewTurnStartedLedgerPatch())
 	}
 
 	c.writeMu.Lock()
@@ -1319,6 +1327,11 @@ func (c *child) send(ctx context.Context, text string) error {
 		c.mutex.Lock()
 		c.pendingTurns--
 		c.mutex.Unlock()
+		// The row was re-opened to `running` a moment ago, and rolling the counter
+		// back is not enough: `reap` only writes an abandoned verdict for an open
+		// turn, so a child that dies on this failed write would leave the row
+		// asserting a turn that was never delivered — a dead worker reading live.
+		c.recordFailedTurn(turn, writeErr)
 		return errors.Wrapf(ctx, writeErr, "write message to session %q failed", c.id)
 	}
 	return nil
@@ -1567,197 +1580,10 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 			c.pendingTurns--
 		}
 		if !replayed {
-			c.recordTurnVerdict(event)
+			c.recordTurnVerdict(event, c.closedTurnLocked())
 		}
 	}
 	c.publish(seq, Event(event))
-}
-
-// recordTurnVerdict files the ledger's terminal verdict for a turn that just
-// closed.
-//
-// ⚠️ **The caller holds c.mutex and this method does not wait for the store.**
-// apply runs on the single goroutine that reads the child's stream, so an HTTP
-// round trip under that lock would stall every later event — including the ones
-// that make the session readable. The write therefore runs on its own goroutine,
-// and the event is marshalled there: a decoded event map is read-only once
-// published, so sharing it is safe.
-//
-// ⚠️ **The verdict is per TURN, and it is the child's own event, not a summary.**
-// `result.subtype` and `result.is_error` are the two facts every reader of the
-// node ledger already keys on, so carrying the event verbatim is what makes this
-// row readable by those readers without a second translation. An error result
-// settles as `error` for the same reason the node did it: a turn that failed is
-// not a worker that finished.
-func (c *child) recordTurnVerdict(event map[string]any) {
-	if !c.canWriteVerdict() {
-		return
-	}
-	status := "done"
-	if isError, ok := event["is_error"].(bool); ok && isError {
-		status = "error"
-	}
-	// The turn this result closes is the newest one asked for; taking its sequence
-	// here (under c.mutex, which apply holds) is what makes a later write able to
-	// tell that it has been superseded.
-	turn := c.turnSeq
-	go c.fileTurnVerdict(turn, status, event)
-}
-
-// fileTurnVerdict marshals the turn's own result event and files it.
-//
-// It runs on its own goroutine, which is why the marshal lives here rather than in
-// recordTurnVerdict: a result event carries the whole final message, and encoding
-// it under c.mutex would stall the event loop for every later event.
-func (c *child) fileTurnVerdict(turn uint64, status string, event map[string]any) {
-	encoded, err := json.Marshal(event)
-	if err != nil {
-		log.Printf(
-			"WARNING: marshal result event for session %s failed, no ledger verdict written: %v",
-			c.id, err,
-		)
-		return
-	}
-	c.patchVerdict(turn, c.ctx, NewTerminalLedgerPatch(status, encoded, c.endedAt()))
-}
-
-// canWriteVerdict reports whether a verdict can be filed at all, and names the
-// misconfiguration when it cannot.
-//
-// A child always carries both fields — startChild and Adopt copy them from the
-// supervisor — so a nil here is a construction bug rather than a fleet state, and
-// it is said out loud instead of falling back to a context the process never
-// owned.
-func (c *child) canWriteVerdict() bool {
-	if c.ledger == nil {
-		return false
-	}
-	if c.ctx == nil {
-		log.Printf(
-			"WARNING: session %s has no process context — its turn's ledger verdict is not written",
-			c.id,
-		)
-		return false
-	}
-	return true
-}
-
-// endedAt renders the instant this verdict is filed at.
-func (c *child) endedAt() string {
-	return c.now.Now().Time().UTC().Format(time.RFC3339)
-}
-
-// recordAbandonedTurn files the verdict for a turn the child left open.
-//
-// It is the ported `catch` half of the node's terminal patch: a stream that ends
-// while a turn is in flight leaves that turn with no result, and without this
-// write the row would keep asserting whatever it last said — or, on a fresh
-// spawn, nothing at all. The cause is carried INSIDE `result` rather than as an
-// `error` field, because the store has no such field and a patch naming one is
-// refused outright.
-func (c *child) recordAbandonedTurn(exitCode *int) {
-	if !c.canWriteVerdict() {
-		return
-	}
-	cause := "the child left while a turn was still open"
-	if exitCode != nil {
-		cause = fmt.Sprintf(
-			"the child exited with code %d while a turn was still open", *exitCode,
-		)
-	}
-	//nolint:errchkjson // a two-key map of a bool and a string cannot fail to encode
-	encoded, err := json.Marshal(map[string]any{
-		"subtype":  "error",
-		"is_error": true,
-		"error":    cause,
-	})
-	if err != nil {
-		log.Printf("WARNING: marshal abandoned-turn verdict for session %s failed: %v", c.id, err)
-		return
-	}
-	// The turn that was open is the newest one asked for; no later turn can be
-	// written once the child is gone.
-	go c.fileAbandonedVerdict(c.turnSeq, encoded)
-}
-
-// fileAbandonedVerdict files the already-encoded error verdict.
-//
-// The encoding happened under c.mutex and is tiny, so it stays there; only the
-// store round trip is moved off the lock.
-func (c *child) fileAbandonedVerdict(turn uint64, encoded json.RawMessage) {
-	c.patchVerdict(turn, c.ctx, NewTerminalLedgerPatch("error", encoded, c.endedAt()))
-}
-
-// patchVerdict applies one ledger patch and logs what could not land.
-//
-// An absent row is logged without a WARNING: a child this daemon adopted may have
-// no row at all, and that is a fact about the fleet's history rather than a fault
-// in this write. Every other failure is a store problem and is named as one.
-// verdictReopenTimeout bounds the one ledger write on a caller's critical path.
-//
-// It is deliberately much shorter than the ledger client's own 15 s: this write
-// only has to precede the turn, and a store that cannot answer in three seconds
-// is a store whose answer the turn should not wait for. The turn's own result
-// writes the row a moment later regardless.
-const verdictReopenTimeout = 3 * time.Second
-
-// tryPatchVerdict applies a patch without waiting for an in-flight write.
-//
-// It is the send path's variant: a caller writing a turn must never queue behind a
-// verdict goroutine, so an occupied ledgerMu means "skip this one" rather than
-// "wait". Skipping is safe in the only direction that matters — the row keeps its
-// previous verdict until this turn's result replaces it, and the supersede guard
-// still drops anything older.
-func (c *child) tryPatchVerdict(turn uint64, ctx context.Context, patch LedgerPatch) {
-	if !c.ledgerMu.TryLock() {
-		log.Printf(
-			"claude-wrapper: ledger write in flight for session %s — the next turn opens without re-opening the row",
-			c.id,
-		)
-		return
-	}
-	defer c.ledgerMu.Unlock()
-	bounded, cancel := context.WithTimeout(ctx, verdictReopenTimeout)
-	defer cancel()
-	c.applyVerdict(turn, bounded, patch)
-}
-
-func (c *child) patchVerdict(turn uint64, ctx context.Context, patch LedgerPatch) {
-	c.ledgerMu.Lock()
-	defer c.ledgerMu.Unlock()
-	c.applyVerdict(turn, ctx, patch)
-}
-
-// applyVerdict is the shared body: the supersede guard, then the write.
-//
-// The caller holds ledgerMu.
-func (c *child) applyVerdict(turn uint64, ctx context.Context, patch LedgerPatch) {
-	// A write for a turn that has already been superseded is DROPPED, not applied.
-	//
-	// ⚠️ The store has no compare-and-set, so the row cannot be guarded where it is
-	// written — only here, where the turn it belongs to is still known. Dropping is
-	// the safe direction: the superseding write carries a later turn, and a stale
-	// verdict landing on top of it would leave a worker mid-turn reading `done`.
-	if turn < c.ledgerSeq {
-		log.Printf(
-			"claude-wrapper: dropping a superseded ledger verdict for session %s (turn %d, row already at turn %d)",
-			c.id, turn, c.ledgerSeq,
-		)
-		return
-	}
-	c.ledgerSeq = turn
-	err := c.ledger.Patch(ctx, c.id, patch)
-	if err == nil {
-		return
-	}
-	if stderrors.Is(err, ErrLedgerRowAbsent) {
-		log.Printf(
-			"claude-wrapper: no ledger row for session %s — verdict not recorded: %v",
-			c.id, err,
-		)
-		return
-	}
-	log.Printf("WARNING: ledger verdict for session %s failed: %v", c.id, err)
 }
 
 // publish retains one event for replay and hands it to every live subscriber.

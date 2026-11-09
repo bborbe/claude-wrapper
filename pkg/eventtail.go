@@ -67,8 +67,10 @@ func tailFile(
 	// or beyond it was appended after. Taken AFTER the seek, so a large file's
 	// skipped head is excluded from the replay range rather than counted as live.
 	var replayEnd int64
+	sizeKnown := false
 	if info, statErr := file.Stat(); statErr == nil {
 		replayEnd = info.Size()
+		sizeKnown = true
 	}
 	// The fallback is the sequence number, which is only right for an unskipped
 	// file; the seek is what actually knows where the read will start.
@@ -93,6 +95,14 @@ func tailFile(
 		}
 		if readErr != nil && readErr != io.EOF {
 			return
+		}
+		// An unreadable size must NOT mean "nothing was replayed": replayEnd would
+		// stay 0, every historical line would be classified live, and a successor
+		// would re-file a verdict for a turn that ended before it started. The first
+		// EOF is the boundary instead — everything read up to it was already on disk.
+		if !sizeKnown {
+			replayEnd = offset
+			sizeKnown = true
 		}
 		if gone() {
 			return
