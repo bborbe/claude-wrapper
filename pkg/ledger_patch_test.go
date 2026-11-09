@@ -50,7 +50,7 @@ var _ = ginkgo.Describe("ledgerClient.Patch", func() {
 	})
 
 	ginkgo.It("PATCHes the row named by the path with the verdict's fields", func() {
-		err := client.Patch(ctx, "abc-123", TerminalLedgerPatch(
+		err := client.Patch(ctx, "abc-123", NewTerminalLedgerPatch(
 			"done",
 			json.RawMessage(`{"subtype":"success","is_error":false}`),
 			"2026-11-09T12:00:00Z",
@@ -67,7 +67,7 @@ var _ = ginkgo.Describe("ledgerClient.Patch", func() {
 	})
 
 	ginkgo.It("clears ended_at and result with a null, which is how a new turn re-opens a row", func() {
-		gomega.Expect(client.Patch(ctx, "abc-123", TurnStartedLedgerPatch())).
+		gomega.Expect(client.Patch(ctx, "abc-123", NewTurnStartedLedgerPatch())).
 			To(gomega.Succeed())
 		gomega.Expect(string(lastBody["status"])).To(gomega.Equal(`"running"`))
 		// `null` deletes the key on the store side; an OMITTED key would leave the
@@ -78,14 +78,14 @@ var _ = ginkgo.Describe("ledgerClient.Patch", func() {
 
 	ginkgo.It("reports an absent row as ErrLedgerRowAbsent rather than as a write", func() {
 		answer = http.StatusNotFound
-		err := client.Patch(ctx, "missing", TurnStartedLedgerPatch())
+		err := client.Patch(ctx, "missing", NewTurnStartedLedgerPatch())
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(stderrors.Is(err, ErrLedgerRowAbsent)).To(gomega.BeTrue())
 	})
 
 	ginkgo.It("reports any other refusal as an error", func() {
 		answer = http.StatusInternalServerError
-		err := client.Patch(ctx, "abc-123", TurnStartedLedgerPatch())
+		err := client.Patch(ctx, "abc-123", NewTurnStartedLedgerPatch())
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(stderrors.Is(err, ErrLedgerRowAbsent)).To(gomega.BeFalse())
 	})
@@ -97,7 +97,7 @@ var _ = ginkgo.Describe("ledgerClient.Patch", func() {
 	})
 
 	ginkgo.It("refuses a patch with no session id", func() {
-		err := client.Patch(ctx, "", TurnStartedLedgerPatch())
+		err := client.Patch(ctx, "", NewTurnStartedLedgerPatch())
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(lastReq).To(gomega.BeNil())
 	})

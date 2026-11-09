@@ -1281,11 +1281,10 @@ func (c *child) send(ctx context.Context, text string) error {
 	// row is POSTed after this call returns, and it is non-terminal, so nothing is
 	// lost. That case is logged without a WARNING by writeVerdict.
 	if c.ledger != nil {
-		ledgerCtx := c.ctx
-		if ledgerCtx == nil {
-			ledgerCtx = ctx
-		}
-		c.writeVerdict(ledgerCtx, c.ledger, c.id, TurnStartedLedgerPatch())
+		// The CALLER's ctx, not the process's: this write is part of a request the
+		// caller is waiting on, so a cancelled request must not leave a write in
+		// flight behind it.
+		c.patchVerdict(ctx, NewTurnStartedLedgerPatch())
 	}
 
 	c.writeMu.Lock()
@@ -1551,31 +1550,57 @@ func (c *child) apply(seq int, event map[string]any) {
 // settles as `error` for the same reason the node did it: a turn that failed is
 // not a worker that finished.
 func (c *child) recordTurnVerdict(event map[string]any) {
-	if c.ledger == nil {
+	if !c.canWriteVerdict() {
 		return
 	}
 	status := "done"
 	if isError, ok := event["is_error"].(bool); ok && isError {
 		status = "error"
 	}
-	sessionID := c.id
-	ctx := c.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	go c.fileTurnVerdict(status, event)
+}
+
+// fileTurnVerdict marshals the turn's own result event and files it.
+//
+// It runs on its own goroutine, which is why the marshal lives here rather than in
+// recordTurnVerdict: a result event carries the whole final message, and encoding
+// it under c.mutex would stall the event loop for every later event.
+func (c *child) fileTurnVerdict(status string, event map[string]any) {
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		log.Printf(
+			"WARNING: marshal result event for session %s failed, no ledger verdict written: %v",
+			c.id, err,
+		)
+		return
 	}
-	ledger := c.ledger
-	endedAt := c.now.Now().Time().UTC().Format(time.RFC3339)
-	go func() {
-		encoded, err := json.Marshal(event)
-		if err != nil {
-			log.Printf(
-				"WARNING: marshal result event for session %s failed, no ledger verdict written: %v",
-				sessionID, err,
-			)
-			return
-		}
-		c.writeVerdict(ctx, ledger, sessionID, TerminalLedgerPatch(status, encoded, endedAt))
-	}()
+	c.patchVerdict(c.ctx, NewTerminalLedgerPatch(status, encoded, c.endedAt()))
+}
+
+// canWriteVerdict reports whether a verdict can be filed at all, and names the
+// misconfiguration when it cannot.
+//
+// A child always carries both fields — startChild and Adopt copy them from the
+// supervisor — so a nil here is a construction bug rather than a fleet state, and
+// it is said out loud instead of falling back to a context the process never
+// owned.
+func (c *child) canWriteVerdict() bool {
+	if c.ledger == nil {
+		return false
+	}
+	if c.ctx == nil {
+		log.Printf(
+			"WARNING: session %s has no process context — its turn's ledger verdict is not written",
+			c.id,
+		)
+		return false
+	}
+	return true
+}
+
+// endedAt renders the instant this verdict is filed at.
+func (c *child) endedAt() string {
+	return c.now.Now().Time().UTC().Format(time.RFC3339)
 }
 
 // recordAbandonedTurn files the verdict for a turn the child left open.
@@ -1587,7 +1612,7 @@ func (c *child) recordTurnVerdict(event map[string]any) {
 // `error` field, because the store has no such field and a patch naming one is
 // refused outright.
 func (c *child) recordAbandonedTurn(exitCode *int) {
-	if c.ledger == nil {
+	if !c.canWriteVerdict() {
 		return
 	}
 	cause := "the child left while a turn was still open"
@@ -1606,44 +1631,35 @@ func (c *child) recordAbandonedTurn(exitCode *int) {
 		log.Printf("WARNING: marshal abandoned-turn verdict for session %s failed: %v", c.id, err)
 		return
 	}
-	ctx := c.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ledger := c.ledger
-	endedAt := c.now.Now().Time().UTC().Format(time.RFC3339)
-	sessionID := c.id
-	go func() {
-		c.writeVerdict(
-			ctx, ledger, sessionID,
-			TerminalLedgerPatch("error", encoded, endedAt),
-		)
-	}()
+	go c.fileAbandonedVerdict(encoded)
 }
 
-// writeVerdict applies one ledger patch and logs what could not land.
+// fileAbandonedVerdict files the already-encoded error verdict.
+//
+// The encoding happened under c.mutex and is tiny, so it stays there; only the
+// store round trip is moved off the lock.
+func (c *child) fileAbandonedVerdict(encoded json.RawMessage) {
+	c.patchVerdict(c.ctx, NewTerminalLedgerPatch("error", encoded, c.endedAt()))
+}
+
+// patchVerdict applies one ledger patch and logs what could not land.
 //
 // An absent row is logged without a WARNING: a child this daemon adopted may have
 // no row at all, and that is a fact about the fleet's history rather than a fault
 // in this write. Every other failure is a store problem and is named as one.
-func (c *child) writeVerdict(
-	ctx context.Context,
-	ledger LedgerReader,
-	sessionID string,
-	patch LedgerPatch,
-) {
-	err := ledger.Patch(ctx, sessionID, patch)
+func (c *child) patchVerdict(ctx context.Context, patch LedgerPatch) {
+	err := c.ledger.Patch(ctx, c.id, patch)
 	if err == nil {
 		return
 	}
 	if stderrors.Is(err, ErrLedgerRowAbsent) {
 		log.Printf(
 			"claude-wrapper: no ledger row for session %s — verdict not recorded: %v",
-			sessionID, err,
+			c.id, err,
 		)
 		return
 	}
-	log.Printf("WARNING: ledger verdict for session %s failed: %v", sessionID, err)
+	log.Printf("WARNING: ledger verdict for session %s failed: %v", c.id, err)
 }
 
 // publish retains one event for replay and hands it to every live subscriber.

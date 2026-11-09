@@ -126,7 +126,7 @@ type LedgerPatch map[string]json.RawMessage
 //
 // `result` is omitted only when the caller has none, because writing an empty
 // value would assert a result the child never produced.
-func TerminalLedgerPatch(
+func NewTerminalLedgerPatch(
 	status string,
 	result json.RawMessage,
 	endedAt string,
@@ -151,7 +151,7 @@ func TerminalLedgerPatch(
 // ledger treat a reachable worker as finished. `null` clears `ended_at` and
 // `result` on the store side, which is what "this turn has no verdict yet" means
 // on the wire.
-func TurnStartedLedgerPatch() LedgerPatch {
+func NewTurnStartedLedgerPatch() LedgerPatch {
 	return LedgerPatch{
 		"status":   json.RawMessage(`"running"`),
 		"ended_at": json.RawMessage("null"),
@@ -305,6 +305,7 @@ func (c *ledgerClient) Patch(
 		return errors.Wrapf(ctx, err, "build ledger patch failed")
 	}
 	request.Header.Set("Content-Type", "application/json")
+	started := time.Now()
 	resp, err := c.httpClient.Do(request)
 	if err != nil {
 		return errors.Wrapf(ctx, err, "patch ledger failed")
@@ -313,6 +314,14 @@ func (c *ledgerClient) Patch(
 	// Drain so the connection is reusable; the body carries no field this caller
 	// reads beyond the status code.
 	_, _ = io.Copy(io.Discard, resp.Body)
+	// The OUTCOME line, beside the attribution line above: the pair is what makes a
+	// verdict traceable — which process sent it, and what the store answered. A
+	// request-only log cannot tell a written verdict from a refused one.
+	log.Printf(
+		"claude-wrapper: PATCH %s/%s session_id=%s answered %d in %s",
+		LedgerPath, sessionID, sessionID, resp.StatusCode,
+		time.Since(started).Round(time.Millisecond),
+	)
 	if resp.StatusCode == http.StatusNotFound {
 		return errors.Wrapf(
 			ctx, ErrLedgerRowAbsent, "ledger row for session %s does not exist", sessionID,
