@@ -121,8 +121,8 @@ type LedgerRow struct {
 // it is why `recordStop` refuses to re-post an existing row.
 type LedgerPatch map[string]json.RawMessage
 
-// TerminalLedgerPatch is the verdict a turn end records: the status, the child's
-// own `result` event, and when the turn ended.
+// NewTerminalLedgerPatch builds the verdict a turn end records: the status, the
+// child's own `result` event, and when the turn ended.
 //
 // `result` is omitted only when the caller has none, because writing an empty
 // value would assert a result the child never produced.
@@ -141,7 +141,7 @@ func NewTerminalLedgerPatch(
 	return patch
 }
 
-// TurnStartedLedgerPatch re-opens a row whose turn has just been written.
+// NewTurnStartedLedgerPatch re-opens a row whose turn has just been written.
 //
 // ⚠️ **The re-open is not bookkeeping — without it a live worker reads dead.** A
 // terminal row is what stops the heartbeat poster stamping a session

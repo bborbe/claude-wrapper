@@ -13,14 +13,11 @@ import (
 	"time"
 )
 
-// This file is the child's ledger write path: the per-turn verdicts a finished
-// turn, an abandoned turn and a turn that never reached the child file on the
-// spawn ledger.
-//
-// It is split out of supervisor.go for one mechanical reason — that file is at its
-// 2000-line lint limit — and it is a coherent seam rather than a cut at an
-// arbitrary line: everything here exists to answer "what did this turn end in",
-// while supervisor.go owns the child's process and event stream.
+// This file is the child's ledger write path: what a finished turn, an abandoned
+// turn and a turn that never reached the child file on the spawn ledger. Split out
+// of supervisor.go at that file's 2000-line lint limit, along the seam that matters:
+// everything here answers "what did this turn end in", while supervisor.go owns the
+// child's process and event stream.
 
 // recordFailedTurn files an error verdict for a turn that never reached the child.
 //
@@ -65,19 +62,15 @@ func (c *child) closedTurnLocked() uint64 {
 // recordTurnVerdict files the ledger's terminal verdict for a turn that just
 // closed.
 //
-// ⚠️ **The caller holds c.mutex and this method does not wait for the store.**
-// apply runs on the single goroutine that reads the child's stream, so an HTTP
-// round trip under that lock would stall every later event — including the ones
-// that make the session readable. The write therefore runs on its own goroutine,
-// and the event is marshalled there: a decoded event map is read-only once
-// published, so sharing it is safe.
+// ⚠️ **The caller holds c.mutex and this method does not wait for the store.** apply
+// runs on the single goroutine that reads the child's stream, so an HTTP round trip
+// under that lock would stall every later event. The write runs on its own
+// goroutine, and the event is marshalled there: a published event map is read-only,
+// so sharing it is safe.
 //
-// ⚠️ **The verdict is per TURN, and it is the child's own event, not a summary.**
-// `result.subtype` and `result.is_error` are the two facts every reader of the
-// node ledger already keys on, so carrying the event verbatim is what makes this
-// row readable by those readers without a second translation. An error result
-// settles as `error` for the same reason the node did it: a turn that failed is
-// not a worker that finished.
+// ⚠️ **The verdict is the child's own event, not a summary.** `result.subtype` and
+// `result.is_error` are what every reader of the node ledger keys on, so carrying
+// the event verbatim makes this row readable without a second translation.
 func (c *child) recordTurnVerdict(event map[string]any, turn uint64) {
 	if !c.canWriteVerdict() {
 		return

@@ -7,29 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- feat: **a turn end now files a terminal verdict on the spawn ledger, so a finished worker
-  leaves a `done` row instead of nothing.** The Go port kept the spawn `POST` and dropped the
-  node server's terminal patch, so every row spawned by this daemon read `status: ""` with no
-  `result` — measured 2026-11-09: 151 of 151 rows spawned that day, no reader able to tell a
-  worker that finished from one that never started. `pkg/ledger.go`'s `LedgerRow` gained
-  `result` and `ended_at`, and `LedgerReader` gained `Patch` (the store already carries the
-  fields and serves `PATCH /api/1.0/session-ledger/{session_id}`; a POST would have blanked
-  the spawn's own fields). The verdict is written by the supervisor that holds the child, at
-  the `result` event: `status: done` with the child's own result event verbatim, or `error`
-  when that event says `is_error`.
-- feat: **the error half is ported too.** A child that leaves while a turn is open files
-  `status: error` carrying the cause inside `result` — the store has no `error` column and
-  refuses a patch naming one, so a synthetic `{subtype, is_error, error}` object is what keeps
-  the cause readable rather than dropped.
-- fix: **a new turn re-opens the row before the turn is written.** A terminal row is what stops
-  the heartbeat poster stamping a session, and a headless worker here outlives its turn, so
-  `done` left behind would read a reachable worker as finished. `send` now writes
-  `status: running` with `ended_at`/`result` cleared, synchronously and BEFORE the turn reaches
-  the child's stdin — a fast result must be the later write, or a finished turn would be left
-  reading `running`.
-- docs: the node server's terminal patch in `claude-supervisor`'s `server/agent-loop.mjs` is
-  documented as the node-only path; the ledger's terminal writer is the process that holds the
-  child, which on this fleet is this daemon.
+- feat: **a turn end files a terminal verdict on the spawn ledger, so a finished worker leaves a
+  `done` row instead of nothing.** The port kept the spawn `POST` and dropped the node server's
+  terminal patch: 151 of 151 rows spawned on 2026-11-09 read `status: ""` with no `result`, and no
+  reader could tell a worker that finished from one that never started. `LedgerRow` gains
+  `result` and `ended_at`, `LedgerReader` gains `Patch` (the store already carries the fields and
+  serves `PATCH /api/1.0/session-ledger/{session_id}`; a POST would blank the spawn's own
+  fields), and the supervisor that holds the child writes the verdict at its `result` event —
+  `done`, or `error` when that event says `is_error`.
+- feat: the error half is ported too. A child that leaves with a turn open files `status: error`
+  with the cause inside `result`, because the store has no `error` column and refuses a patch
+  naming one.
+- fix: a new turn re-opens the row (`running`, `ended_at`/`result` cleared) before the turn
+  reaches the child. A terminal row stops the heartbeat poster stamping a session, and a headless
+  worker here outlives its turn — `done` left behind would read a reachable worker as finished.
+- docs: `claude-supervisor`'s `server/agent-loop.mjs` terminal patch is documented as the
+  node-only path; the ledger's terminal writer is the process that holds the child.
 
 ## v0.14.1
 
