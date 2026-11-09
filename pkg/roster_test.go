@@ -85,6 +85,9 @@ func (l *rosterLedger) Post(_ context.Context, _ string, row LedgerRow) error {
 	return nil
 }
 
+// Patch is a no-op: the roster reads and spawns, it never writes a verdict.
+func (l *rosterLedger) Patch(_ context.Context, _ string, _ LedgerPatch) error { return nil }
+
 // rosterLiveness is a Liveness returning a fixed set.
 type rosterLiveness struct {
 	live map[string]struct{}

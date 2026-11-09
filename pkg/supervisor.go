@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"log"
@@ -160,6 +161,15 @@ type SupervisorPolicy struct {
 	// so this is where the 15-minute window the node server enforced now lives.
 	// Zero disables the timeout entirely.
 	PermissionTimeout time.Duration
+	// Ledger receives the terminal verdict of every turn this supervisor closes.
+	//
+	// ⚠️ It belongs HERE, on the process that holds the child, and nowhere else.
+	// The child's turn end is observable only from inside this process — the
+	// event stream is read by the child's own tailer — so a second writer would
+	// have to guess at it, and the node server's own terminal patch is retired in
+	// favour of this one. Nil is legal: the child runs, and only the verdict is
+	// unrecorded.
+	Ledger LedgerReader
 }
 
 // NewSupervisorWithPolicy creates a Supervisor with an approval policy.
@@ -181,6 +191,7 @@ func NewSupervisorWithPolicy(
 		sessions:  map[string]*child{},
 		pending:   NewPending(),
 		policy:    policy,
+		ledger:    policy.Ledger,
 	}
 }
 
@@ -212,6 +223,10 @@ type supervisor struct {
 	// policy is the in-process approval policy; the zero value leaves every park
 	// for the manager.
 	policy SupervisorPolicy
+	// ledger is where a turn end files its terminal verdict. It is the policy's
+	// own Ledger, copied here so a child does not read a struct the caller could
+	// still mutate.
+	ledger LedgerReader
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -391,6 +406,8 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			subscribers: map[int]chan Event{},
 			tailDone:    make(chan struct{}),
 			policy:      policy,
+			ledger:      s.ledger,
+			ctx:         s.ctx,
 			session: Session{
 				ID:       record.ID,
 				State:    StateStarting,
@@ -898,6 +915,8 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		subscribers: map[int]chan Event{},
 		tailDone:    make(chan struct{}),
 		policy:      policy,
+		ledger:      s.ledger,
+		ctx:         s.ctx,
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
@@ -1178,6 +1197,13 @@ type child struct {
 	// judged by the overlay in force at spawn rather than by whatever the files
 	// say when it parks.
 	policy PolicyContext
+	// ledger receives this child's terminal verdicts. Nil is legal — the child
+	// runs and only the verdict goes unrecorded.
+	ledger LedgerReader
+	// ctx is the process lifetime, so a ledger write still in flight when the
+	// daemon stops is cancelled with it instead of outliving the process that
+	// could report it.
+	ctx context.Context
 }
 
 func (c *child) snapshot() *Session {
@@ -1241,6 +1267,26 @@ func (c *child) send(ctx context.Context, text string) error {
 	c.mutex.Lock()
 	c.pendingTurns++
 	c.mutex.Unlock()
+
+	// Re-open the ledger row BEFORE the turn is written, and synchronously.
+	//
+	// ⚠️ **The order is load-bearing, not tidy.** A child can answer within
+	// milliseconds, and its `result` closes the turn with a terminal patch. If the
+	// re-open were fired off in the background it could land AFTER that verdict and
+	// leave a finished turn reading `running` — the exact inversion this change
+	// exists to remove. Writing it first makes the result's verdict the later
+	// write by construction, whatever the store's latency.
+	//
+	// A row that does not exist yet is normal on a spawn's opening turn: the spawn
+	// row is POSTed after this call returns, and it is non-terminal, so nothing is
+	// lost. That case is logged without a WARNING by writeVerdict.
+	if c.ledger != nil {
+		ledgerCtx := c.ctx
+		if ledgerCtx == nil {
+			ledgerCtx = ctx
+		}
+		c.writeVerdict(ledgerCtx, c.ledger, c.id, TurnStartedLedgerPatch())
+	}
 
 	c.writeMu.Lock()
 	_, writeErr := c.stdin.Write(append(encoded, '\n'))
@@ -1426,6 +1472,14 @@ func (c *child) watch() {
 func (c *child) reap(exitCode *int) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	// A child that leaves mid-turn closes nothing, so its turn's verdict has to be
+	// written here or it is never written at all. Read BEFORE the counter is
+	// cleared, and only for a turn that was actually open: a worker that finished
+	// its turn and then exited already has its `done` row, and writing `error` over
+	// it would turn every clean shutdown into a failure.
+	if c.pendingTurns > 0 {
+		c.recordAbandonedTurn(exitCode)
+	}
 	c.session.State = StateExited
 	// A child killed mid-turn closes nothing, so the counter would otherwise
 	// stay positive for the life of the process and misreport the field.
@@ -1475,8 +1529,121 @@ func (c *child) apply(seq int, event map[string]any) {
 		if c.pendingTurns > 0 {
 			c.pendingTurns--
 		}
+		c.recordTurnVerdict(event)
 	}
 	c.publish(seq, Event(event))
+}
+
+// recordTurnVerdict files the ledger's terminal verdict for a turn that just
+// closed.
+//
+// ⚠️ **The caller holds c.mutex and this method does not wait for the store.**
+// apply runs on the single goroutine that reads the child's stream, so an HTTP
+// round trip under that lock would stall every later event — including the ones
+// that make the session readable. The write therefore runs on its own goroutine,
+// and the event is marshalled there: a decoded event map is read-only once
+// published, so sharing it is safe.
+//
+// ⚠️ **The verdict is per TURN, and it is the child's own event, not a summary.**
+// `result.subtype` and `result.is_error` are the two facts every reader of the
+// node ledger already keys on, so carrying the event verbatim is what makes this
+// row readable by those readers without a second translation. An error result
+// settles as `error` for the same reason the node did it: a turn that failed is
+// not a worker that finished.
+func (c *child) recordTurnVerdict(event map[string]any) {
+	if c.ledger == nil {
+		return
+	}
+	status := "done"
+	if isError, ok := event["is_error"].(bool); ok && isError {
+		status = "error"
+	}
+	sessionID := c.id
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ledger := c.ledger
+	endedAt := c.now.Now().Time().UTC().Format(time.RFC3339)
+	go func() {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			log.Printf(
+				"WARNING: marshal result event for session %s failed, no ledger verdict written: %v",
+				sessionID, err,
+			)
+			return
+		}
+		c.writeVerdict(ctx, ledger, sessionID, TerminalLedgerPatch(status, encoded, endedAt))
+	}()
+}
+
+// recordAbandonedTurn files the verdict for a turn the child left open.
+//
+// It is the ported `catch` half of the node's terminal patch: a stream that ends
+// while a turn is in flight leaves that turn with no result, and without this
+// write the row would keep asserting whatever it last said — or, on a fresh
+// spawn, nothing at all. The cause is carried INSIDE `result` rather than as an
+// `error` field, because the store has no such field and a patch naming one is
+// refused outright.
+func (c *child) recordAbandonedTurn(exitCode *int) {
+	if c.ledger == nil {
+		return
+	}
+	cause := "the child left while a turn was still open"
+	if exitCode != nil {
+		cause = fmt.Sprintf(
+			"the child exited with code %d while a turn was still open", *exitCode,
+		)
+	}
+	//nolint:errchkjson // a two-key map of a bool and a string cannot fail to encode
+	encoded, err := json.Marshal(map[string]any{
+		"subtype":  "error",
+		"is_error": true,
+		"error":    cause,
+	})
+	if err != nil {
+		log.Printf("WARNING: marshal abandoned-turn verdict for session %s failed: %v", c.id, err)
+		return
+	}
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ledger := c.ledger
+	endedAt := c.now.Now().Time().UTC().Format(time.RFC3339)
+	sessionID := c.id
+	go func() {
+		c.writeVerdict(
+			ctx, ledger, sessionID,
+			TerminalLedgerPatch("error", encoded, endedAt),
+		)
+	}()
+}
+
+// writeVerdict applies one ledger patch and logs what could not land.
+//
+// An absent row is logged without a WARNING: a child this daemon adopted may have
+// no row at all, and that is a fact about the fleet's history rather than a fault
+// in this write. Every other failure is a store problem and is named as one.
+func (c *child) writeVerdict(
+	ctx context.Context,
+	ledger LedgerReader,
+	sessionID string,
+	patch LedgerPatch,
+) {
+	err := ledger.Patch(ctx, sessionID, patch)
+	if err == nil {
+		return
+	}
+	if stderrors.Is(err, ErrLedgerRowAbsent) {
+		log.Printf(
+			"claude-wrapper: no ledger row for session %s — verdict not recorded: %v",
+			sessionID, err,
+		)
+		return
+	}
+	log.Printf("WARNING: ledger verdict for session %s failed: %v", sessionID, err)
 }
 
 // publish retains one event for replay and hands it to every live subscriber.

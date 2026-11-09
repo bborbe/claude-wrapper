@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -91,6 +92,22 @@ type fakeLedger struct {
 	rows  []LedgerRow
 	err   error
 	calls int
+	// patches records every partial update, in write order, so a spec can pin
+	// both the verdict a turn end filed and that a new turn re-opened the row
+	// BEFORE the turn was written.
+	//
+	// ⚠️ Guarded by mu: the terminal verdict is written from the child's own
+	// goroutine, so a spec polling it while the write lands is a genuine
+	// concurrent read. Read it through patchRecords() rather than the field.
+	patches  []ledgerPatchRecord
+	patchErr error
+	mu       sync.Mutex
+}
+
+// ledgerPatchRecord is one Patch call: the row it named and the fields it carried.
+type ledgerPatchRecord struct {
+	sessionID string
+	patch     LedgerPatch
 }
 
 func (f *fakeLedger) Rows(context.Context) ([]LedgerRow, error) {
@@ -101,6 +118,26 @@ func (f *fakeLedger) Rows(context.Context) ([]LedgerRow, error) {
 func (f *fakeLedger) Post(_ context.Context, _ string, row LedgerRow) error {
 	f.posts = append(f.posts, row)
 	return nil
+}
+
+// Patch records the verdicts written to it, and fails with patchErr when a spec
+// sets one.
+func (f *fakeLedger) Patch(_ context.Context, sessionID string, patch LedgerPatch) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.patchErr != nil {
+		return f.patchErr
+	}
+	f.patches = append(f.patches, ledgerPatchRecord{sessionID: sessionID, patch: patch})
+	return nil
+}
+
+// patchRecords is a snapshot of what Patch recorded, safe to read while the
+// child's goroutine is still writing.
+func (f *fakeLedger) patchRecords() []ledgerPatchRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ledgerPatchRecord{}, f.patches...)
 }
 
 // steppingClock advances one second per read, so a poll loop's deadline is
