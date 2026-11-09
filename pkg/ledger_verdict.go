@@ -181,30 +181,37 @@ func (c *child) fileAbandonedVerdict(turn uint64, encoded json.RawMessage) {
 // writes the row a moment later regardless.
 const verdictReopenTimeout = 3 * time.Second
 
-// tryPatchVerdict applies a patch without waiting for an in-flight write.
+// tryPatchVerdict applies a patch without WAITING for an in-flight write.
 //
 // It is the send path's variant: a caller writing a turn must never queue behind a
-// verdict goroutine, so an occupied ledgerMu means "skip this one" rather than
-// "wait". Skipping is safe in the only direction that matters — the row keeps its
-// previous verdict until this turn's result replaces it, and the supersede guard
-// still drops anything older.
+// verdict goroutine, so an occupied ledgerMu means "do it later" rather than
+// "wait".
+//
+// ⚠️ **Later, not never — dropping it was a defect.** A skipped re-open leaves the
+// row reading the PREVIOUS turn's terminal status while the new turn is live, and
+// the heartbeat poster reads a terminal row as ended: a working worker would stop
+// being stamped. So the write is deferred to a goroutine that waits its turn; the
+// supersede and terminal guards still apply when it lands, which is what makes a
+// late re-open safe — if this turn's verdict got there first, the deferred re-open
+// is dropped rather than resurrecting a finished turn.
 func (c *child) tryPatchVerdict(
 	turn uint64,
 	terminal bool,
 	ctx context.Context,
 	patch LedgerPatch,
 ) {
-	if !c.ledgerMu.TryLock() {
-		log.Printf(
-			"claude-wrapper: ledger write in flight for session %s — the next turn opens without re-opening the row",
-			c.id,
-		)
+	if c.ledgerMu.TryLock() {
+		defer c.ledgerMu.Unlock()
+		bounded, cancel := context.WithTimeout(ctx, verdictReopenTimeout)
+		defer cancel()
+		c.applyVerdict(turn, terminal, bounded, patch)
 		return
 	}
-	defer c.ledgerMu.Unlock()
-	bounded, cancel := context.WithTimeout(ctx, verdictReopenTimeout)
-	defer cancel()
-	c.applyVerdict(turn, terminal, bounded, patch)
+	log.Printf(
+		"claude-wrapper: ledger write in flight for session %s — deferring this turn's re-open rather than stalling the turn",
+		c.id,
+	)
+	go c.patchVerdict(turn, terminal, c.ctx, patch)
 }
 
 // patchVerdict applies one ledger patch and logs what could not land.

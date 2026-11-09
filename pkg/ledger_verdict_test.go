@@ -284,15 +284,23 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 		gomega.Expect(patchStatusOf(ledger.patchRecords()[0].patch)).To(gomega.Equal("error"))
 	})
 
-	// The send path must never queue behind a verdict write: a turn is a caller's
-	// critical path, and a slow store would otherwise serialize every turn.
-	ginkgo.It("skips the re-open rather than waiting for a write in flight", func() {
+	// The send path must never WAIT on a verdict write — but it must not drop the
+	// re-open either: a row left at the previous turn's `done` stops the heartbeat
+	// poster stamping a live worker. So the write is deferred, and lands once the
+	// in-flight one releases the lock.
+	ginkgo.It("defers the re-open rather than stalling the turn", func() {
 		ledger := &fakeLedger{}
 		c := &child{id: "s1", now: libtime.NewCurrentDateTime(), ledger: ledger, ctx: ctx}
 		c.ledgerMu.Lock()
 		c.tryPatchVerdict(1, false, ctx, NewTurnStartedLedgerPatch())
-		c.ledgerMu.Unlock()
+		// The turn's caller was not blocked by the held lock, and nothing was written
+		// while it was held.
 		gomega.Expect(ledger.patchRecords()).To(gomega.BeEmpty())
+		c.ledgerMu.Unlock()
+		gomega.Eventually(func() int {
+			return len(ledger.patchRecords())
+		}, "2s").Should(gomega.Equal(1))
+		gomega.Expect(patchStatusOf(ledger.patchRecords()[0].patch)).To(gomega.Equal("running"))
 	})
 
 	// A result closes the OLDEST open turn, not the newest one requested. Taking
