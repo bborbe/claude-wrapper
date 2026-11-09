@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.14.2
 
 - fix: **a headless spawn now carries its task's launcher model, so a worker stops starting on Claude Code's default model while its task names deepseek.** The child is a bare `claude --print`, so the launcher script is never executed; `pkg/roster_mcp.go` passed `body.Model` straight through, and `commands/open.md` never sends one. Measured 2026-11-09: continuous `model=claude-opus-5-5` requests in the router log while every interactive pane read `deepseek-v4-flash-max[1m]`, and a live headless child whose environment held `ANTHROPIC_BASE_URL` and nothing else. `headlessModel` now resolves the model in the daemon when the caller names none: the caller's explicit `model`, else the task's own `launcher:` frontmatter (`TaskLauncherModel`, read from `<vault>/25 Tasks/<task>.md`), else the vault's `worker_launcher` — the same chain a tab spawn follows. `""` still means "no model could be resolved" and leaves the child on its own default, never a guess. The launcher parsing reuses `ParseLauncherModel`, which already strips whole comment lines: the real `cc-private-deepseek` carries `# … a launch that passes no --model inherits the ambient`, and a naive scan reads the model as `inherits`.
 
