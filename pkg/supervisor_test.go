@@ -274,11 +274,11 @@ var _ = ginkgo.Describe("child.apply", func() {
 		c.apply(0, map[string]any{
 			"type":    "assistant",
 			"message": map[string]any{"model": "deepseek-v4-flash-max"},
-		})
+		}, false)
 		c.apply(0, map[string]any{
 			"type":    "assistant",
 			"message": map[string]any{"model": syntheticModel},
-		})
+		}, false)
 		gomega.Expect(c.session.Model).To(gomega.Equal("deepseek-v4-flash-max"))
 		gomega.Expect(c.session.ModelSource).To(gomega.Equal("assistant"))
 	})
@@ -288,9 +288,9 @@ var _ = ginkgo.Describe("child.apply", func() {
 	// the spawn value and report a stale mode as current.
 	ginkgo.It("takes the permission mode from every init event", func() {
 		c := newChild()
-		c.apply(0, map[string]any{"type": "system", "subtype": "init", "permissionMode": "default"})
+		c.apply(0, map[string]any{"type": "system", "subtype": "init", "permissionMode": "default"}, false)
 		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("default"))
-		c.apply(0, map[string]any{"type": "system", "subtype": "init", "permissionMode": "acceptEdits"})
+		c.apply(0, map[string]any{"type": "system", "subtype": "init", "permissionMode": "acceptEdits"}, false)
 		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("acceptEdits"))
 	})
 })
@@ -383,7 +383,7 @@ var _ = ginkgo.Describe("child.applyControlResponse", func() {
 				"request_id": "perm-mode-1",
 				"response":   map[string]any{"mode": "acceptEdits"},
 			},
-		})
+		}, false)
 		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("acceptEdits"))
 	})
 
@@ -395,7 +395,7 @@ var _ = ginkgo.Describe("child.applyControlResponse", func() {
 		c.apply(0, map[string]any{
 			"type":     "control_response",
 			"response": map[string]any{"subtype": "success", "request_id": "x"},
-		})
+		}, false)
 		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("default"))
 	})
 })

@@ -110,6 +110,7 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
+		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
 
 		gomega.Eventually(func() string {
 			return patchStatusOf(patchFor(ledger, session.ID))
@@ -134,6 +135,7 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
+		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
 
 		gomega.Eventually(func() string {
 			return patchStatusOf(patchFor(ledger, session.ID))
@@ -149,6 +151,7 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
+		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
 
 		gomega.Eventually(func() int {
 			return len(ledger.patchRecords())
@@ -198,11 +201,68 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
+		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
 		gomega.Eventually(func() State {
 			sup.mutex.RLock()
 			c := sup.sessions[session.ID]
 			sup.mutex.RUnlock()
 			return c.snapshot().State
 		}, "5s").Should(gomega.Equal(StateIdle))
+	})
+
+	// ⚠️ The adopt path is the one that can write a FALSE verdict: a successor
+	// re-reads the whole event file, so every historical result passes through the
+	// same apply() that files one. Without the replay flag, a restart would stamp a
+	// fresh ended_at on a turn that ended hours ago — and flip a live mid-turn
+	// `running` row to `done`.
+	ginkgo.It("files no verdict for a result it merely replays on adoption", func() {
+		ledger := &fakeLedger{}
+		sup := newSupervisor(
+			answeringChild(`{"type":"result","subtype":"success","is_error":false}`),
+			ledger,
+		)
+		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
+		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
+
+		gomega.Eventually(func() string {
+			return patchStatusOf(patchFor(ledger, session.ID))
+		}, "5s").Should(gomega.Equal("done"))
+
+		// A successor daemon over the same store adopts the surviving child and
+		// replays its event file, which contains that turn's result.
+		successorLedger := &fakeLedger{}
+		successor := newSupervisor(
+			answeringChild(`{"type":"result","subtype":"success","is_error":false}`),
+			successorLedger,
+		)
+		adopted, err := successor.Adopt(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(adopted).To(gomega.Equal(1))
+		defer func() { _ = successor.Stop(context.Background(), session.ID) }()
+
+		// Nothing is written: the row already carries that turn's verdict, and a
+		// second write would be a new claim about an old turn.
+		gomega.Consistently(func() int {
+			return len(successorLedger.patchRecords())
+		}, "1s").Should(gomega.Equal(0))
+	})
+
+	// The verdict is filed off the event loop, so it can still be in flight when
+	// the next turn re-opens the row. The store has no compare-and-set, so the
+	// guard lives here: a write for a superseded turn is dropped.
+	ginkgo.It("drops a verdict whose turn has already been superseded", func() {
+		ledger := &fakeLedger{}
+		c := &child{id: "s1", now: libtime.NewCurrentDateTime(), ledger: ledger, ctx: ctx}
+		c.patchVerdict(2, ctx, NewTurnStartedLedgerPatch())
+		c.patchVerdict(
+			1, ctx,
+			NewTerminalLedgerPatch(
+				"done", json.RawMessage(`{"subtype":"success"}`), "2026-11-09T00:00:00Z",
+			),
+		)
+		gomega.Expect(ledger.patchRecords()).To(gomega.HaveLen(1))
+		gomega.Expect(patchStatusOf(ledger.patchRecords()[0].patch)).To(gomega.Equal("running"))
 	})
 })

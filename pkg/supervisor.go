@@ -1200,6 +1200,21 @@ type child struct {
 	// ledger receives this child's terminal verdicts. Nil is legal — the child
 	// runs and only the verdict goes unrecorded.
 	ledger LedgerReader
+	// ledgerMu serializes this child's ledger writes, and ledgerSeq is the turn
+	// sequence of the newest one already written.
+	//
+	// ⚠️ **The pair exists because the writes are asynchronous and turns are not.**
+	// A turn's verdict is filed off the event loop, so it can still be in flight
+	// when the manager writes the NEXT turn — and a late verdict landing after that
+	// turn's re-open would leave a running worker reading `done`. Guarding the row
+	// with the turn's own sequence drops the stale write instead of reordering the
+	// row, which the store has no compare-and-set to prevent.
+	ledgerMu  sync.Mutex
+	ledgerSeq uint64
+	// turnSeq counts the turns this child has been asked for, under c.mutex. It is
+	// the ordering key above, and the last value names the turn that was open when
+	// the child left.
+	turnSeq uint64
 	// ctx is the process lifetime, so a ledger write still in flight when the
 	// daemon stops is cancelled with it instead of outliving the process that
 	// could report it.
@@ -1266,6 +1281,11 @@ func (c *child) send(ctx context.Context, text string) error {
 	// first makes the window impossible; a failed write rolls it back.
 	c.mutex.Lock()
 	c.pendingTurns++
+	// The turn's own sequence, taken here so it precedes any result that can close
+	// it: the row's writes are ordered by this number, and a turn that has not been
+	// numbered yet cannot be superseded.
+	c.turnSeq++
+	turn := c.turnSeq
 	c.mutex.Unlock()
 
 	// Re-open the ledger row BEFORE the turn is written, and synchronously.
@@ -1284,7 +1304,7 @@ func (c *child) send(ctx context.Context, text string) error {
 		// The CALLER's ctx, not the process's: this write is part of a request the
 		// caller is waiting on, so a cancelled request must not leave a write in
 		// flight behind it.
-		c.patchVerdict(ctx, NewTurnStartedLedgerPatch())
+		c.patchVerdict(turn, ctx, NewTurnStartedLedgerPatch())
 	}
 
 	c.writeMu.Lock()
@@ -1423,7 +1443,7 @@ func (c *child) clearQuestion(requestID string) {
 // tail reads the child's event file as it grows and folds each line into state.
 func (c *child) tail() {
 	defer close(c.tailDone)
-	tailFile(context.Background(), c.eventsPath, func(seq int, line []byte) {
+	tailFile(context.Background(), c.eventsPath, func(seq int, line []byte, replayed bool) {
 		if len(line) == 0 {
 			return
 		}
@@ -1431,7 +1451,7 @@ func (c *child) tail() {
 		if err := json.Unmarshal(line, &event); err != nil {
 			return
 		}
-		c.apply(seq, event)
+		c.apply(seq, event, replayed)
 	}, func() bool { return c.procGone.Load() })
 }
 
@@ -1476,7 +1496,13 @@ func (c *child) reap(exitCode *int) {
 	// cleared, and only for a turn that was actually open: a worker that finished
 	// its turn and then exited already has its `done` row, and writing `error` over
 	// it would turn every clean shutdown into a failure.
-	if c.pendingTurns > 0 {
+	//
+	// ⚠️ **`StateGenerating` is the second half, and it is the adopted child's
+	// only signal.** An adopted child was handed no turn by THIS process, so its
+	// counter is zero even when the replayed stream shows a turn still open — the
+	// state is what the events say, and a stream whose last word was a
+	// `message_start` is a turn nobody closed.
+	if c.pendingTurns > 0 || c.session.State == StateGenerating {
 		c.recordAbandonedTurn(exitCode)
 	}
 	c.session.State = StateExited
@@ -1503,7 +1529,14 @@ func (c *child) reap(exitCode *int) {
 
 // apply is the single place an event becomes state. Every branch is derived
 // from the event itself; none reads a clock.
-func (c *child) apply(seq int, event map[string]any) {
+//
+// `replayed` marks a line that was already in the event file when this process
+// opened it — the history an adopted child re-reads, never a turn that just
+// closed here. It changes exactly one thing: a replayed result files NO ledger
+// verdict, because the row already carries whatever that turn settled and
+// re-writing it would stamp a fresh `ended_at` on an old turn (and, worse, flip a
+// live mid-turn `running` row to `done` on every restart).
+func (c *child) apply(seq int, event map[string]any, replayed bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.lastEventAt = c.now.Now().Time()
@@ -1528,7 +1561,9 @@ func (c *child) apply(seq int, event map[string]any) {
 		if c.pendingTurns > 0 {
 			c.pendingTurns--
 		}
-		c.recordTurnVerdict(event)
+		if !replayed {
+			c.recordTurnVerdict(event)
+		}
 	}
 	c.publish(seq, Event(event))
 }
@@ -1557,7 +1592,11 @@ func (c *child) recordTurnVerdict(event map[string]any) {
 	if isError, ok := event["is_error"].(bool); ok && isError {
 		status = "error"
 	}
-	go c.fileTurnVerdict(status, event)
+	// The turn this result closes is the newest one asked for; taking its sequence
+	// here (under c.mutex, which apply holds) is what makes a later write able to
+	// tell that it has been superseded.
+	turn := c.turnSeq
+	go c.fileTurnVerdict(turn, status, event)
 }
 
 // fileTurnVerdict marshals the turn's own result event and files it.
@@ -1565,7 +1604,7 @@ func (c *child) recordTurnVerdict(event map[string]any) {
 // It runs on its own goroutine, which is why the marshal lives here rather than in
 // recordTurnVerdict: a result event carries the whole final message, and encoding
 // it under c.mutex would stall the event loop for every later event.
-func (c *child) fileTurnVerdict(status string, event map[string]any) {
+func (c *child) fileTurnVerdict(turn uint64, status string, event map[string]any) {
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		log.Printf(
@@ -1574,7 +1613,7 @@ func (c *child) fileTurnVerdict(status string, event map[string]any) {
 		)
 		return
 	}
-	c.patchVerdict(c.ctx, NewTerminalLedgerPatch(status, encoded, c.endedAt()))
+	c.patchVerdict(turn, c.ctx, NewTerminalLedgerPatch(status, encoded, c.endedAt()))
 }
 
 // canWriteVerdict reports whether a verdict can be filed at all, and names the
@@ -1631,15 +1670,17 @@ func (c *child) recordAbandonedTurn(exitCode *int) {
 		log.Printf("WARNING: marshal abandoned-turn verdict for session %s failed: %v", c.id, err)
 		return
 	}
-	go c.fileAbandonedVerdict(encoded)
+	// The turn that was open is the newest one asked for; no later turn can be
+	// written once the child is gone.
+	go c.fileAbandonedVerdict(c.turnSeq, encoded)
 }
 
 // fileAbandonedVerdict files the already-encoded error verdict.
 //
 // The encoding happened under c.mutex and is tiny, so it stays there; only the
 // store round trip is moved off the lock.
-func (c *child) fileAbandonedVerdict(encoded json.RawMessage) {
-	c.patchVerdict(c.ctx, NewTerminalLedgerPatch("error", encoded, c.endedAt()))
+func (c *child) fileAbandonedVerdict(turn uint64, encoded json.RawMessage) {
+	c.patchVerdict(turn, c.ctx, NewTerminalLedgerPatch("error", encoded, c.endedAt()))
 }
 
 // patchVerdict applies one ledger patch and logs what could not land.
@@ -1647,7 +1688,23 @@ func (c *child) fileAbandonedVerdict(encoded json.RawMessage) {
 // An absent row is logged without a WARNING: a child this daemon adopted may have
 // no row at all, and that is a fact about the fleet's history rather than a fault
 // in this write. Every other failure is a store problem and is named as one.
-func (c *child) patchVerdict(ctx context.Context, patch LedgerPatch) {
+func (c *child) patchVerdict(turn uint64, ctx context.Context, patch LedgerPatch) {
+	c.ledgerMu.Lock()
+	defer c.ledgerMu.Unlock()
+	// A write for a turn that has already been superseded is DROPPED, not applied.
+	//
+	// ⚠️ The store has no compare-and-set, so the row cannot be guarded where it is
+	// written — only here, where the turn it belongs to is still known. Dropping is
+	// the safe direction: the superseding write carries a later turn, and a stale
+	// verdict landing on top of it would leave a worker mid-turn reading `done`.
+	if turn < c.ledgerSeq {
+		log.Printf(
+			"claude-wrapper: dropping a superseded ledger verdict for session %s (turn %d, row already at turn %d)",
+			c.id, turn, c.ledgerSeq,
+		)
+		return
+	}
+	c.ledgerSeq = turn
 	err := c.ledger.Patch(ctx, c.id, patch)
 	if err == nil {
 		return
