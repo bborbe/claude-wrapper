@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -53,13 +54,13 @@ var _ = ginkgo.Describe("spawn axes — SC1 and SC6: seven axes, shipped default
 		gomega.Expect(err).To(gomega.BeNil())
 
 		expected := map[string][2]int{
-			AxisSession:      {60, 85},
-			AxisWorker:       {40, 60},
-			AxisHeadless:     {30, 45},
-			AxisInteractive:  {8, 12},
-			AxisManager:      {10, 15},
-			AxisTopicManager: {2, 4},
-			AxisGoalManager:  {7, 11},
+			AxisSession:      {90, 120},
+			AxisWorker:       {60, 90},
+			AxisHeadless:     {45, 70},
+			AxisInteractive:  {12, 20},
+			AxisManager:      {12, 20},
+			AxisTopicManager: {3, 5},
+			AxisGoalManager:  {9, 13},
 		}
 		for axis, pair := range expected {
 			limits, ok := axes.LimitsFor(axis)
@@ -83,13 +84,13 @@ var _ = ginkgo.Describe("spawn axes — SC1 and SC6: seven axes, shipped default
 			soft int
 			hard int
 		}{
-			{AxisSession, `{"spawn":{"maxSessions":61,"maxSessionsHard":86}}`, 61, 86},
-			{AxisWorker, `{"spawn":{"maxConcurrent":41,"maxConcurrentHard":61}}`, 41, 61},
-			{AxisHeadless, `{"spawn":{"maxHeadless":31,"maxHeadlessHard":46}}`, 31, 46},
-			{AxisInteractive, `{"spawn":{"maxInteractive":9,"maxInteractiveHard":13}}`, 9, 13},
-			{AxisManager, `{"spawn":{"maxManagers":11,"maxManagersHard":16}}`, 11, 16},
-			{AxisTopicManager, `{"spawn":{"maxTopicManagers":3,"maxTopicManagersHard":5,"maxManagersHard":16}}`, 3, 5},
-			{AxisGoalManager, `{"spawn":{"maxGoalManagers":8,"maxGoalManagersHard":12,"maxManagersHard":16}}`, 8, 12},
+			{AxisSession, `{"spawn":{"maxSessions":91,"maxSessionsHard":121}}`, 91, 121},
+			{AxisWorker, `{"spawn":{"maxConcurrent":61,"maxConcurrentHard":91}}`, 61, 91},
+			{AxisHeadless, `{"spawn":{"maxHeadless":46,"maxHeadlessHard":71,"maxConcurrentHard":91}}`, 46, 71},
+			{AxisInteractive, `{"spawn":{"maxInteractive":13,"maxInteractiveHard":21,"maxConcurrentHard":91}}`, 13, 21},
+			{AxisManager, `{"spawn":{"maxManagers":13,"maxManagersHard":21}}`, 13, 21},
+			{AxisTopicManager, `{"spawn":{"maxTopicManagers":4,"maxTopicManagersHard":6,"maxManagers":13,"maxManagersHard":21}}`, 4, 6},
+			{AxisGoalManager, `{"spawn":{"maxGoalManagers":10,"maxGoalManagersHard":14,"maxManagers":13,"maxManagersHard":21}}`, 10, 14},
 		}
 		for _, c := range cases {
 			axes := mustAxes(c.body)
@@ -136,10 +137,10 @@ var _ = ginkgo.Describe("spawn axes — SC3: the nesting invariant", func() {
 	})
 
 	ginkgo.It("refuses worker + manager above the session backstop", func() {
-		_, err := axesFrom(`{"spawn":{"maxSessions":60,"maxSessionsHard":70}}`)
+		_, err := axesFrom(`{"spawn":{"maxSessions":80,"maxSessionsHard":100}}`)
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.HavePrefix(NestingViolation))
-		// worker 60 + manager 15 = 75 > 70, at the HARD tier.
+		// worker 90 + manager 20 = 110 > 100, at the HARD tier.
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the hard caps nest wrongly"))
 	})
 
@@ -180,7 +181,9 @@ var _ = ginkgo.Describe("spawn axes — SC2: a headless storm binds on its own c
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the worker headless cap is FULL"))
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`axis "worker headless"`))
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("45 live headless workers against a hard cap of 45"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(
+			fmt.Sprintf("%d live headless workers against a hard cap of %d",
+				DefaultMaxHeadlessHard, DefaultMaxHeadlessHard)))
 
 		// The interactive population is untouched by the headless cap. An
 		// operator-named open rides the band above the worker soft cap, which the

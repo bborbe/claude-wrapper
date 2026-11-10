@@ -45,24 +45,24 @@ import (
 const (
 	// DefaultMaxConcurrent is the soft worker cap an absent key resolves to.
 	//
-	// Raised 20 → 40 on 2026-11-10 with the seven-axis split: the headless and
+	// Raised 20 → 60 on 2026-11-10 with the seven-axis split: the headless and
 	// interactive populations now bind on their own sub-caps (`spawn_axes.go`), so
 	// the worker total is a parent rather than the only control.
-	DefaultMaxConcurrent = 40
+	DefaultMaxConcurrent = 60
 	// DefaultMaxConcurrentHard is the hard worker cap an absent key resolves to.
 	//
-	// 60, raised with the soft cap from 50. The two move together because the band
-	// between them is the operator-named allowance, and a soft cap of 40 under a
-	// ceiling still at 50 would shrink that band to ten sessions.
-	DefaultMaxConcurrentHard = 60
+	// 90, raised with the soft cap. The two move together because the band between
+	// them is the operator-named allowance, and a soft cap of 60 under a ceiling
+	// still at 50 would not be a ceiling at all.
+	DefaultMaxConcurrentHard = 90
 	// DefaultMaxManagers is the soft manager cap an absent key resolves to.
 	//
-	// 10, on the operator's 2026-11-10 ruling — "manager 10/15 is nice" —
-	// replacing the 2026-10-10 design's 3. The children have to nest under it:
-	// topic 2 + goal 7 = 9 ≤ 10 soft, 4 + 11 = 15 ≤ 15 hard.
-	DefaultMaxManagers = 10
+	// 12, on the operator's final 2026-11-10 ruling, replacing the 2026-10-10
+	// design's 3. The children have to nest under it: topic 3 + goal 9 = 12 ≤ 12
+	// soft, 5 + 13 = 18 ≤ 20 hard.
+	DefaultMaxManagers = 12
 	// DefaultMaxManagersHard is the hard manager cap an absent key resolves to.
-	DefaultMaxManagersHard = 15
+	DefaultMaxManagersHard = 20
 	// DefaultMaxStartsPerMinute is the arrival rate an absent key resolves to.
 	//
 	// 4 is chosen against the measured incident rather than rounded: 22 sessions

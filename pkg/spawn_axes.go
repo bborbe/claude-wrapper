@@ -22,17 +22,17 @@ import (
 // left to open into. A headless sub-cap that binds FIRST is the missing control;
 // the total stays as the backstop it was, not as the only wall.
 //
-// The operator's shape (2026-11-10, revised the same day — "guess we can have
-// more worker. manager 10/15 is nice"):
+// The operator's shape (2026-11-10, revised TWICE the same day — the final
+// revision: "50 is too low to saturate my laptop"):
 //
 //	| axis               | soft | hard |
-//	| session            |  60  |  85  |
-//	| worker             |  40  |  60  |
-//	| worker headless    |  30  |  45  |
-//	| worker interactive |   8  |  12  |
-//	| manager            |  10  |  15  |
-//	| topic manager      |   2  |   4  |
-//	| goal manager       |   7  |  11  |
+//	| session            |  90  | 120  |
+//	| worker             |  60  |  90  |
+//	| worker headless    |  45  |  70  |
+//	| worker interactive |  12  |  20  |
+//	| manager            |  12  |  20  |
+//	| topic manager      |   3  |   5  |
+//	| goal manager       |   9  |  13  |
 //
 // ⚠️ The children NEST under their parents, and that is a validated invariant,
 // not a comment. headless + interactive ≤ worker; topic + goal ≤ manager;
@@ -67,25 +67,25 @@ const NestingViolation = "NESTING_VIOLATION"
 // existing defaults in `spawn_limits.go` — one number per axis, named once.
 const (
 	// DefaultMaxSessions is the soft total-session cap an absent key resolves to.
-	DefaultMaxSessions = 60
+	DefaultMaxSessions = 90
 	// DefaultMaxSessionsHard is the hard total-session cap.
-	DefaultMaxSessionsHard = 85
+	DefaultMaxSessionsHard = 120
 	// DefaultMaxHeadless is the soft headless-worker cap.
-	DefaultMaxHeadless = 30
+	DefaultMaxHeadless = 45
 	// DefaultMaxHeadlessHard is the hard headless-worker cap.
-	DefaultMaxHeadlessHard = 45
+	DefaultMaxHeadlessHard = 70
 	// DefaultMaxInteractive is the soft interactive-worker cap.
-	DefaultMaxInteractive = 8
+	DefaultMaxInteractive = 12
 	// DefaultMaxInteractiveHard is the hard interactive-worker cap.
-	DefaultMaxInteractiveHard = 12
+	DefaultMaxInteractiveHard = 20
 	// DefaultMaxTopicManagers is the soft topic-manager cap.
-	DefaultMaxTopicManagers = 2
+	DefaultMaxTopicManagers = 3
 	// DefaultMaxTopicManagersHard is the hard topic-manager cap.
-	DefaultMaxTopicManagersHard = 4
+	DefaultMaxTopicManagersHard = 5
 	// DefaultMaxGoalManagers is the soft goal-manager cap.
-	DefaultMaxGoalManagers = 7
+	DefaultMaxGoalManagers = 9
 	// DefaultMaxGoalManagersHard is the hard goal-manager cap.
-	DefaultMaxGoalManagersHard = 11
+	DefaultMaxGoalManagersHard = 13
 )
 
 // Environment overrides for the five new axes, named as the node names them.
