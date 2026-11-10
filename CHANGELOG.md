@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.15.1
 
 - fix: **the spawn gate counts a resumed worker, so the cap binds on the population the keep-alive leg grows.** `pkg/spawn_limits.go`'s `countWorkers` skipped every ledger row carrying `resumed_from`, mirroring the node counter, so a resumed worker was live and invisible to the cap — measured 2026-11-10 on the node twin, **22 counted against 78 live worker sessions**, every missing session a resume. A resume is the same load as a fresh spawn, and a sweep that revives N dead workers has added N to the fleet. `role: manager` is now the only exclusion; the resume path's own crash-loop cap is a separate control and is unchanged. The counting test keeps its manager, ghost, dead and unledgered rows as the control, with the expected count moved 1 → 2.
 
