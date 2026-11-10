@@ -180,7 +180,7 @@ var _ = ginkgo.Describe("spawn axes — SC2: a headless storm binds on its own c
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the worker headless cap is FULL"))
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`axis "worker headless"`))
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("45 live worker headless sessions against a hard cap of 45"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("45 live headless workers against a hard cap of 45"))
 
 		// The interactive population is untouched by the headless cap. An
 		// operator-named open rides the band above the worker soft cap, which the
@@ -217,7 +217,7 @@ var _ = ginkgo.Describe("spawn axes — SC4: the refusal names the axis", func()
 		gomega.Expect(refusal).To(gomega.ContainSubstring("the worker headless cap is FULL"))
 		gomega.Expect(refusal).To(gomega.ContainSubstring(`axis "worker headless"`))
 		gomega.Expect(refusal).To(gomega.ContainSubstring(`"spawn.maxHeadlessHard"`))
-		gomega.Expect(refusal).To(gomega.ContainSubstring("4 live worker headless sessions against a hard cap of 4"))
+		gomega.Expect(refusal).To(gomega.ContainSubstring("4 live headless workers against a hard cap of 4"))
 	})
 
 	ginkgo.It("names the manager axis and keeps the phrase the open card matches on", func() {
@@ -299,7 +299,7 @@ var _ = ginkgo.Describe("spawn axes — SC5: the session backstop", func() {
 		err := caps.CheckWorker(ctx, SpawnModeHeadless, true)
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`axis "session"`))
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("6 live session sessions against a hard cap of 6"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("6 live sessions against a hard cap of 6"))
 
 		managerErr := caps.CheckManager(ctx, ManagerKindTopic, nil, true)
 		gomega.Expect(managerErr).NotTo(gomega.BeNil())

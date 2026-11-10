@@ -161,6 +161,18 @@ var axisKeys = map[string][2]string{
 	AxisGoalManager:  {"maxGoalManagers", "maxGoalManagersHard"},
 }
 
+// axisPlurals is the population word a refusal counts, so a reader sees
+// "6 live sessions" rather than "6 live session sessions".
+var axisPlurals = map[string]string{
+	AxisSession:      "sessions",
+	AxisWorker:       "workers",
+	AxisHeadless:     "headless workers",
+	AxisInteractive:  "interactive workers",
+	AxisManager:      "managers",
+	AxisTopicManager: "topic managers",
+	AxisGoalManager:  "goal managers",
+}
+
 // axisNouns is the word `resolveThreshold` prints when it refuses a value, kept
 // beside the labels so a refusal about a topic-manager limit cannot read as one
 // about workers.
@@ -455,10 +467,10 @@ func AxisLimitRefusal(
 			opener = ManagerFleetFull
 		}
 		return fmt.Sprintf(
-			`%s: %d live %s sessions against a hard cap of %d (axis "%s", "spawn.%s", source: %s), `+
+			`%s: %d live %s against a hard cap of %d (axis "%s", "spawn.%s", source: %s), `+
 				`so nothing opens here — not even an operator-named task. The soft cap is %d `+
 				`(source: %s). Raise "spawn.%s" in %s, or set "spawn.%s" to 0 for unlimited.`,
-			opener, count, label, *limits.HardLimit, label, keys[1], limits.HardSource,
+			opener, count, axisPlurals[axis], *limits.HardLimit, label, keys[1], limits.HardSource,
 			*limits.Limit, limits.Source, keys[1], configFile, keys[0],
 		)
 	}
