@@ -248,10 +248,20 @@ func (c *spawnCaps) config(ctx context.Context) (SpawnConfigFile, string, error)
 // countWorkers counts live worker sessions — the node's `workerSessions`.
 //
 // The ledger supplies identity (what the fleet opened) and liveness is the
-// heartbeat store unioned with the session registry. Managers and auto-resumes
-// are excluded, so the cap and the managers' target cannot count different
-// populations. ONLY an explicit `role: manager` excludes: a row with no role
-// predates the field and reads as a worker.
+// heartbeat store unioned with the session registry. So the cap and the
+// managers' target cannot count different populations. ONLY an explicit
+// `role: manager` excludes: a row with no role predates the field and reads as
+// a worker.
+//
+// ⚠️ A RESUMED worker IS counted. Until 2026-11-10 this loop also skipped rows
+// carrying `resumed_from`, mirroring the node, on the reasoning that a resume
+// answers to the auto-resume gate's own crash-loop cap. That reasoning inverts
+// this cap: a resumed worker is a live process consuming exactly the load the
+// cap bounds, so a sweep that revives N dead workers has added N to the fleet
+// and must be refused at the ceiling like any other addition. Measured
+// 2026-11-10 on the node twin: 22 counted against 78 live worker sessions, and
+// every session it missed was a resume. The crash-loop cap on the resume path
+// is a separate control and is unchanged by this.
 func (c *spawnCaps) countWorkers(ctx context.Context) (int, error) {
 	rows, live, err := c.ledgerAndLive(ctx)
 	if err != nil {
@@ -259,7 +269,7 @@ func (c *spawnCaps) countWorkers(ctx context.Context) (int, error) {
 	}
 	count := 0
 	for _, row := range rows {
-		if row.SessionID == "" || row.ResumedFrom != "" || row.Role == RoleManager {
+		if row.SessionID == "" || row.Role == RoleManager {
 			continue
 		}
 		if _, ok := live[row.SessionID]; ok {
