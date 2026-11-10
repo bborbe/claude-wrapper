@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -477,6 +478,53 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 		gomega.Expect(response).To(gomega.BeEmpty())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("no session-registry entry"))
 		gomega.Expect(err.Error()).ToNot(gomega.ContainSubstring("reach it mid-task"))
+	})
+
+	// The three refusals below are the branches the change exists for, so each is
+	// exercised at the TOOL level, not only on the registry: a registry-level test
+	// proves the join, while these prove the answer a caller actually receives.
+	ginkgo.It("refuses an ambiguous headless worker, naming every candidate", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{
+			Tabs:   tabs,
+			Roster: &fakeRoster{},
+			Ledger: ledger,
+			Registry: &fakeRegistry{names: map[string][]string{
+				"claude-a": {"s1"},
+				"claude-b": {"s1"},
+			}},
+		}
+		handled, response, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(handled).To(gomega.BeTrue())
+		gomega.Expect(response).To(gomega.BeEmpty(), "nothing is addressed when the name is ambiguous")
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("wrong conversation"))
+		gomega.Expect(err.Error()).To(gomega.Or(
+			gomega.ContainSubstring("claude-a"),
+			gomega.ContainSubstring("claude-b"),
+		))
+	})
+
+	ginkgo.It("reports an unreadable registry as retryable, never as the worker being gone", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{
+			Tabs:     tabs,
+			Roster:   &fakeRoster{},
+			Ledger:   ledger,
+			Registry: &fakeRegistry{err: stderrors.New("registry unreadable")},
+		}
+		_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("retry"))
+		gomega.Expect(err.Error()).ToNot(gomega.ContainSubstring("no session-registry entry"))
+	})
+
+	ginkgo.It("refuses a headless worker when the daemon was started without a registry", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{Tabs: tabs, Roster: &fakeRoster{}, Ledger: ledger}
+		_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("without a session registry"))
 	})
 })
 
