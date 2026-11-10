@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,25 @@ func writeSpawnConfig(body string) string {
 	path := filepath.Join(ginkgo.GinkgoT().TempDir(), "config.json")
 	gomega.Expect(os.WriteFile(path, []byte(body), 0o600)).To(gomega.Succeed())
 	return path
+}
+
+// workerAxisConfig builds a COHERENT worker-side config: the two mode children sum
+// to the worker total at both thresholds, which the nesting invariant requires. A
+// test that lowers `maxConcurrent` alone is refused as a NESTING_VIOLATION, so
+// every worker-cap test builds its config through here.
+func workerAxisConfig(soft, hard int) string {
+	headlessSoft, headlessHard := soft-1, hard-1
+	if headlessSoft < 0 {
+		headlessSoft = 0
+	}
+	if headlessHard < 0 {
+		headlessHard = 0
+	}
+	return fmt.Sprintf(
+		`{"spawn":{"maxConcurrent":%d,"maxConcurrentHard":%d,"maxHeadless":%d,`+
+			`"maxHeadlessHard":%d,"maxInteractive":1,"maxInteractiveHard":1}}`,
+		soft, hard, headlessSoft, headlessHard,
+	)
 }
 
 // loadTestConfig parses a config body into the typed shape.
@@ -510,7 +530,7 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 	})
 
 	ginkgo.It("refuses at the configured cap, naming the value and the config path", func() {
-		path := writeSpawnConfig(`{"spawn":{"maxConcurrent":2,"maxConcurrentHard":50}}`)
+		path := writeSpawnConfig(workerAxisConfig(2, 50))
 		caps := testCaps(
 			&rosterLedger{rows: []LedgerRow{{SessionID: "a"}, {SessionID: "b"}}},
 			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("a"), liveBeat("b")}},
@@ -518,7 +538,7 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 			ginkgo.GinkgoT().TempDir(),
 		)
 
-		err := caps.CheckWorker(ctx, false)
+		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("2 live, 2 allowed (source: config)"))
@@ -526,51 +546,66 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 	})
 
 	ginkgo.It("re-reads the config per call, so a lowered cap applies with no restart", func() {
-		path := writeSpawnConfig(`{"spawn":{"maxConcurrent":5}}`)
+		path := writeSpawnConfig(workerAxisConfig(5, 60))
 		caps := testCaps(
 			&rosterLedger{rows: []LedgerRow{{SessionID: "a"}, {SessionID: "b"}}},
 			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("a"), liveBeat("b")}},
 			path,
 			ginkgo.GinkgoT().TempDir(),
 		)
-		gomega.Expect(caps.CheckWorker(ctx, false)).To(gomega.Succeed())
+		gomega.Expect(caps.CheckWorker(ctx, SpawnModeHeadless, false)).To(gomega.Succeed())
 
-		gomega.Expect(os.WriteFile(path, []byte(`{"spawn":{"maxConcurrent":2}}`), 0o600)).To(gomega.Succeed())
+		gomega.Expect(os.WriteFile(path, []byte(workerAxisConfig(2, 60)), 0o600)).To(gomega.Succeed())
 
-		gomega.Expect(caps.CheckWorker(ctx, false)).NotTo(gomega.Succeed())
+		gomega.Expect(caps.CheckWorker(ctx, SpawnModeHeadless, false)).NotTo(gomega.Succeed())
 	})
 
 	ginkgo.It("lets an operator-named spawn through in the band", func() {
 		caps := testCaps(
 			&rosterLedger{rows: []LedgerRow{{SessionID: "a"}, {SessionID: "b"}}},
 			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("a"), liveBeat("b")}},
-			writeSpawnConfig(`{"spawn":{"maxConcurrent":2,"maxConcurrentHard":5}}`),
+			writeSpawnConfig(workerAxisConfig(2, 5)),
 			ginkgo.GinkgoT().TempDir(),
 		)
 
-		gomega.Expect(caps.CheckWorker(ctx, true)).To(gomega.Succeed())
+		gomega.Expect(caps.CheckWorker(ctx, SpawnModeHeadless, true)).To(gomega.Succeed())
 	})
 
-	ginkgo.It("does not read the stores when the pair is off", func() {
+	ginkgo.It("does not read the stores when every worker axis is off", func() {
 		caps := testCaps(
 			&rosterLedger{err: errors.New("must not be read")},
 			&stubHeartbeats{err: errors.New("must not be read")},
-			writeSpawnConfig(`{"spawn":{"maxConcurrent":0}}`),
+			writeSpawnConfig(`{"spawn":{"maxConcurrent":0,"maxSessions":0,"maxHeadless":0,`+
+				`"maxInteractive":0,"maxManagers":0,"maxTopicManagers":0,"maxGoalManagers":0}}`),
 			ginkgo.GinkgoT().TempDir(),
 		)
 
-		gomega.Expect(caps.CheckWorker(ctx, false)).To(gomega.Succeed())
+		gomega.Expect(caps.CheckWorker(ctx, SpawnModeHeadless, false)).To(gomega.Succeed())
+	})
+
+	ginkgo.It("still reads the count when only the worker pair is off — the session cap is a separate key", func() {
+		caps := testCaps(
+			&rosterLedger{rows: []LedgerRow{{SessionID: "a"}}},
+			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("a")}},
+			writeSpawnConfig(`{"spawn":{"maxConcurrent":0,"maxSessions":1,"maxSessionsHard":2,"maxManagers":0}}`),
+			ginkgo.GinkgoT().TempDir(),
+		)
+
+		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`axis "session"`))
 	})
 
 	ginkgo.It("refuses when the ledger cannot be read, rather than reading zero", func() {
 		caps := testCaps(
 			&rosterLedger{err: errors.New("boom")},
 			&stubHeartbeats{},
-			writeSpawnConfig(`{"spawn":{"maxConcurrent":2,"maxConcurrentHard":50}}`),
+			writeSpawnConfig(workerAxisConfig(2, 50)),
 			ginkgo.GinkgoT().TempDir(),
 		)
 
-		err := caps.CheckWorker(ctx, false)
+		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the session-ledger endpoint could not be read: boom"))
@@ -581,11 +616,11 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 		caps := testCaps(
 			&rosterLedger{rows: []LedgerRow{{SessionID: "a"}}},
 			&stubHeartbeats{err: errors.New("boom")},
-			writeSpawnConfig(`{"spawn":{"maxConcurrent":2,"maxConcurrentHard":50}}`),
+			writeSpawnConfig(workerAxisConfig(2, 50)),
 			ginkgo.GinkgoT().TempDir(),
 		)
 
-		err := caps.CheckWorker(ctx, false)
+		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the session-heartbeat endpoint could not be read"))
@@ -595,11 +630,11 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 		caps := testCaps(
 			&rosterLedger{rows: []LedgerRow{{SessionID: "m1", Role: RoleManager}}},
 			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("m1")}},
-			writeSpawnConfig(`{"spawn":{"maxManagers":1,"maxManagersHard":3}}`),
+			writeSpawnConfig(`{"spawn":{"maxManagers":1,"maxManagersHard":3,"maxTopicManagers":0,"maxGoalManagers":0}}`),
 			ginkgo.GinkgoT().TempDir(),
 		)
 
-		err := caps.CheckManager(ctx, false)
+		err := caps.CheckManager(ctx, "", nil, false)
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("1 live managers (Fleet Manager excluded), 1 allowed"))
@@ -700,12 +735,12 @@ type fakeSpawnCaps struct {
 	startDelay time.Duration
 }
 
-func (f *fakeSpawnCaps) CheckWorker(_ context.Context, operatorNamed bool) error {
+func (f *fakeSpawnCaps) CheckWorker(_ context.Context, _ string, operatorNamed bool) error {
 	f.workerCalls = append(f.workerCalls, operatorNamed)
 	return f.workerErr
 }
 
-func (f *fakeSpawnCaps) CheckManager(_ context.Context, operatorNamed bool) error {
+func (f *fakeSpawnCaps) CheckManager(_ context.Context, _ string, _ []string, operatorNamed bool) error {
 	f.managerCalls = append(f.managerCalls, operatorNamed)
 	return f.managerErr
 }
@@ -819,11 +854,19 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
-	// End to end through the real enforcer and the JSON wire: a scratch config at
-	// maxConcurrent 2 with two live workers refuses an ordinary tab spawn naming 2
-	// and the config path, and lets the same call through when operator-named.
+	// End to end through the real enforcer and the JSON wire: a scratch config with
+	// the interactive sub-cap at 2 and two live interactive workers refuses an
+	// ordinary tab spawn NAMING THE AXIS, and lets the same call through when
+	// operator-named — the soft-cap band, on the tab path, through spawn_agent.
+	//
+	// ⚠️ The sub-cap is what binds here, and under the nesting invariant it always
+	// will for a local spawn: the mode children sum to no more than the worker
+	// total, so a count that reaches the worker cap has already reached one of its
+	// children. The worker axis stays load-bearing for a worker with NO local mode
+	// (cluster, a2a) — `spawn axes` covers that case.
 	ginkgo.It("enforces a scratch config's cap on the tab path through spawn_agent", func() {
-		path := writeSpawnConfig(`{"spawn":{"maxConcurrent":2,"maxConcurrentHard":4,"maxStartsPerMinute":0}}`)
+		path := writeSpawnConfig(`{"spawn":{"maxConcurrent":2,"maxConcurrentHard":6,` +
+			`"maxInteractive":2,"maxInteractiveHard":4,"maxHeadless":0,"maxStartsPerMinute":0}}`)
 		spawner := &fakeSpawner{}
 		server := &RosterToolServer{
 			Spawner: spawner,
@@ -837,7 +880,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 
 		_, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x"}`), "spawner")
 		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("2 live, 2 allowed"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`the worker interactive cap is reached: 2 live, 2 allowed`))
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(path))
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 

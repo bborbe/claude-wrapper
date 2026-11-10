@@ -307,7 +307,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 	if err != nil {
 		return "", err
 	}
-	if err := s.enforceCaps(ctx, body); err != nil {
+	if err := s.enforceCaps(ctx, body, SpawnModeHeadless); err != nil {
 		return "", err
 	}
 	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
@@ -810,7 +810,7 @@ func (s *RosterToolServer) spawnAgent(
 	// The node's `spawnA2AWorker` checks the worker cap and the start rate too: a
 	// cluster worker is a different SHAPE of worker, not a different population.
 	// The manager cap stays local-only, as it is there.
-	if err := s.enforceWorkerCaps(ctx, body); err != nil {
+	if err := s.enforceWorkerCaps(ctx, body, ""); err != nil {
 		return "", err
 	}
 	agent, err := s.A2A.Spawn(ctx, a2a.SpawnArgs{
@@ -961,7 +961,7 @@ func (s *RosterToolServer) spawnTabAgent(
 	if err != nil {
 		return "", err
 	}
-	if err := s.enforceCaps(ctx, body); err != nil {
+	if err := s.enforceCaps(ctx, body, SpawnModeInteractive); err != nil {
 		return "", err
 	}
 	result, err := s.Spawner.Spawn(ctx, TabSpawnRequest{
@@ -991,15 +991,37 @@ func (s *RosterToolServer) spawnTabAgent(
 //
 // The worker cap applies to every spawn, managers included — the node's order —
 // and the manager cap is consulted only for an explicit `role: manager`.
-func (s *RosterToolServer) enforceCaps(ctx context.Context, body spawnAgentArgs) error {
+//
+// ⚠️ `mode` is the RESOLVED mode, not the argument: `spawn.mode: headless` in the
+// config routes an argument-less spawn here as headless, and charging that spawn
+// to the interactive sub-cap would leave the headless cap unbindable on exactly
+// the path the 2026-11-10 storm grew.
+func (s *RosterToolServer) enforceCaps(
+	ctx context.Context,
+	body spawnAgentArgs,
+	mode string,
+) error {
 	if s.Caps == nil {
 		return nil
 	}
-	if err := s.Caps.CheckWorker(ctx, body.OperatorNamed); err != nil {
+	// A manager answers to the manager axes, never to a WORKER mode sub-cap: the
+	// headless/interactive pair bounds the worker population, and a manager counted
+	// against it would be refused by a cap over a population it is not in. The
+	// worker total and the session backstop still apply to it.
+	workerMode := mode
+	if strings.TrimSpace(body.Role) == RoleManager {
+		workerMode = ""
+	}
+	if err := s.Caps.CheckWorker(ctx, workerMode, body.OperatorNamed); err != nil {
 		return err
 	}
 	if strings.TrimSpace(body.Role) == RoleManager {
-		if err := s.Caps.CheckManager(ctx, body.OperatorNamed); err != nil {
+		// One vault read for both halves: `vaultRoots` shells `vault-cli config list`,
+		// and asking it twice for one spawn would pay that subprocess twice.
+		roots := s.vaultRoots(ctx)
+		if err := s.Caps.CheckManager(
+			ctx, ManagerKindForLabel(body.Label, roots, FileExists), roots, body.OperatorNamed,
+		); err != nil {
 			return err
 		}
 	}
@@ -1011,18 +1033,47 @@ func (s *RosterToolServer) enforceCaps(ctx context.Context, body spawnAgentArgs)
 // enforceWorkerCaps runs the worker cap and reserves a start slot.
 //
 // Shared with the A2A path, which the node holds to these two and not to the
-// manager cap.
+// manager cap. The mode is empty there on purpose: a container worker is neither
+// a local tab nor a local headless process, so only the worker total and the
+// session backstop apply.
 func (s *RosterToolServer) enforceWorkerCaps(
 	ctx context.Context,
 	body spawnAgentArgs,
+	mode string,
 ) error {
 	if s.Caps == nil {
 		return nil
 	}
-	if err := s.Caps.CheckWorker(ctx, body.OperatorNamed); err != nil {
+	if err := s.Caps.CheckWorker(ctx, mode, body.OperatorNamed); err != nil {
 		return err
 	}
 	return s.Caps.ReserveStart(ctx)
+}
+
+// vaultRoots returns the configured vault directories, or nil when the list
+// cannot be read.
+//
+// ⚠️ The kind is classified from the SAME roots (`ManagerKindForLabel`), by the
+// rule the live count uses, so a manager cannot be counted under one cap and
+// opened under another. An unreadable vault list degrades to no roots, which
+// classifies the manager `unresolved`: it still answers to the manager cap and
+// the session cap, and refusing to spawn over a vault-list failure would be a
+// worse trade than skipping one sub-cap.
+func (s *RosterToolServer) vaultRoots(ctx context.Context) []string {
+	if s.Vaults == nil {
+		return nil
+	}
+	vaults, err := s.Vaults.List(ctx)
+	if err != nil {
+		return nil
+	}
+	roots := make([]string, 0, len(vaults))
+	for _, vault := range vaults {
+		if vault.Path != "" {
+			roots = append(roots, vault.Path)
+		}
+	}
+	return roots
 }
 
 // resolveSpawnMode reads the operator's sources and resolves the spawn's mode.
