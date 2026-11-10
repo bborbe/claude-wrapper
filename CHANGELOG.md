@@ -9,19 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - fix: **the spawn gate counts a resumed worker, so the cap binds on the population the keep-alive leg grows.** `pkg/spawn_limits.go`'s `countWorkers` skipped every ledger row carrying `resumed_from`, mirroring the node counter, so a resumed worker was live and invisible to the cap — measured 2026-11-10 on the node twin, **22 counted against 78 live worker sessions**, every missing session a resume. A resume is the same load as a fresh spawn, and a sweep that revives N dead workers has added N to the fleet. `role: manager` is now the only exclusion; the resume path's own crash-loop cap is a separate control and is unchanged. The counting test keeps its manager, ghost, dead and unledgered rows as the control, with the expected count moved 1 → 2.
 
-## Unreleased
-
-- fix: **a resumed worker counts against the fleet cap — the `resumed_from` exclusion was the
-  defect.** `countWorkers` (`pkg/spawn_limits.go`) skipped every ledger row carrying
-  `ResumedFrom`, mirroring the node counter, on the reasoning that a resume answers to the
-  auto-resume gate's own crash-loop cap. That reasoning inverts this cap: a resumed worker is a
-  live process consuming exactly the load the cap bounds, so a sweep that revives N dead workers
-  has added N to the fleet and must be refused at the ceiling like any other addition. Measured
-  2026-11-10 on the node twin: 22 counted against 78 live worker sessions, every session it
-  missed a resume. `RoleManager` is now the only exclusion. The test that pinned the old rule is
-  inverted and keeps its manager / ghost / dead / unledgered controls beside the new number, so
-  it cannot pass on a counter that returns everything.
-
 ## v0.15.0
 
 - feat: **a turn end files a terminal verdict on the spawn ledger, so a finished worker leaves a
