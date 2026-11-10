@@ -63,6 +63,23 @@ type SessionRegistry interface {
 	// session would collide with; filtering by pid here would hand out a name that
 	// is already on disk. Liveness is a different question, asked by Live.
 	Named(ctx context.Context, name string) ([]string, error)
+	// NamesForSession returns the names a session id is registered under — the
+	// INVERSE of Named, and the join a caller needs when it holds an id while the
+	// channel it wants takes a name (the peer channel `SendMessage` takes).
+	//
+	// PID-CHECKED, and the direction is what decides that. A name handed to
+	// `SendMessage` must be one a live session answers to: a stale entry left by a
+	// crashed session yields an address that fails at the caller, which is the
+	// unperformable-remedy defect this join exists to remove. Named reads the other
+	// way round, where presence is the safe answer.
+	//
+	// A LIST rather than one name, because the ambiguity must stay visible: two
+	// live entries can carry different names for one id, and picking either would
+	// deliver into the wrong conversation. An empty slice means "read, and this id
+	// is registered under nothing" — a worker that cannot be addressed — while an
+	// error is "the registry could not be read", which is retryable and must not
+	// be reported as the worker being gone.
+	NamesForSession(ctx context.Context, sessionID string) ([]string, error)
 }
 
 // NewSessionRegistry creates a SessionRegistry over dir.
@@ -190,6 +207,35 @@ func (r *sessionRegistry) Named(ctx context.Context, name string) ([]string, err
 		}
 	}
 	return ids, nil
+}
+
+// NamesForSession returns the live names a session id is registered under.
+//
+// The inverse of Named, and pid-checked for the reason the interface states: the
+// result is an ADDRESS a caller will send to, so an entry whose process is gone
+// would produce a name that fails at the far end — the very defect this join
+// exists to remove.
+func (r *sessionRegistry) NamesForSession(ctx context.Context, sessionID string) ([]string, error) {
+	if sessionID == "" {
+		return []string{}, nil
+	}
+	all, err := r.entries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	for _, entry := range all {
+		if entry.SessionID != sessionID || entry.Name == "" || !pidAlive(entry.PID) {
+			continue
+		}
+		if _, ok := seen[entry.Name]; ok {
+			continue
+		}
+		seen[entry.Name] = struct{}{}
+		names = append(names, entry.Name)
+	}
+	return names, nil
 }
 
 // pidAlive reports whether a pid names a running process.

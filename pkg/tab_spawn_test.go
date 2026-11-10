@@ -75,6 +75,12 @@ func (s *scriptedRegistry) Named(_ context.Context, _ string) ([]string, error) 
 	return response, nil
 }
 
+// NamesForSession is unused by the tab-spawn scenarios this fake serves; the id →
+// name join has its own tests in session_registry_test.go.
+func (s *scriptedRegistry) NamesForSession(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
 // fakeVaults is a VaultLister over a fixed list.
 type fakeVaults struct {
 	vaults []Vault
@@ -437,17 +443,40 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 		gomega.Expect(tabs.texts).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("reports a headless worker rather than typing nowhere", func() {
+	ginkgo.It("hands a headless worker's registry name back instead of typing nowhere", func() {
+		// The defect this replaces: the refusal said "reach it mid-task with
+		// SendMessage" while giving the caller nothing to address. The address IS the
+		// answer, and `sent` stays false because the daemon cannot send it.
 		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
 		server := &RosterToolServer{
-			Tabs:   tabs,
-			Roster: &fakeRoster{},
-			Ledger: ledger,
+			Tabs:     tabs,
+			Roster:   &fakeRoster{},
+			Ledger:   ledger,
+			Registry: &fakeRegistry{names: map[string][]string{"claude-1f": {"s1"}}},
 		}
-		handled, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		handled, response, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(handled).To(gomega.BeTrue())
+		gomega.Expect(tabs.texts).To(gomega.BeEmpty(), "a headless worker has no pane to type into")
+		gomega.Expect(response).To(gomega.ContainSubstring(`"name":"claude-1f"`))
+		gomega.Expect(response).To(gomega.ContainSubstring(`"sent":false`))
+		gomega.Expect(response).To(gomega.ContainSubstring(`"channel":"peer"`))
+	})
+
+	ginkgo.It("refuses a headless worker no registry entry names, and says the session exited", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{
+			Tabs:     tabs,
+			Roster:   &fakeRoster{},
+			Ledger:   ledger,
+			Registry: &fakeRegistry{names: map[string][]string{}},
+		}
+		handled, response, err := server.sendToTabPane(ctx, "s1", "hello")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(handled).To(gomega.BeTrue())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("no pane"))
+		gomega.Expect(response).To(gomega.BeEmpty())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("no session-registry entry"))
+		gomega.Expect(err.Error()).ToNot(gomega.ContainSubstring("reach it mid-task"))
 	})
 })
 

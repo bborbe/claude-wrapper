@@ -45,6 +45,24 @@ func (f *fakeRegistry) Named(_ context.Context, name string) ([]string, error) {
 	return f.names[name], nil
 }
 
+// NamesForSession inverts the same name→ids map, so a test that seeds one
+// direction exercises the other without a second fixture.
+func (f *fakeRegistry) NamesForSession(_ context.Context, sessionID string) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	names := make([]string, 0, 2)
+	for name, ids := range f.names {
+		for _, id := range ids {
+			if id == sessionID {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	return names, nil
+}
+
 var _ = ginkgo.Describe("ParseLauncherModel", func() {
 	ginkgo.It("resolves a variable reference against the script's own export", func() {
 		script := "export ANTHROPIC_DEFAULT_OPUS_MODEL=\"deepseek-v4-flash-max[1m]\"\n" +
