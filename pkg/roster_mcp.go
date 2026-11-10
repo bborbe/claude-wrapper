@@ -1159,13 +1159,15 @@ func (s *RosterToolServer) headlessPeerResponse(
 	}
 	names, err := s.Registry.NamesForSession(ctx, sessionID)
 	if err != nil {
-		return "", errors.Errorf(
+		// Wrapped, not formatted into the message: the cause stays reachable through
+		// `errors.Is`/`As`, which a `%v` in the text would destroy.
+		return "", errors.Wrapf(
 			ctx,
-			"agent %s is a headless worker whose session registry could not be read (%v), so its "+
+			err,
+			"agent %s is a headless worker whose session registry could not be read, so its "+
 				"SendMessage name is unknown — retry, and answer its parked prompts with "+
 				"answer_permission meanwhile",
 			agentID,
-			err,
 		)
 	}
 	if len(names) > 1 {
