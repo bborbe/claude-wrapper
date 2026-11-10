@@ -1016,8 +1016,11 @@ func (s *RosterToolServer) enforceCaps(
 		return err
 	}
 	if strings.TrimSpace(body.Role) == RoleManager {
+		// One vault read for both halves: `vaultRoots` shells `vault-cli config list`,
+		// and asking it twice for one spawn would pay that subprocess twice.
+		roots := s.vaultRoots(ctx)
 		if err := s.Caps.CheckManager(
-			ctx, s.managerKind(ctx, body.Label), s.vaultRoots(ctx), body.OperatorNamed,
+			ctx, ManagerKindForLabel(body.Label, roots, FileExists), roots, body.OperatorNamed,
 		); err != nil {
 			return err
 		}
@@ -1047,20 +1050,15 @@ func (s *RosterToolServer) enforceWorkerCaps(
 	return s.Caps.ReserveStart(ctx)
 }
 
-// managerKind classifies the manager this spawn will open, from its label.
-//
-// The label is the subject's title — `<Topic>`, `<Goal>`, `<Goal> Manager` — and
-// the kind is resolved against the configured vaults by the same rule the live
-// count uses (`ManagerKindForLabel`). An unreadable vault list degrades to no
-// roots, which classifies the manager `unresolved`: it still answers to the
-// manager cap and the session cap, and refusing to spawn over a vault-list
-// failure would be a worse trade than skipping one sub-cap.
-func (s *RosterToolServer) managerKind(ctx context.Context, label string) string {
-	return ManagerKindForLabel(label, s.vaultRoots(ctx), FileExists)
-}
-
 // vaultRoots returns the configured vault directories, or nil when the list
 // cannot be read.
+//
+// ⚠️ The kind is classified from the SAME roots (`ManagerKindForLabel`), by the
+// rule the live count uses, so a manager cannot be counted under one cap and
+// opened under another. An unreadable vault list degrades to no roots, which
+// classifies the manager `unresolved`: it still answers to the manager cap and
+// the session cap, and refusing to spawn over a vault-list failure would be a
+// worse trade than skipping one sub-cap.
 func (s *RosterToolServer) vaultRoots(ctx context.Context) []string {
 	if s.Vaults == nil {
 		return nil
