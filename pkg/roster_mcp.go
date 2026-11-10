@@ -1399,8 +1399,16 @@ func spawnToolDefinitions() []any {
 					"soft cap. An operator-named spawn is still refused at the hard cap."),
 			}),
 		toolDef(ToolSendAgentMessage,
-			"Send one further turn to an A2A worker, continuing its conversation by "+
-				"`contextId`. Returns the turn's terminal state and the assistant text.",
+			"Send one further turn to a worker. An A2A worker receives it by "+
+				"`contextId` and the turn's terminal state plus assistant text come back. "+
+				"A tab worker has it typed into its pane. A HEADLESS worker has no pane, "+
+				"so the response carries `channel: \"peer\"` and the registry `name` it "+
+				"answers to, with `sent: false` — ⚠️ `sent: false` there is the contract, "+
+				"not a failure report: the CALLER must deliver the text itself with "+
+				"`SendMessage(to: <name>)`, because this daemon is not a Claude session "+
+				"and cannot call it. When no single name can be given (none registered, "+
+				"several registered, or the registry unreadable) the call refuses and "+
+				"names which.",
 			map[string]any{
 				"agent_id": stringProp("id of the agent to write to"),
 				"text":     stringProp("the user turn to send"),

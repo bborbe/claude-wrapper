@@ -528,6 +528,18 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("without a session registry"))
 	})
 
+	// The interactive refusal is deliberately UNCHANGED by this change, so it keeps
+	// its own assertion: splitting the shared no-pane branch into noPaneResponse
+	// must not quietly drop the coverage the old shared spec gave it.
+	ginkgo.It("still refuses an interactive worker whose pane is gone, with the unchanged advice", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "interactive"}}
+		server := &RosterToolServer{Tabs: tabs, Roster: &fakeRoster{}, Ledger: ledger}
+		_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("is a interactive worker with no pane"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("reach it mid-task with SendMessage"))
+	})
+
 	// One table over all four refusal branches: each must name its OWN reason AND
 	// the channel that still works. Iterating the set rather than four separate
 	// specs keeps a newly added branch from silently escaping the contract — a
