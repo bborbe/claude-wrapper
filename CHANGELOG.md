@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.17.1
 
 - fix: **a child that never emits an `init` event is terminated after a startup deadline, so a session can no longer rest in `starting` forever holding its memory and its spawn slot.** `StateStarting` left only through `applyInit`, on the child's `system`/`init` event — no timer, no watchdog, no fallback — so a child that never initialised was `starting` for the life of its process, and `reap-idle-headless.py` refused every one of them `wrapper-busy` because they were not `idle`. Measured 2026-11-10: nine such sessions sat at ~174 MiB each for nearly three hours after the daemon restarted at `17:25:28Z`, and a 19-sid reap closed none of them. `pkg/startup_deadline.go` adds `EnforceStartupDeadline`, run by a sweeper every 30 s: a session whose state is `starting` **and** whose `model` is still empty past `startup.maxStartingSeconds` (default 300 s, `0` disables, read per sweep from `~/.config/claude-supervisor/config.json`) is SIGKILLed by pid — the same path `Stop` takes, so an adopted child whose `*exec.Cmd` this process never held is covered too — and its own watch goroutine settles the record to `exited`. The `model` guard is what keeps this safe: a populated model proves the child has done real work, so a long start there is slow, not stuck, and is never killed. A session with no pid is skipped rather than signalling pid 0, and one with no `StartedAt` is skipped rather than read as infinitely old.
 
