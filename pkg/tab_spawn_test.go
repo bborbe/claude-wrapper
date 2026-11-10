@@ -477,6 +477,7 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 		gomega.Expect(handled).To(gomega.BeTrue())
 		gomega.Expect(response).To(gomega.BeEmpty())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("no session-registry entry"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("session exited"))
 		gomega.Expect(err.Error()).ToNot(gomega.ContainSubstring("reach it mid-task"))
 	})
 
@@ -525,6 +526,38 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 		_, _, err := server.sendToTabPane(ctx, "s1", "hello")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("without a session registry"))
+	})
+
+	// One table over all four refusal branches: each must name its OWN reason AND
+	// the channel that still works. Iterating the set rather than four separate
+	// specs keeps a newly added branch from silently escaping the contract — a
+	// refusal a caller cannot act on is the defect this change exists to remove.
+	ginkgo.It("gives every headless refusal its own reason and a performable remedy", func() {
+		for _, branch := range []struct {
+			name     string
+			registry SessionRegistry
+			reason   string
+		}{
+			{"absent", nil, "without a session registry"},
+			{"unreadable", &fakeRegistry{err: stderrors.New("registry unreadable")}, "could not be read"},
+			{"ambiguous", &fakeRegistry{names: map[string][]string{
+				"claude-a": {"s1"},
+				"claude-b": {"s1"},
+			}}, "wrong conversation"},
+			{"no entry", &fakeRegistry{names: map[string][]string{}}, "session exited"},
+		} {
+			ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+			server := &RosterToolServer{
+				Tabs:     tabs,
+				Roster:   &fakeRoster{},
+				Ledger:   ledger,
+				Registry: branch.registry,
+			}
+			_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+			gomega.Expect(err).NotTo(gomega.BeNil(), branch.name)
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(branch.reason), branch.name)
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("answer_permission"), branch.name)
+		}
 	})
 })
 
