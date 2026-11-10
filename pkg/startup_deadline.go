@@ -176,12 +176,20 @@ func (s *supervisor) terminateStarting(ctx context.Context, bound time.Duration)
 				id, snapshot.State, bound)
 			continue
 		}
-		log.Printf("startup deadline: session %s rested in %q for %s with no init event — terminating pid %d",
-			id, snapshot.State, now.Sub(snapshot.StartedAt).Round(time.Second), c.pid)
-		if err := c.stop(ctx); err != nil {
+		// The snapshot above is the cheap pre-filter. stopIfStillStarting decides
+		// again under the child's own lock — the one apply() holds while it calls
+		// applyInit — so a child that emits init between the two is left alone
+		// instead of being killed with a populated model.
+		killed, err := c.stopIfStillStarting(ctx, now, bound)
+		if err != nil {
 			log.Printf("WARNING: startup deadline: stop %s failed: %v", id, err)
 			continue
 		}
+		if !killed {
+			continue
+		}
+		log.Printf("startup deadline: session %s rested in %q for %s with no init event — terminating pid %d",
+			id, snapshot.State, now.Sub(snapshot.StartedAt).Round(time.Second), c.pid)
 		stopped++
 	}
 	return stopped

@@ -1270,6 +1270,34 @@ func (c *child) stop(ctx context.Context) error {
 	return nil
 }
 
+// stopIfStillStarting kills the child only if, at the instant the signal is
+// issued under the same lock apply() holds while it calls applyInit, the child
+// is still a starting session past the bound with no model.
+//
+// The caller reaches this after taking its own snapshot, and a snapshot plus a
+// later kill is two separate lock acquisitions: a child that emits init in
+// between would be killed with a populated model, which is exactly the case the
+// model guard exists to prevent. Deciding inside this critical section closes
+// that window. It reports whether the child was killed.
+func (c *child) stopIfStillStarting(
+	ctx context.Context,
+	now time.Time,
+	bound time.Duration,
+) (bool, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if !shouldTerminateStarting(c.session, now, bound) {
+		return false, nil
+	}
+	// Signalled by pid rather than through *exec.Cmd: an adopted child was started
+	// by a daemon that no longer exists, so this process holds no Cmd for it and
+	// Process would be nil.
+	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
+		return false, errors.Wrapf(ctx, err, "kill session %q failed", c.id)
+	}
+	return true, nil
+}
+
 // send writes one user turn to the child's stdin as JSONL.
 func (c *child) send(ctx context.Context, text string) error {
 	c.mutex.RLock()

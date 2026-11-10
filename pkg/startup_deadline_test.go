@@ -16,11 +16,47 @@ import (
 	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+
+	"github.com/bborbe/claude-wrapper/pkg/supervisorconfig"
 )
 
 var _ = ginkgo.Describe("startup deadline", func() {
 	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
 	bound := 300 * time.Second
+
+	// startChild runs a real process and returns it with a supervisor that holds
+	// it. A real collaborator, not a mock: the thing under test kills by pid, so a
+	// fake pid would prove nothing.
+	startChild := func(session Session) (*supervisor, *exec.Cmd) {
+		cmd := exec.Command("sleep", "60")
+		gomega.Expect(cmd.Start()).To(gomega.Succeed())
+		c := &child{
+			id:      session.ID,
+			pid:     cmd.Process.Pid,
+			now:     libtime.NewCurrentDateTime(),
+			session: session,
+		}
+		return &supervisor{
+			now:      libtime.NewCurrentDateTime(),
+			sessions: map[string]*child{session.ID: c},
+			mutex:    sync.RWMutex{},
+		}, cmd
+	}
+
+	// awaitExit reports whether the process left within timeout.
+	awaitExit := func(cmd *exec.Cmd, timeout time.Duration) bool {
+		done := make(chan struct{})
+		go func() {
+			_, _ = cmd.Process.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return true
+		case <-time.After(timeout):
+			return false
+		}
+	}
 
 	ginkgo.DescribeTable("shouldTerminateStarting",
 		func(state State, model string, elapsed time.Duration, expect bool) {
@@ -104,40 +140,6 @@ var _ = ginkgo.Describe("startup deadline", func() {
 			ctx = context.Background()
 		})
 
-		// startChild runs a real process and returns it with a supervisor that
-		// holds it. A real collaborator, not a mock: the thing under test kills by
-		// pid, so a fake pid would prove nothing.
-		startChild := func(session Session) (*supervisor, *exec.Cmd) {
-			cmd := exec.Command("sleep", "60")
-			gomega.Expect(cmd.Start()).To(gomega.Succeed())
-			c := &child{
-				id:      session.ID,
-				pid:     cmd.Process.Pid,
-				now:     libtime.NewCurrentDateTime(),
-				session: session,
-			}
-			return &supervisor{
-				now:      libtime.NewCurrentDateTime(),
-				sessions: map[string]*child{session.ID: c},
-				mutex:    sync.RWMutex{},
-			}, cmd
-		}
-
-		// awaitExit reports whether the process left within timeout.
-		awaitExit := func(cmd *exec.Cmd, timeout time.Duration) bool {
-			done := make(chan struct{})
-			go func() {
-				_, _ = cmd.Process.Wait()
-				close(done)
-			}()
-			select {
-			case <-done:
-				return true
-			case <-time.After(timeout):
-				return false
-			}
-		}
-
 		ginkgo.It("terminates a child that never initialised", func() {
 			s, cmd := startChild(Session{
 				ID:        "stuck",
@@ -192,6 +194,45 @@ var _ = ginkgo.Describe("startup deadline", func() {
 				"a populated model proves the child did real work")
 		})
 
+		// The window the review found: terminateStarting snapshots, then kills. A
+		// child that emits init between the two must not be killed, so the decision
+		// has to be taken again under the child's own lock. Holding that lock while
+		// the sweeper waits on it reproduces the window deterministically.
+		ginkgo.It("leaves a child that initialises between the snapshot and the kill", func() {
+			s, cmd := startChild(Session{
+				ID:        "raced",
+				State:     StateStarting,
+				StartedAt: time.Now().Add(-10 * time.Minute),
+			})
+			defer func() { _ = cmd.Process.Kill() }()
+			c := s.sessions["raced"]
+
+			type outcome struct {
+				killed bool
+				err    error
+			}
+			done := make(chan outcome, 1)
+
+			c.mutex.Lock()
+			go func() {
+				killed, err := c.stopIfStillStarting(ctx, time.Now(), 5*time.Minute)
+				done <- outcome{killed: killed, err: err}
+			}()
+			// The goroutine is blocked on c.mutex. Populate the model and settle the
+			// state as applyInit would, then let it in.
+			time.Sleep(100 * time.Millisecond)
+			c.session.Model = "deepseek-v4-flash-max"
+			c.session.State = StateIdle
+			c.mutex.Unlock()
+
+			got := <-done
+			gomega.Expect(got.err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(got.killed).To(gomega.BeFalse(),
+				"a child that emitted init before the signal must not be terminated")
+			gomega.Expect(awaitExit(cmd, 300*time.Millisecond)).To(gomega.BeFalse(),
+				"the process must still be running")
+		})
+
 		ginkgo.It("skips a session with no pid instead of signalling pid zero", func() {
 			c := &child{
 				id:      "no-pid",
@@ -219,6 +260,53 @@ var _ = ginkgo.Describe("startup deadline", func() {
 
 			gomega.Expect(s.terminateStarting(ctx, 0)).To(gomega.Equal(0))
 			gomega.Expect(awaitExit(cmd, 300*time.Millisecond)).To(gomega.BeFalse())
+		})
+	})
+
+	// The wiring from the operator's config file to the kill: EnforceStartupDeadline
+	// resolves the bound through supervisorconfig.Path, so a test that injects the
+	// bound directly would prove nothing about it.
+	ginkgo.Describe("EnforceStartupDeadline", func() {
+		var ctx context.Context
+
+		ginkgo.BeforeEach(func() {
+			ctx = context.Background()
+		})
+
+		// config writes a supervisor config and points SUPERVISOR_CONFIG at it, so the
+		// sweeper reads a real file rather than a value injected past the loader.
+		config := func(body string) {
+			path := filepath.Join(ginkgo.GinkgoT().TempDir(), "config.json")
+			gomega.Expect(os.WriteFile(path, []byte(body), 0o600)).To(gomega.Succeed())
+			ginkgo.GinkgoT().Setenv(supervisorconfig.EnvConfig, path)
+		}
+
+		ginkgo.It("kills a child past the configured bound", func() {
+			config(`{"startup":{"maxStartingSeconds":60}}`)
+			s, cmd := startChild(Session{
+				ID:        "configured",
+				State:     StateStarting,
+				StartedAt: time.Now().Add(-2 * time.Minute),
+			})
+			defer func() { _ = cmd.Process.Kill() }()
+
+			gomega.Expect(s.EnforceStartupDeadline(ctx)).To(gomega.Equal(1))
+			gomega.Expect(awaitExit(cmd, 5*time.Second)).To(gomega.BeTrue(),
+				"the child was past the configured bound and was not killed")
+		})
+
+		ginkgo.It("leaves a child alone when the configured bound is the off switch", func() {
+			config(`{"startup":{"maxStartingSeconds":0}}`)
+			s, cmd := startChild(Session{
+				ID:        "off",
+				State:     StateStarting,
+				StartedAt: time.Now().Add(-10 * time.Hour),
+			})
+			defer func() { _ = cmd.Process.Kill() }()
+
+			gomega.Expect(s.EnforceStartupDeadline(ctx)).To(gomega.Equal(0))
+			gomega.Expect(awaitExit(cmd, 300*time.Millisecond)).To(gomega.BeFalse(),
+				"a zero bound disables the deadline")
 		})
 	})
 })
