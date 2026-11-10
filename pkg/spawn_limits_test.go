@@ -428,13 +428,15 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 		ctx = context.Background()
 	})
 
-	ginkgo.It("counts live workers, excluding managers, auto-resumes, ghosts and the dead", func() {
+	ginkgo.It("counts live workers, excluding managers, ghosts and the dead", func() {
 		caps := testCaps(
 			&rosterLedger{rows: []LedgerRow{
 				{SessionID: "worker-live"},
 				{SessionID: "worker-dead"},
 				{SessionID: "worker-ghost"},
 				{SessionID: "manager-live", Role: RoleManager},
+				// A resumed worker is live load like any other — it used to be skipped here,
+				// which is what made the cap blind to every session a sweep revived.
 				{SessionID: "resumed-live", ResumedFrom: "older"},
 			}},
 			&stubHeartbeats{rows: []HeartbeatRow{
@@ -454,7 +456,9 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 		count, err := caps.countWorkers(ctx)
 
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(count).To(gomega.Equal(1))
+		// worker-live + resumed-live. The manager, the ghost, the dead row and the unledgered
+		// session are all still excluded, which is the control this number carries.
+		gomega.Expect(count).To(gomega.Equal(2))
 	})
 
 	ginkgo.It("unions the session registry for a worker that stamps no heartbeat", func() {
