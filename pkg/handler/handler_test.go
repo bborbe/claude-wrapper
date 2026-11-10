@@ -167,6 +167,8 @@ func (f *fakeSupervisor) Drain(_ context.Context, _ time.Duration) pkg.DrainRepo
 	return pkg.DrainReport{}
 }
 
+func (f *fakeSupervisor) EnforceStartupDeadline(_ context.Context) int { return 0 }
+
 // openSupervisor hands the events route a LIVE channel instead of fakeSupervisor's
 // closed one, so a spec can write to the stream after the server's write deadline has
 // passed. Nothing else about it matters.

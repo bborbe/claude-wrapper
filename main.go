@@ -101,6 +101,10 @@ func main() {
 
 	startFleetFaces(ctx, mux, supervisor, decider, ledger, *attentionURL, *heartbeatInterval)
 
+	// The startup deadline is the only verb that can clear a child stuck in
+	// `starting`: it never emits an init event, so nothing else reaches it.
+	go startStartupSweeper(ctx, supervisor, pkg.StartupSweepInterval)
+
 	server := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,
@@ -152,6 +156,33 @@ func newSupervisor(
 			Ledger:            ledger,
 		},
 	), ledger
+}
+
+// startStartupSweeper terminates children that rest in `starting` past the
+// configured deadline.
+//
+// It runs on the process lifetime: the daemon's own goroutines read ctx so a
+// draining process stops them rather than leaving them to fire against a dead
+// process. The interval is a sweep granularity, not the bound — the bound is
+// read from the config file on every tick, so an operator's change lands on the
+// next sweep with no restart.
+func startStartupSweeper(
+	ctx context.Context,
+	supervisor pkg.Supervisor,
+	interval time.Duration,
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if stopped := supervisor.EnforceStartupDeadline(ctx); stopped > 0 {
+				log.Printf("startup deadline: terminated %d session(s) stuck in starting", stopped)
+			}
+		}
+	}
 }
 
 // warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised

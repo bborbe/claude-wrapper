@@ -24,6 +24,8 @@ func (fakeDurable) Adopt(context.Context) (int, error) { return 0, nil }
 
 func (fakeDurable) Drain(context.Context, time.Duration) DrainReport { return DrainReport{} }
 
+func (fakeDurable) EnforceStartupDeadline(context.Context) int { return 0 }
+
 func (fakeDurable) SubscribeFrom(
 	context.Context, string, int,
 ) ([]Event, int, <-chan Event, func(), error) {

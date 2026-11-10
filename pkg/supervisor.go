@@ -124,6 +124,15 @@ type Supervisor interface {
 	// Drain waits for each child to reach a turn boundary, up to bound, and
 	// reports what it found. It never kills a child.
 	Drain(ctx context.Context, bound time.Duration) DrainReport
+	// EnforceStartupDeadline terminates every child that has rested in
+	// StateStarting past the configured bound without ever emitting an init
+	// event, and reports how many it stopped.
+	//
+	// StateStarting leaves only through applyInit, so a child that never emits
+	// init is unreachable by every other closing verb — the idle reaper refuses
+	// it `wrapper-busy` because it is not idle. This is the only mechanism that
+	// can clear it without an external trigger.
+	EnforceStartupDeadline(ctx context.Context) int
 }
 
 // NewSupervisor creates a Supervisor that runs the given claude binary.
