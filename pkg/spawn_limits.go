@@ -44,13 +44,25 @@ import (
 // restart.
 const (
 	// DefaultMaxConcurrent is the soft worker cap an absent key resolves to.
-	DefaultMaxConcurrent = 20
+	//
+	// Raised 20 → 40 on 2026-11-10 with the seven-axis split: the headless and
+	// interactive populations now bind on their own sub-caps (`spawn_axes.go`), so
+	// the worker total is a parent rather than the only control.
+	DefaultMaxConcurrent = 40
 	// DefaultMaxConcurrentHard is the hard worker cap an absent key resolves to.
-	DefaultMaxConcurrentHard = 50
+	//
+	// 60, raised with the soft cap from 50. The two move together because the band
+	// between them is the operator-named allowance, and a soft cap of 40 under a
+	// ceiling still at 50 would shrink that band to ten sessions.
+	DefaultMaxConcurrentHard = 60
 	// DefaultMaxManagers is the soft manager cap an absent key resolves to.
-	DefaultMaxManagers = 3
+	//
+	// 10, on the operator's 2026-11-10 ruling — "manager 10/15 is nice" —
+	// replacing the 2026-10-10 design's 3. The children have to nest under it:
+	// topic 2 + goal 7 = 9 ≤ 10 soft, 4 + 11 = 15 ≤ 15 hard.
+	DefaultMaxManagers = 10
 	// DefaultMaxManagersHard is the hard manager cap an absent key resolves to.
-	DefaultMaxManagersHard = 5
+	DefaultMaxManagersHard = 15
 	// DefaultMaxStartsPerMinute is the arrival rate an absent key resolves to.
 	//
 	// 4 is chosen against the measured incident rather than rounded: 22 sessions
@@ -90,12 +102,18 @@ const ManagerFleetFull = "the manager fleet is FULL"
 
 // SpawnCaps enforces the fleet-wide caps before a spawn creates anything.
 type SpawnCaps interface {
-	// CheckWorker refuses an ordinary spawn at the soft worker cap, and every
-	// spawn at the hard cap. operatorNamed is the CALLER's assertion and is never
-	// inferred here.
-	CheckWorker(ctx context.Context, operatorNamed bool) error
-	// CheckManager refuses a manager spawn at the manager pair.
-	CheckManager(ctx context.Context, operatorNamed bool) error
+	// CheckWorker enforces the worker axes: the mode sub-cap, the worker total and
+	// the session backstop. `mode` is the RESOLVED spawn mode (`headless` or
+	// `interactive`); an empty mode is a worker that is neither locally — a cluster
+	// or a2a worker — and then only the worker and session axes apply.
+	// operatorNamed is the CALLER's assertion and is never inferred here.
+	CheckWorker(ctx context.Context, mode string, operatorNamed bool) error
+	// CheckManager enforces the manager axes: the kind sub-cap, the manager total
+	// and the session backstop. `kind` is the manager kind the caller resolved
+	// (`topic`, `goal`, `fleet` or `unresolved`); `roots` are the vault roots the
+	// live count classifies managers against, resolved by the caller because this
+	// package does not own vault lookup.
+	CheckManager(ctx context.Context, kind string, roots []string, operatorNamed bool) error
 	// ReserveStart paces a start against the arrival rate, waiting or refusing.
 	ReserveStart(ctx context.Context) error
 }
@@ -138,58 +156,200 @@ type spawnCaps struct {
 	sleep      func(context.Context, time.Duration) error
 }
 
-// CheckWorker enforces the worker pair.
-func (c *spawnCaps) CheckWorker(ctx context.Context, operatorNamed bool) error {
+// CheckWorker enforces the worker axes — the mode sub-cap, the worker total and
+// the session backstop, in that order.
+//
+// The mode sub-cap is asked FIRST because it is the narrower population and the
+// one a burst grows: telling a headless caller it is over the worker total sends
+// it to close tabs, which is not what binds. The session cap is asked LAST
+// because it is the backstop — it refuses everyone, so answering it early would
+// replace a specific, actionable refusal with a generic one.
+func (c *spawnCaps) CheckWorker(ctx context.Context, mode string, operatorNamed bool) error {
 	file, path, err := c.config(ctx)
 	if err != nil {
 		return err
 	}
-	limits, err := ResolveMaxConcurrent(
-		ctx, c.getenv(EnvMaxConcurrent), c.getenv(EnvMaxConcurrentHard), file, path,
-	)
+	axes, err := ResolveSpawnAxes(ctx, c.getenv, file, path)
 	if err != nil {
 		return err
 	}
-	// `nil` is the soft key's off switch, which disables the pair. Answered before
-	// the count, which is the expensive half.
-	if limits.Limit == nil {
+	// Answered before the count, which is the expensive half: with every worker
+	// axis switched off there is nothing for the count to decide.
+	if axes.Worker.Limit == nil && axes.Session.Limit == nil && !modeHasCap(axes, mode) {
 		return nil
 	}
-	var refusal string
-	if count, countErr := c.countWorkers(ctx); countErr != nil {
-		refusal = ConcurrentLimitRefusal(limits, nil, countErr.Error(), operatorNamed, path)
-	} else {
-		refusal = ConcurrentLimitRefusal(limits, &count, "", operatorNamed, path)
-	}
+	counts, countErr := c.countWorkersByMode(ctx)
+	refusal := workerAxesRefusal(axes, mode, counts, countErr, operatorNamed, path)
 	if refusal != "" {
 		return errors.Errorf(ctx, "%s", refusal)
 	}
 	return nil
 }
 
-// CheckManager enforces the manager pair.
-func (c *spawnCaps) CheckManager(ctx context.Context, operatorNamed bool) error {
+// CheckManager enforces the manager axes — the kind sub-cap, the manager total
+// and the session backstop.
+//
+// ⚠️ The live manager count comes from the spawn LEDGER, so a manager started by
+// hand in a plain tab writes no row and is invisible here. That gap is unchanged
+// by the split and is stated on `countManagersByKind`.
+func (c *spawnCaps) CheckManager(
+	ctx context.Context,
+	kind string,
+	roots []string,
+	operatorNamed bool,
+) error {
 	file, path, err := c.config(ctx)
 	if err != nil {
 		return err
 	}
-	limits, err := ResolveMaxManagers(ctx, file, path)
+	axes, err := ResolveSpawnAxes(ctx, c.getenv, file, path)
 	if err != nil {
 		return err
 	}
-	if limits.Limit == nil {
+	if axes.Manager.Limit == nil && axes.Session.Limit == nil && !managerKindHasCap(axes, kind) {
 		return nil
 	}
-	var refusal string
-	if count, countErr := c.countManagers(ctx); countErr != nil {
-		refusal = ManagerLimitRefusal(limits, nil, countErr.Error(), operatorNamed, path)
-	} else {
-		refusal = ManagerLimitRefusal(limits, &count, "", operatorNamed, path)
+	managers, countErr := c.countManagersByKind(ctx, roots)
+	if countErr != nil {
+		return errors.Errorf(
+			ctx, "%s",
+			AxisLimitRefusal(axes, AxisManager, nil, countErr.Error(), operatorNamed, path),
+		)
 	}
+	// The session backstop counts every session kind, so it needs the worker half
+	// too. A second ledger read is the honest cost of one number that spans both
+	// populations, and manager spawns are rare enough that it is not a hot path.
+	workers, workerErr := c.countWorkersByMode(ctx)
+	if workerErr != nil {
+		return errors.Errorf(
+			ctx, "%s",
+			AxisLimitRefusal(axes, AxisSession, nil, workerErr.Error(), operatorNamed, path),
+		)
+	}
+	refusal := managerAxesRefusal(axes, kind, managers, workers.total()+managers.total, operatorNamed, path)
 	if refusal != "" {
 		return errors.Errorf(ctx, "%s", refusal)
 	}
 	return nil
+}
+
+// workerAxesRefusal decides the worker-side axes from one count pass.
+//
+// The session total adds the ledger's managers to the workers, because the
+// session cap counts every session kind — and the two numbers come from the same
+// read, so the refusal cannot describe a different instant than the count.
+func workerAxesRefusal(
+	axes SpawnAxes,
+	mode string,
+	counts workerModeCounts,
+	countErr error,
+	operatorNamed bool,
+	path string,
+) string {
+	if countErr != nil {
+		// An uncountable fleet is ONE condition, not one per axis: the historic worker
+		// refusal names the worker cap and says the count — not the limit — is the
+		// failure, and a per-axis variant of that message would be a second phrasing of
+		// one fact. The session backstop answers only when the worker pair is switched
+		// off, since then nothing else would refuse.
+		if refusal := ConcurrentLimitRefusal(
+			axes.Worker, nil, countErr.Error(), operatorNamed, path,
+		); refusal != "" {
+			return refusal
+		}
+		return AxisLimitRefusal(axes, AxisSession, nil, countErr.Error(), operatorNamed, path)
+	}
+	total := counts.total()
+	if axis := workerModeAxis(mode); axis != "" {
+		if refusal := AxisLimitRefusal(
+			axes, axis, intPtr(counts.forMode(mode)), "", operatorNamed, path,
+		); refusal != "" {
+			return refusal
+		}
+	}
+	if refusal := ConcurrentLimitRefusal(
+		axes.Worker, intPtr(total), "", operatorNamed, path,
+	); refusal != "" {
+		return refusal
+	}
+	return AxisLimitRefusal(
+		axes, AxisSession, intPtr(total+counts.Managers), "", operatorNamed, path,
+	)
+}
+
+// managerAxesRefusal decides the manager-side axes, then the session backstop.
+func managerAxesRefusal(
+	axes SpawnAxes,
+	kind string,
+	managers managerKindCounts,
+	sessionCount int,
+	operatorNamed bool,
+	path string,
+) string {
+	if axis := managerKindAxis(kind); axis != "" {
+		if refusal := AxisLimitRefusal(
+			axes, axis, intPtr(managers.byKind[kind]), "", operatorNamed, path,
+		); refusal != "" {
+			return refusal
+		}
+	}
+	if refusal := ManagerLimitRefusal(
+		axes.Manager, intPtr(managers.total), "", operatorNamed, path,
+	); refusal != "" {
+		return refusal
+	}
+	return AxisLimitRefusal(axes, AxisSession, intPtr(sessionCount), "", operatorNamed, path)
+}
+
+// workerModeAxis maps a resolved spawn mode to its sub-cap axis, or "" for a
+// worker that has no local mode.
+func workerModeAxis(mode string) string {
+	switch mode {
+	case SpawnModeHeadless:
+		return AxisHeadless
+	case SpawnModeInteractive:
+		return AxisInteractive
+	default:
+		return ""
+	}
+}
+
+// managerKindAxis maps a manager kind to its sub-cap axis, or "" for a kind with
+// no sub-cap of its own.
+//
+// `fleet` and `unresolved` answer "" deliberately: the Fleet Manager is excluded
+// from the manager cap by the operator's design, and an unresolved manager's kind
+// is exactly what could not be determined — guessing a pair for it would file it
+// under a cap it may not belong to.
+func managerKindAxis(kind string) string {
+	switch kind {
+	case ManagerKindTopic:
+		return AxisTopicManager
+	case ManagerKindGoal:
+		return AxisGoalManager
+	default:
+		return ""
+	}
+}
+
+// modeHasCap reports whether the mode's sub-cap is switched on.
+func modeHasCap(axes SpawnAxes, mode string) bool {
+	axis := workerModeAxis(mode)
+	if axis == "" {
+		return false
+	}
+	limits, ok := axes.LimitsFor(axis)
+	return ok && limits.Limit != nil
+}
+
+// managerKindHasCap reports whether the kind's sub-cap is switched on.
+func managerKindHasCap(axes SpawnAxes, kind string) bool {
+	axis := managerKindAxis(kind)
+	if axis == "" {
+		return false
+	}
+	limits, ok := axes.LimitsFor(axis)
+	return ok && limits.Limit != nil
 }
 
 // ReserveStart paces one start against the arrival rate.
@@ -263,20 +423,88 @@ func (c *spawnCaps) config(ctx context.Context) (SpawnConfigFile, string, error)
 // every session it missed was a resume. The crash-loop cap on the resume path
 // is a separate control and is unchanged by this.
 func (c *spawnCaps) countWorkers(ctx context.Context) (int, error) {
-	rows, live, err := c.ledgerAndLive(ctx)
+	counts, err := c.countWorkersByMode(ctx)
 	if err != nil {
 		return 0, err
 	}
-	count := 0
+	return counts.total(), nil
+}
+
+// workerModeCounts is the live worker population split by the mode the ledger
+// recorded, plus the managers the same pass saw.
+//
+// ⚠️ **Four worker modes, not two.** The ledger carries `interactive`,
+// `headless`, `cluster` and `a2a`; a binary headless-vs-else classifier would
+// report live cluster and a2a workers as "interactive" — exactly the conflation
+// the seven-axis split exists to prevent. The node's `workerSessions` carries the
+// same four for the same reason.
+type workerModeCounts struct {
+	Interactive int
+	Headless    int
+	Cluster     int
+	A2A         int
+	// Managers is the ledger's manager population, carried beside the workers
+	// because the session backstop counts every session kind in one number.
+	Managers int
+}
+
+// total is the worker population the worker axis bounds — managers excluded, so
+// the count and the axis's own refusal describe the same set.
+func (c workerModeCounts) total() int {
+	return c.Interactive + c.Headless + c.Cluster + c.A2A
+}
+
+// forMode returns the count for one resolved spawn mode, 0 for a mode with no
+// local sub-cap.
+func (c workerModeCounts) forMode(mode string) int {
+	switch mode {
+	case SpawnModeHeadless:
+		return c.Headless
+	case SpawnModeInteractive:
+		return c.Interactive
+	default:
+		return 0
+	}
+}
+
+// countWorkersByMode counts live workers split by mode, in ONE ledger read.
+//
+// Identity is the spawn ledger; liveness is the heartbeat store unioned with the
+// session registry (see `ledgerAndLive`). Managers and auto-resumes are counted
+// apart: a manager is not a worker, and a resumed worker IS a worker (2026-11-10)
+// — the resume used to be skipped, which is what made the cap blind to every
+// session a sweep revived.
+func (c *spawnCaps) countWorkersByMode(ctx context.Context) (workerModeCounts, error) {
+	rows, live, err := c.ledgerAndLive(ctx)
+	if err != nil {
+		return workerModeCounts{}, err
+	}
+	var counts workerModeCounts
 	for _, row := range rows {
-		if row.SessionID == "" || row.Role == RoleManager {
+		if row.SessionID == "" {
 			continue
 		}
-		if _, ok := live[row.SessionID]; ok {
-			count++
+		if _, ok := live[row.SessionID]; !ok {
+			continue
+		}
+		if row.Role == RoleManager {
+			counts.Managers++
+			continue
+		}
+		switch row.Mode {
+		case SpawnModeHeadless:
+			counts.Headless++
+		case "cluster":
+			counts.Cluster++
+		case "a2a":
+			counts.A2A++
+		default:
+			// An absent mode predates the field and reads as interactive, which is
+			// the node's rule (`record.mode || 'interactive'`).
+			counts.Interactive++
 		}
 	}
-	return count, nil
+	return counts, nil
 }
 
 // countManagers counts live manager sessions from the spawn ledger.
@@ -287,20 +515,57 @@ func (c *spawnCaps) countWorkers(ctx context.Context) (int, error) {
 // and must not become a dependency of the daemon. The worker cap still bounds
 // total load.
 func (c *spawnCaps) countManagers(ctx context.Context) (int, error) {
-	rows, live, err := c.ledgerAndLive(ctx)
+	counts, err := c.countManagersByKind(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	count := 0
+	return counts.total, nil
+}
+
+// managerKindCounts is the live manager population split by the kind its subject
+// page names, plus the total.
+type managerKindCounts struct {
+	byKind map[string]int
+	total  int
+}
+
+// countManagersByKind counts live managers from the spawn ledger, classified by
+// kind against `roots`.
+//
+// ⚠️ **One rule, two callers.** The spawn site classifies the session it is about
+// to create and this count classifies the sessions already live, both through
+// `ManagerKindForLabel`, so a manager cannot be counted under one cap and opened
+// under another.
+//
+// ⚠️ The roots are the caller's, because vault lookup is not this package's: a
+// manager's subject page lives in the vault the manager runs in, and the ledger
+// row's own `Cwd` is unioned in so a row spawned into a vault the operator has
+// since unregistered still classifies against where it actually ran.
+func (c *spawnCaps) countManagersByKind(
+	ctx context.Context,
+	roots []string,
+) (managerKindCounts, error) {
+	rows, live, err := c.ledgerAndLive(ctx)
+	if err != nil {
+		return managerKindCounts{}, err
+	}
+	counts := managerKindCounts{byKind: map[string]int{}}
 	for _, row := range rows {
 		if row.SessionID == "" || row.Role != RoleManager {
 			continue
 		}
-		if _, ok := live[row.SessionID]; ok {
-			count++
+		if _, ok := live[row.SessionID]; !ok {
+			continue
 		}
+		rowRoots := roots
+		if row.Cwd != "" {
+			rowRoots = append(append([]string{}, roots...), row.Cwd)
+		}
+		kind := ManagerKindForLabel(row.Label, rowRoots, FileExists)
+		counts.byKind[kind]++
+		counts.total++
 	}
-	return count, nil
+	return counts, nil
 }
 
 // ledgerAndLive reads the ledger and the live set, naming the store that failed.
@@ -404,13 +669,27 @@ func SupervisorStateDir(
 }
 
 // SpawnConfigFile is the part of the supervisor config the caps read.
+//
+// The worker and manager pairs shipped first; the other five keys joined them on
+// 2026-11-10 with the seven-axis split (`spawn_axes.go`). All ten are read per
+// spawn rather than snapshotted at boot.
 type SpawnConfigFile struct {
 	Spawn struct {
-		MaxConcurrent      json.RawMessage `json:"maxConcurrent"`
-		MaxConcurrentHard  json.RawMessage `json:"maxConcurrentHard"`
-		MaxManagers        json.RawMessage `json:"maxManagers"`
-		MaxManagersHard    json.RawMessage `json:"maxManagersHard"`
-		MaxStartsPerMinute json.RawMessage `json:"maxStartsPerMinute"`
+		MaxConcurrent        json.RawMessage `json:"maxConcurrent"`
+		MaxConcurrentHard    json.RawMessage `json:"maxConcurrentHard"`
+		MaxManagers          json.RawMessage `json:"maxManagers"`
+		MaxManagersHard      json.RawMessage `json:"maxManagersHard"`
+		MaxStartsPerMinute   json.RawMessage `json:"maxStartsPerMinute"`
+		MaxSessions          json.RawMessage `json:"maxSessions"`
+		MaxSessionsHard      json.RawMessage `json:"maxSessionsHard"`
+		MaxHeadless          json.RawMessage `json:"maxHeadless"`
+		MaxHeadlessHard      json.RawMessage `json:"maxHeadlessHard"`
+		MaxInteractive       json.RawMessage `json:"maxInteractive"`
+		MaxInteractiveHard   json.RawMessage `json:"maxInteractiveHard"`
+		MaxTopicManagers     json.RawMessage `json:"maxTopicManagers"`
+		MaxTopicManagersHard json.RawMessage `json:"maxTopicManagersHard"`
+		MaxGoalManagers      json.RawMessage `json:"maxGoalManagers"`
+		MaxGoalManagersHard  json.RawMessage `json:"maxGoalManagersHard"`
 	} `json:"spawn"`
 }
 
