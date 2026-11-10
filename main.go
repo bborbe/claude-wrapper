@@ -396,6 +396,10 @@ func startFleetFaces(
 		// the same config file as the spawn mode. Without it a spawn past the cap
 		// opens instead of being refused.
 		Caps: pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil),
+		// The id → name join send_agent_message needs for a headless worker: it holds
+		// the session id, the caller's `SendMessage` takes the registry name, and this
+		// is the only place that maps one to the other.
+		Registry: registry,
 	})
 
 	// The central heartbeat poster. It runs beside the HTTP server rather than

@@ -32,6 +32,49 @@ var _ = ginkgo.Describe("SessionRegistry", func() {
 		gomega.Expect(live[0].SessionID).To(gomega.Equal("live-session"))
 	})
 
+	ginkgo.It("resolves a session id to the name a peer send would address", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		writeRegistryEntryNamed(dir, "a", registryFile{PID: os.Getpid(), SessionID: "6d16758d", Name: "claude-1f"})
+		writeRegistryEntryNamed(dir, "b", registryFile{PID: os.Getpid(), SessionID: "other", Name: "claude-2a"})
+
+		names, err := NewSessionRegistry(dir).NamesForSession(context.Background(), "6d16758d")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(names).To(gomega.Equal([]string{"claude-1f"}))
+	})
+
+	ginkgo.It("drops a crashed session's leftover entry, because a name handed out must answer", func() {
+		// The direction decides the pid check: `Named` keeps presence (a stale title
+		// still blocks a new one), while this join must not hand out an address that
+		// fails at the caller — the unperformable remedy the join exists to remove.
+		dir := ginkgo.GinkgoT().TempDir()
+		writeRegistryEntry(dir, registryFile{PID: 999999, SessionID: "dead", Name: "claude-dead"})
+
+		names, err := NewSessionRegistry(dir).NamesForSession(context.Background(), "dead")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(names).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("keeps every distinct name for one id, so the ambiguity stays visible", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		writeRegistryEntryNamed(dir, "a", registryFile{PID: os.Getpid(), SessionID: "s1", Name: "claude-a"})
+		writeRegistryEntryNamed(dir, "b", registryFile{PID: os.Getpid(), SessionID: "s1", Name: "claude-a"})
+		writeRegistryEntryNamed(dir, "c", registryFile{PID: os.Getpid(), SessionID: "s1", Name: "claude-b"})
+
+		names, err := NewSessionRegistry(dir).NamesForSession(context.Background(), "s1")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(names).To(gomega.ConsistOf("claude-a", "claude-b"))
+	})
+
+	ginkgo.It("reports an unreadable registry as an error, never as no entry", func() {
+		// An empty result means "the worker is gone"; an error means "retry". Folding
+		// them would report a live worker as exited.
+		names, err := NewSessionRegistry(
+			ginkgo.GinkgoT().TempDir()+"/does-not-exist",
+		).NamesForSession(context.Background(), "s1")
+		gomega.Expect(err).ToNot(gomega.BeNil())
+		gomega.Expect(names).To(gomega.BeNil())
+	})
+
 	ginkgo.It("returns nil status for an unlisted session rather than a value", func() {
 		dir := ginkgo.GinkgoT().TempDir()
 		writeRegistryEntry(dir, registryFile{PID: os.Getpid(), SessionID: "listed", Status: "idle"})

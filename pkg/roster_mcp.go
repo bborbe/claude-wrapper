@@ -108,6 +108,11 @@ type RosterToolServer struct {
 	// enforcement, which is correct only for a unit test; the daemon always wires
 	// it.
 	Caps SpawnCaps
+	// Registry resolves a headless worker's session id to the name it registered,
+	// which is the address the caller's `SendMessage` takes. Nil means a headless
+	// worker's name cannot be resolved, and send_agent_message says so rather than
+	// naming a channel the caller cannot address.
+	Registry SessionRegistry
 }
 
 // currentDateTime returns the clock the pane polls run on.
@@ -1095,6 +1100,113 @@ func (s *RosterToolServer) resolveSpawnMode(
 	return ResolveSpawnMode(ctx, interactive, sources)
 }
 
+// noPaneResponse answers a LOCAL worker whose ledger row carries no pane.
+//
+// Split out of sendToTabPane because the decision is a table, not a branch: a
+// headless worker is handed back as an address, an interactive worker whose pane is
+// gone is refused. Keeping it here is what lets the caller's loop stay one
+// condition deep.
+func (s *RosterToolServer) noPaneResponse(
+	ctx context.Context,
+	agentID string,
+	ledgerRow LedgerRow,
+) (string, error) {
+	if ledgerRow.Mode == "headless" {
+		return s.headlessPeerResponse(ctx, agentID, ledgerRow.SessionID)
+	}
+	// ⚠️ UNCHANGED from before this change, deliberately: an INTERACTIVE worker is a
+	// real claude session registered under a name, so `SendMessage` genuinely can
+	// reach it — the advice is performable for this mode and unperformable only for
+	// headless, which is the branch above.
+	return "", errors.Errorf(
+		ctx,
+		"agent %s is a %s worker with no pane — there is nothing to type into. "+
+			"Answer its parked prompts with answer_permission, or reach it mid-task "+
+			"with SendMessage",
+		agentID,
+		ledgerRow.Mode,
+	)
+}
+
+// headlessPeerResponse resolves a headless worker's registry name and hands it
+// back for the caller to send, or returns the refusal naming why it cannot.
+//
+// ⚠️ THIS IS NOT A SEND, and the response must not say otherwise. This daemon is
+// not a Claude session, so it cannot call `SendMessage` — that tool lives in the
+// CALLER's harness. What the daemon owns is the join the caller cannot perform: it
+// holds the worker's session id, `SendMessage` takes a registry name, and the
+// registry is the only place that maps one to the other. So `sent` stays false and
+// the name is the whole payload; claiming `sent: true` would repeat the defect the
+// change removes — a channel reported as working while delivering nothing.
+//
+// The three failure paths mirror the Node server's contract exactly (see
+// claude-supervisor `server/message-channel.mjs`): more than one name refuses,
+// because either would reach the wrong conversation; an unreadable registry is
+// retryable and must not read as "the worker is gone"; and no name at all refuses,
+// naming the parked-prompt channel that still works.
+func (s *RosterToolServer) headlessPeerResponse(
+	ctx context.Context,
+	agentID string,
+	sessionID string,
+) (string, error) {
+	if s.Registry == nil {
+		return "", errors.Errorf(
+			ctx,
+			"agent %s is a headless worker and this daemon was started without a session registry, "+
+				"so its SendMessage name is unknown — answer its parked prompts with answer_permission",
+			agentID,
+		)
+	}
+	names, err := s.Registry.NamesForSession(ctx, sessionID)
+	if err != nil {
+		// Wrapped, not formatted into the message: the cause stays reachable through
+		// `errors.Is`/`As`, which a `%v` in the text would destroy.
+		return "", errors.Wrapf(
+			ctx,
+			err,
+			"agent %s is a headless worker whose session registry could not be read, so its "+
+				"SendMessage name is unknown — retry, and answer its parked prompts with "+
+				"answer_permission meanwhile",
+			agentID,
+		)
+	}
+	if len(names) > 1 {
+		return "", errors.Errorf(
+			ctx,
+			"agent %s is a headless worker registered under %d names (%s), so a bare name would "+
+				"reach the wrong conversation — pick the worker from list_agents, or answer its "+
+				"parked prompts with answer_permission",
+			agentID,
+			len(names),
+			strings.Join(names, ", "),
+		)
+	}
+	if len(names) == 0 {
+		return "", errors.Errorf(
+			ctx,
+			"agent %s is a headless worker with no session-registry entry — the session exited, its "+
+				"first turn has not reported an id yet, or it runs in-process without registering a "+
+				"name — so no SendMessage can address it. Check it with agent_status, or answer its "+
+				"parked prompts with answer_permission",
+			agentID,
+		)
+	}
+	log.Printf(
+		"resolved headless worker %s to registry name %q — the caller delivers",
+		agentID,
+		names[0],
+	)
+	return marshalJSON(ctx, map[string]any{
+		"agent_id":   agentID,
+		"sent":       false,
+		"channel":    "peer",
+		"name":       names[0],
+		"session_id": sessionID,
+		"note": "this daemon cannot reach a headless worker's conversation itself — send it with " +
+			"SendMessage(to: \"" + names[0] + "\"), which is the registry name this worker answers to",
+	})
+}
+
 // parseWindowID converts the wire's string window id to the pointer the spawner
 // takes, keeping empty and absent distinct from window 0.
 func parseWindowID(ctx context.Context, raw string) (*int, error) {
@@ -1158,7 +1270,7 @@ func (s *RosterToolServer) sendToTabPane(
 			continue
 		}
 		if ledgerRow.PaneID == "" {
-			// Only a LOCAL row is ours to refuse. `interactive` and `headless` are
+			// Only a LOCAL row is ours to answer. `interactive` and `headless` are
 			// both this daemon's own spawns, so a missing pane is a real answer for
 			// them; `cluster` and `a2a` rows belong to a remote controller and carry
 			// no pane either, so claiming them here would answer an A2A worker as
@@ -1166,14 +1278,8 @@ func (s *RosterToolServer) sendToTabPane(
 			if ledgerRow.Mode != "interactive" && ledgerRow.Mode != "headless" {
 				continue
 			}
-			return true, "", errors.Errorf(
-				ctx,
-				"agent %s is a %s worker with no pane — there is nothing to type into. "+
-					"Answer its parked prompts with answer_permission, or reach it mid-task "+
-					"with SendMessage",
-				agentID,
-				ledgerRow.Mode,
-			)
+			response, err := s.noPaneResponse(ctx, agentID, ledgerRow)
+			return true, response, err
 		}
 		if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime()); err != nil {
 			return true, "", err
@@ -1293,8 +1399,16 @@ func spawnToolDefinitions() []any {
 					"soft cap. An operator-named spawn is still refused at the hard cap."),
 			}),
 		toolDef(ToolSendAgentMessage,
-			"Send one further turn to an A2A worker, continuing its conversation by "+
-				"`contextId`. Returns the turn's terminal state and the assistant text.",
+			"Send one further turn to a worker. An A2A worker receives it by "+
+				"`contextId` and the turn's terminal state plus assistant text come back. "+
+				"A tab worker has it typed into its pane. A HEADLESS worker has no pane, "+
+				"so the response carries `channel: \"peer\"` and the registry `name` it "+
+				"answers to, with `sent: false` — ⚠️ `sent: false` there is the contract, "+
+				"not a failure report: the CALLER must deliver the text itself with "+
+				"`SendMessage(to: <name>)`, because this daemon is not a Claude session "+
+				"and cannot call it. When no single name can be given (none registered, "+
+				"several registered, or the registry unreadable) the call refuses and "+
+				"names which.",
 			map[string]any{
 				"agent_id": stringProp("id of the agent to write to"),
 				"text":     stringProp("the user turn to send"),

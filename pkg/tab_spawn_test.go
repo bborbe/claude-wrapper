@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,6 +74,12 @@ func (s *scriptedRegistry) Named(_ context.Context, _ string) ([]string, error) 
 	response := s.responses[s.index]
 	s.index++
 	return response, nil
+}
+
+// NamesForSession is unused by the tab-spawn scenarios this fake serves; the id →
+// name join has its own tests in session_registry_test.go.
+func (s *scriptedRegistry) NamesForSession(context.Context, string) ([]string, error) {
+	return nil, nil
 }
 
 // fakeVaults is a VaultLister over a fixed list.
@@ -437,17 +444,132 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 		gomega.Expect(tabs.texts).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("reports a headless worker rather than typing nowhere", func() {
+	ginkgo.It("hands a headless worker's registry name back instead of typing nowhere", func() {
+		// The defect this replaces: the refusal said "reach it mid-task with
+		// SendMessage" while giving the caller nothing to address. The address IS the
+		// answer, and `sent` stays false because the daemon cannot send it.
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{
+			Tabs:     tabs,
+			Roster:   &fakeRoster{},
+			Ledger:   ledger,
+			Registry: &fakeRegistry{names: map[string][]string{"claude-1f": {"s1"}}},
+		}
+		handled, response, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(handled).To(gomega.BeTrue())
+		gomega.Expect(tabs.texts).To(gomega.BeEmpty(), "a headless worker has no pane to type into")
+		gomega.Expect(response).To(gomega.ContainSubstring(`"name":"claude-1f"`))
+		gomega.Expect(response).To(gomega.ContainSubstring(`"sent":false`))
+		gomega.Expect(response).To(gomega.ContainSubstring(`"channel":"peer"`))
+	})
+
+	ginkgo.It("refuses a headless worker no registry entry names, and says the session exited", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{
+			Tabs:     tabs,
+			Roster:   &fakeRoster{},
+			Ledger:   ledger,
+			Registry: &fakeRegistry{names: map[string][]string{}},
+		}
+		handled, response, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(handled).To(gomega.BeTrue())
+		gomega.Expect(response).To(gomega.BeEmpty())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("no session-registry entry"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("session exited"))
+		gomega.Expect(err.Error()).ToNot(gomega.ContainSubstring("reach it mid-task"))
+	})
+
+	// The three refusals below are the branches the change exists for, so each is
+	// exercised at the TOOL level, not only on the registry: a registry-level test
+	// proves the join, while these prove the answer a caller actually receives.
+	ginkgo.It("refuses an ambiguous headless worker, naming every candidate", func() {
 		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
 		server := &RosterToolServer{
 			Tabs:   tabs,
 			Roster: &fakeRoster{},
 			Ledger: ledger,
+			Registry: &fakeRegistry{names: map[string][]string{
+				"claude-a": {"s1"},
+				"claude-b": {"s1"},
+			}},
 		}
-		handled, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		handled, response, err := server.sendToTabPane(ctx, "s1", "hello")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(handled).To(gomega.BeTrue())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("no pane"))
+		gomega.Expect(response).To(gomega.BeEmpty(), "nothing is addressed when the name is ambiguous")
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("wrong conversation"))
+		gomega.Expect(err.Error()).To(gomega.Or(
+			gomega.ContainSubstring("claude-a"),
+			gomega.ContainSubstring("claude-b"),
+		))
+	})
+
+	ginkgo.It("reports an unreadable registry as retryable, never as the worker being gone", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{
+			Tabs:     tabs,
+			Roster:   &fakeRoster{},
+			Ledger:   ledger,
+			Registry: &fakeRegistry{err: stderrors.New("registry unreadable")},
+		}
+		_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("retry"))
+		gomega.Expect(err.Error()).ToNot(gomega.ContainSubstring("no session-registry entry"))
+	})
+
+	ginkgo.It("refuses a headless worker when the daemon was started without a registry", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+		server := &RosterToolServer{Tabs: tabs, Roster: &fakeRoster{}, Ledger: ledger}
+		_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("without a session registry"))
+	})
+
+	// The interactive refusal is deliberately UNCHANGED by this change, so it keeps
+	// its own assertion: splitting the shared no-pane branch into noPaneResponse
+	// must not quietly drop the coverage the old shared spec gave it.
+	ginkgo.It("still refuses an interactive worker whose pane is gone, with the unchanged advice", func() {
+		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "interactive"}}
+		server := &RosterToolServer{Tabs: tabs, Roster: &fakeRoster{}, Ledger: ledger}
+		_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("is a interactive worker with no pane"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("reach it mid-task with SendMessage"))
+	})
+
+	// One table over all four refusal branches: each must name its OWN reason AND
+	// the channel that still works. Iterating the set rather than four separate
+	// specs keeps a newly added branch from silently escaping the contract — a
+	// refusal a caller cannot act on is the defect this change exists to remove.
+	ginkgo.It("gives every headless refusal its own reason and a performable remedy", func() {
+		for _, branch := range []struct {
+			name     string
+			registry SessionRegistry
+			reason   string
+		}{
+			{"absent", nil, "without a session registry"},
+			{"unreadable", &fakeRegistry{err: stderrors.New("registry unreadable")}, "could not be read"},
+			{"ambiguous", &fakeRegistry{names: map[string][]string{
+				"claude-a": {"s1"},
+				"claude-b": {"s1"},
+			}}, "wrong conversation"},
+			{"no entry", &fakeRegistry{names: map[string][]string{}}, "session exited"},
+		} {
+			ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}
+			server := &RosterToolServer{
+				Tabs:     tabs,
+				Roster:   &fakeRoster{},
+				Ledger:   ledger,
+				Registry: branch.registry,
+			}
+			_, _, err := server.sendToTabPane(ctx, "s1", "hello")
+			gomega.Expect(err).NotTo(gomega.BeNil(), branch.name)
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(branch.reason), branch.name)
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("answer_permission"), branch.name)
+		}
 	})
 })
 
