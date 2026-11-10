@@ -1004,7 +1004,15 @@ func (s *RosterToolServer) enforceCaps(
 	if s.Caps == nil {
 		return nil
 	}
-	if err := s.Caps.CheckWorker(ctx, mode, body.OperatorNamed); err != nil {
+	// A manager answers to the manager axes, never to a WORKER mode sub-cap: the
+	// headless/interactive pair bounds the worker population, and a manager counted
+	// against it would be refused by a cap over a population it is not in. The
+	// worker total and the session backstop still apply to it.
+	workerMode := mode
+	if strings.TrimSpace(body.Role) == RoleManager {
+		workerMode = ""
+	}
+	if err := s.Caps.CheckWorker(ctx, workerMode, body.OperatorNamed); err != nil {
 		return err
 	}
 	if strings.TrimSpace(body.Role) == RoleManager {
