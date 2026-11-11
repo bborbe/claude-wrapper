@@ -69,6 +69,22 @@ func RosterToolNames() []ToolName {
 	}
 }
 
+// sessionRequiredTools are the calls that RECORD their caller, and so cannot run
+// without an attributed session.
+//
+// Everything else on this face serves a session-less client: the protocol methods
+// (`initialize`, `notifications/initialized`, `ping`, `tools/list`) and the
+// read-only tools (`list_agents`, `agent_status`, `pending_permissions`,
+// `await_permission`, `read_push_config`, `send_agent_message`).
+func sessionRequiredTools() map[ToolName]struct{} {
+	return map[ToolName]struct{}{
+		ToolSpawnAgent:             {},
+		ToolStopAgent:              {},
+		ToolSetAgentPermissionMode: {},
+		ToolAnswerPermission:       {},
+	}
+}
+
 // RosterToolServer serves the supervisor's roster tools over streamable HTTP.
 //
 // It is a THIRD MCP face, and the three point in different directions:
@@ -150,17 +166,10 @@ func (s *RosterToolServer) ServeHTTP(resp http.ResponseWriter, req *http.Request
 		resp.WriteHeader(http.StatusForbidden)
 		return
 	}
+	// The attribution header is read here and enforced by the call that needs it
+	// (see callTool). Enforcing it here refused the whole MCP handshake, which took
+	// every tool down with it — `tools/list` included, and that one needs no session.
 	sessionID := req.Header.Get(SessionHeader)
-	if sessionID == "" {
-		writeRosterError(
-			resp,
-			http.StatusBadRequest,
-			"missing_session_header",
-			ErrMissingSessionHeader.Error()+
-				" — a roster call is attributed to the calling session, so it is refused rather than defaulted",
-		)
-		return
-	}
 	switch req.Method {
 	case http.MethodPost:
 		if !isJSONRequest(req) {
@@ -260,6 +269,12 @@ func (s *RosterToolServer) callTool(
 	}
 	if err := json.Unmarshal(params, &body); err != nil {
 		return nil, &rpcError{Code: -32602, Message: "invalid params"}
+	}
+	// The refusal belongs to the one call that needs a session, not to the
+	// handshake: a session-less client keeps its tools and reads this as a failed
+	// tool call, which is exactly what it is.
+	if _, required := sessionRequiredTools()[ToolName(body.Name)]; required && sessionID == "" {
+		return toolResult(ErrSessionRequired.Error(), true), nil
 	}
 	text, err := s.invoke(ctx, body.Name, body.Arguments, sessionID)
 	if err != nil {
@@ -1783,16 +1798,6 @@ func (s *RosterToolServer) recordStop(ctx context.Context, row *AgentRow, caller
 	}); err != nil {
 		log.Printf("WARNING: ledger post for stopped session %s failed: %v", row.SessionID, err)
 	}
-}
-
-// writeRosterError writes the repo's {error:{code,message}} shape with a named
-// code, so a caller can tell a refusal apart from a transport fault.
-func writeRosterError(resp http.ResponseWriter, status int, code string, message string) {
-	resp.Header().Set("Content-Type", "application/json")
-	resp.WriteHeader(status)
-	_ = json.NewEncoder(resp).Encode(map[string]any{
-		"error": map[string]string{"code": code, "message": message},
-	})
 }
 
 // rosterToolDefinitions describes the roster face's tools to an MCP client.
