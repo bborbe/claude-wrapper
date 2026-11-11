@@ -293,6 +293,33 @@ func (s *RosterToolServer) invoke(
 // to keep alive. The child's opening turn is a SEPARATE call because the wrapper
 // has no `prompt` field on spawn — a spawn that only creates the child leaves it
 // idle, which looks exactly like one that is thinking.
+// ShippingPermissionMode is the mode a headless worker runs in when the caller marks
+// it `shipping`.
+//
+// ⚠️ `acceptEdits` and not `bypassPermissions`: it auto-accepts edits and stops the
+// auto-mode classifier from gating a routine commit or push, while `permissions.allow`
+// and every PreToolUse hook still apply — so `deny-prod-deploy.sh` keeps refusing a prod
+// deploy in a shipping worker.
+const ShippingPermissionMode = "acceptEdits"
+
+// The two values `permission_mode_source` reports, so a caller can tell a mode the flag
+// decided from the daemon's default. A dropped flag is then visible in the reply.
+const (
+	PermissionModeSourceShipping = "shipping"
+	PermissionModeSourceDefault  = "default"
+)
+
+// headlessPermissionMode maps `shipping` to the mode a headless child starts in.
+//
+// ⚠️ This is the ONLY source of the mode on the headless path: no argument, env var or
+// config key can name another, so `bypassPermissions` is unreachable through `spawn_agent`.
+func headlessPermissionMode(shipping bool) (mode, source string) {
+	if shipping {
+		return ShippingPermissionMode, PermissionModeSourceShipping
+	}
+	return DefaultPermissionMode, PermissionModeSourceDefault
+}
+
 func (s *RosterToolServer) spawnLocalAgent(
 	ctx context.Context,
 	body spawnAgentArgs,
@@ -318,13 +345,15 @@ func (s *RosterToolServer) spawnLocalAgent(
 	if err := s.enforceCaps(ctx, body, SpawnModeHeadless); err != nil {
 		return "", err
 	}
+	mode, modeSource := headlessPermissionMode(body.Shipping)
 	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
-		Cwd:    cwd,
-		Model:  s.headlessModel(ctx, body, cwd),
-		Label:  body.Label,
-		Role:   body.Role,
-		Policy: body.Policy,
-		Resume: body.Resume,
+		Cwd:            cwd,
+		Model:          s.headlessModel(ctx, body, cwd),
+		PermissionMode: mode,
+		Label:          body.Label,
+		Role:           body.Role,
+		Policy:         body.Policy,
+		Resume:         body.Resume,
 	})
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "spawn agent failed")
@@ -346,6 +375,12 @@ func (s *RosterToolServer) spawnLocalAgent(
 		"cwd":         session.Cwd,
 		"mode":        SpawnModeHeadless,
 		"mode_source": resolution.Source,
+		// ⚠️ Reported because the flag is otherwise unobservable: before this key
+		// existed a caller passing `shipping: true` could not tell it had been
+		// dropped, and every child started in `auto` regardless. Measured
+		// 2026-11-11: 119 of 120 live children in `auto`, none in `acceptEdits`.
+		"permission_mode":        mode,
+		"permission_mode_source": modeSource,
 	})
 }
 
@@ -1458,6 +1493,16 @@ func rosterToolDefinitions() []any {
 }
 
 // spawnToolDefinitions describes the spawn and steering tools.
+// shippingProp is the `shipping` argument's schema.
+//
+// ⚠️ A function, not a literal inside spawnToolDefinitions: that function sits on the
+// repo's funlen budget, and the description is the only part of this change that grew it.
+func shippingProp() map[string]any {
+	return boolProp("headless only: run the worker under `acceptEdits` so its edits and " +
+		"commits do not stop on the auto-mode classifier; `permissions.allow` and every " +
+		"hook still apply. A tab or A2A target refuses it")
+}
+
 func spawnToolDefinitions() []any {
 	return []any{
 		toolDef(ToolSpawnAgent,
@@ -1491,6 +1536,7 @@ func spawnToolDefinitions() []any {
 				"model":     stringProp("headless only: model to run, or empty for the default"),
 				"resume":    stringProp("headless only: the full session id (UUID) of the conversation to continue"),
 				"policy":    stringProp("headless only: path to a per-spawn policy overlay"),
+				"shipping":  shippingProp(),
 				"interactive": boolProp("per-call override: true opens a tab, false spawns headless in-process. " +
 					"OMIT it to use the fleet's configured mode (SUPERVISOR_SPAWN_MODE, then " +
 					"spawn.mode, then interactive)"),
