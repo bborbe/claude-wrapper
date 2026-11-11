@@ -21,6 +21,22 @@ var _ = ginkgo.Describe("ParseLauncherMCPConfig", func() {
 			To(gomega.Equal(filepath.Join(home, ".claude/mcp-private-personal.json")))
 	})
 
+	// The shape the real cc-* launchers actually write. A regex requiring a space
+	// after the flag passes every fixture above and matches none of these — the
+	// defect this case exists to catch, measured on cc-private-deepseek.
+	ginkgo.It("accepts the equals-sign form with $HOME, which the real launchers use", func() {
+		home, err := os.UserHomeDir()
+		gomega.Expect(err).To(gomega.BeNil())
+		script := "#!/bin/bash\n--mcp-config=\"$HOME/.claude/mcp-private-personal.json\" \\\n"
+		gomega.Expect(ParseLauncherMCPConfig(script)).
+			To(gomega.Equal(filepath.Join(home, ".claude/mcp-private-personal.json")))
+	})
+
+	ginkgo.It("accepts the equals-sign form unquoted", func() {
+		script := "claude --mcp-config=/etc/mcp.json\n"
+		gomega.Expect(ParseLauncherMCPConfig(script)).To(gomega.Equal("/etc/mcp.json"))
+	})
+
 	ginkgo.It("accepts the double-quoted form", func() {
 		script := "claude --mcp-config \"/etc/mcp.json\"\n"
 		gomega.Expect(ParseLauncherMCPConfig(script)).To(gomega.Equal("/etc/mcp.json"))

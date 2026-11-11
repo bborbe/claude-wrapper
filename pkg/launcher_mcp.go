@@ -7,9 +7,16 @@ import (
 )
 
 // launcherMCPConfigFlag matches `--mcp-config` at a whitespace boundary, so a
-// hypothetical `--mcp-config-dir` flag cannot match, in all three quoting shapes
-// a launcher may use.
-var launcherMCPConfigFlag = regexp.MustCompile(`(?:^|\s)--mcp-config[ \t]+(?:"([^"]*)"|'([^']*)'|(\S+))`)
+// hypothetical `--mcp-config-dir` flag cannot match, in every shape a launcher
+// actually writes.
+//
+// The separator alternation is load-bearing, not tidiness: the real cc-* launchers
+// write `--mcp-config="$HOME/.claude/mcp-<vault>.json"` with an EQUALS SIGN, and a
+// pattern requiring whitespace matches none of them while passing every fixture
+// written by hand. Measured 2026-11-11 on `cc-private-deepseek` — the first
+// version of this regex would have shipped a fix that did nothing on the one
+// launcher it was written for.
+var launcherMCPConfigFlag = regexp.MustCompile(`(?:^|\s)--mcp-config(?:=|[ \t]+)(?:"([^"]*)"|'([^']*)'|(\S+))`)
 
 // ParseLauncherMCPConfig returns the MCP config file a launcher script passes to
 // the CLI, or "" when it passes none.
@@ -36,15 +43,18 @@ func ParseLauncherMCPConfig(scriptText string) string {
 		if raw == "" {
 			continue
 		}
-		// The launchers write `--mcp-config ~/.claude/mcp-<vault>.json`, and a
-		// child is given the value as an argument rather than through a shell, so
-		// nothing else expands it. An unexpandable path is returned unchanged
+		// The value arrives as an argument, not through a shell, so nothing expands
+		// it. The real launchers write `"$HOME/.claude/mcp-<vault>.json"`; a `~` form
+		// is handled too. A value that expands to nothing is returned unchanged
 		// rather than dropped: a config the CLI may still resolve beats none.
-		expanded, err := expandHome(raw)
-		if err != nil {
-			return raw
+		expanded := os.ExpandEnv(raw)
+		if expanded != raw {
+			return expanded
 		}
-		return expanded
+		if resolved, err := expandHome(raw); err == nil {
+			return resolved
+		}
+		return raw
 	}
 	return ""
 }
