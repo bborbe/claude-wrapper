@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.19.0
 
 - feat: **`answer_permission` records an answer-reach, so a spawner's ability to answer can be checked instead of assumed.** `answer-path-check.py` (claude-supervisor) used to certify a spawner by its armed manager loop alone; measured 2026-11-09, spawner `0110c4a3` read `ok: true` at exit 0 while its 27 workers' parks were released 56 times by the attention store and never once by it. The reach is written on **entry** to the handler, before the arguments are decoded, because the fact recorded is "this session's answer command reached the route" and the coverage sentinel names no agent. Keyed on the caller's `SessionHeader` session, never the target agent. Schema, `SUPERVISOR_ANSWER_REACH_DIR` override and timestamp shape match the claude-supervisor writers and `scripts/answer-path-check.py`, so one reader sees all three.
 
