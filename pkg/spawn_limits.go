@@ -27,11 +27,11 @@ import (
 //
 // Two populations and one arrival bound:
 //
-//   - `spawn.maxConcurrent` / `spawn.maxConcurrentHard` bound live WORKER
+//   - `spawn.maxWorkerSoft` / `spawn.maxWorkerHard` bound live WORKER
 //     sessions. The soft cap refuses an ordinary spawn; the hard cap refuses
 //     every spawn, including one the operator named by hand. The band between
 //     them is where an operator-named task may still open.
-//   - `spawn.maxManagers` / `spawn.maxManagersHard` bound live MANAGER sessions,
+//   - `spawn.maxManagersSoft` / `spawn.maxManagersHard` bound live MANAGER sessions,
 //     a separate and much smaller population.
 //   - `spawn.maxStartsPerMinute` bounds how fast sessions may be OPENED. It is an
 //     arrival bound, not a population bound, and a concurrency cap cannot see
@@ -670,27 +670,135 @@ func SupervisorStateDir(
 
 // SpawnConfigFile is the part of the supervisor config the caps read.
 //
-// The worker and manager pairs shipped first; the other five keys joined them on
-// 2026-11-10 with the seven-axis split (`spawn_axes.go`). All ten are read per
-// spawn rather than snapshotted at boot.
+// Every axis key carries an explicit Soft/Hard suffix, so the nesting invariant
+// (`headless + interactive <= worker`, `topic + goal <= manager`,
+// `worker + manager <= session`) is readable from the key names alone. The
+// pre-rename spellings still parse — `applyLegacySpawnKeys` folds them in and
+// warns once per key — because renaming outright would strand every operator's
+// existing config.json silently.
+//
+// `mode` and `maxStartsPerMinute` are not cap axes and keep their names. The
+// environment variables keep theirs too: they are not config keys, and
+// `SUPERVISOR_MAX_CONCURRENT` still sets `spawn.maxWorkerSoft`.
+//
+// All fourteen axis keys are read per spawn rather than snapshotted at boot.
 type SpawnConfigFile struct {
 	Spawn struct {
-		MaxConcurrent        json.RawMessage `json:"maxConcurrent"`
-		MaxConcurrentHard    json.RawMessage `json:"maxConcurrentHard"`
-		MaxManagers          json.RawMessage `json:"maxManagers"`
+		MaxWorkerSoft        json.RawMessage `json:"maxWorkerSoft"`
+		MaxWorkerHard        json.RawMessage `json:"maxWorkerHard"`
+		MaxManagersSoft      json.RawMessage `json:"maxManagersSoft"`
 		MaxManagersHard      json.RawMessage `json:"maxManagersHard"`
 		MaxStartsPerMinute   json.RawMessage `json:"maxStartsPerMinute"`
-		MaxSessions          json.RawMessage `json:"maxSessions"`
+		MaxSessionsSoft      json.RawMessage `json:"maxSessionsSoft"`
 		MaxSessionsHard      json.RawMessage `json:"maxSessionsHard"`
-		MaxHeadless          json.RawMessage `json:"maxHeadless"`
+		MaxHeadlessSoft      json.RawMessage `json:"maxHeadlessSoft"`
 		MaxHeadlessHard      json.RawMessage `json:"maxHeadlessHard"`
-		MaxInteractive       json.RawMessage `json:"maxInteractive"`
+		MaxInteractiveSoft   json.RawMessage `json:"maxInteractiveSoft"`
 		MaxInteractiveHard   json.RawMessage `json:"maxInteractiveHard"`
-		MaxTopicManagers     json.RawMessage `json:"maxTopicManagers"`
+		MaxTopicManagersSoft json.RawMessage `json:"maxTopicManagersSoft"`
 		MaxTopicManagersHard json.RawMessage `json:"maxTopicManagersHard"`
-		MaxGoalManagers      json.RawMessage `json:"maxGoalManagers"`
+		MaxGoalManagersSoft  json.RawMessage `json:"maxGoalManagersSoft"`
 		MaxGoalManagersHard  json.RawMessage `json:"maxGoalManagersHard"`
+
+		// The pre-rename spellings, kept so an existing config.json keeps
+		// parsing. `applyLegacySpawnKeys` folds them into the fields above;
+		// nothing reads them directly.
+		LegacyMaxConcurrent     json.RawMessage `json:"maxConcurrent"`
+		LegacyMaxConcurrentHard json.RawMessage `json:"maxConcurrentHard"`
+		LegacyMaxManagers       json.RawMessage `json:"maxManagers"`
+		LegacyMaxSessions       json.RawMessage `json:"maxSessions"`
+		LegacyMaxHeadless       json.RawMessage `json:"maxHeadless"`
+		LegacyMaxInteractive    json.RawMessage `json:"maxInteractive"`
+		LegacyMaxTopicManagers  json.RawMessage `json:"maxTopicManagers"`
+		LegacyMaxGoalManagers   json.RawMessage `json:"maxGoalManagers"`
 	} `json:"spawn"`
+}
+
+// renamedSpawnKeys pairs each current key with the name it shipped with.
+//
+// Only the soft keys and maxWorkerHard appear: every other *Hard key already
+// carried its suffix, so it was not renamed. Ordered, so the fold's warnings
+// arrive in the same order on every run.
+var renamedSpawnKeys = []struct{ current, legacy string }{
+	{"maxWorkerSoft", "maxConcurrent"},
+	{"maxWorkerHard", "maxConcurrentHard"},
+	{"maxManagersSoft", "maxManagers"},
+	{"maxSessionsSoft", "maxSessions"},
+	{"maxHeadlessSoft", "maxHeadless"},
+	{"maxInteractiveSoft", "maxInteractive"},
+	{"maxTopicManagersSoft", "maxTopicManagers"},
+	{"maxGoalManagersSoft", "maxGoalManagers"},
+}
+
+// currentSpawnKeys addresses each current axis key's raw value.
+func (f *SpawnConfigFile) currentSpawnKeys() map[string]*json.RawMessage {
+	return map[string]*json.RawMessage{
+		"maxWorkerSoft":        &f.Spawn.MaxWorkerSoft,
+		"maxWorkerHard":        &f.Spawn.MaxWorkerHard,
+		"maxManagersSoft":      &f.Spawn.MaxManagersSoft,
+		"maxManagersHard":      &f.Spawn.MaxManagersHard,
+		"maxSessionsSoft":      &f.Spawn.MaxSessionsSoft,
+		"maxSessionsHard":      &f.Spawn.MaxSessionsHard,
+		"maxHeadlessSoft":      &f.Spawn.MaxHeadlessSoft,
+		"maxHeadlessHard":      &f.Spawn.MaxHeadlessHard,
+		"maxInteractiveSoft":   &f.Spawn.MaxInteractiveSoft,
+		"maxInteractiveHard":   &f.Spawn.MaxInteractiveHard,
+		"maxTopicManagersSoft": &f.Spawn.MaxTopicManagersSoft,
+		"maxTopicManagersHard": &f.Spawn.MaxTopicManagersHard,
+		"maxGoalManagersSoft":  &f.Spawn.MaxGoalManagersSoft,
+		"maxGoalManagersHard":  &f.Spawn.MaxGoalManagersHard,
+	}
+}
+
+// legacySpawnKeys addresses each pre-rename key's raw value.
+func (f *SpawnConfigFile) legacySpawnKeys() map[string]*json.RawMessage {
+	return map[string]*json.RawMessage{
+		"maxConcurrent":     &f.Spawn.LegacyMaxConcurrent,
+		"maxConcurrentHard": &f.Spawn.LegacyMaxConcurrentHard,
+		"maxManagers":       &f.Spawn.LegacyMaxManagers,
+		"maxSessions":       &f.Spawn.LegacyMaxSessions,
+		"maxHeadless":       &f.Spawn.LegacyMaxHeadless,
+		"maxInteractive":    &f.Spawn.LegacyMaxInteractive,
+		"maxTopicManagers":  &f.Spawn.LegacyMaxTopicManagers,
+		"maxGoalManagers":   &f.Spawn.LegacyMaxGoalManagers,
+	}
+}
+
+// applyLegacySpawnKeys folds pre-rename key names into their current fields and
+// warns once per key that used one, naming both forms so the operator can
+// migrate at their own pace.
+//
+// The current name always wins. A config carrying both spellings of one axis
+// would otherwise resolve by whichever field the reader happened to consult, and
+// the operator would have no way to tell which number took effect — so the
+// legacy value is reported and ignored rather than silently racing.
+func (f *SpawnConfigFile) applyLegacySpawnKeys(path string) {
+	current := f.currentSpawnKeys()
+	legacy := f.legacySpawnKeys()
+	for _, pair := range renamedSpawnKeys {
+		old, ok := legacy[pair.legacy]
+		if !ok || len(*old) == 0 {
+			continue
+		}
+		cur, ok := current[pair.current]
+		if !ok {
+			continue
+		}
+		if len(*cur) == 0 {
+			*cur = *old
+			log.Printf(
+				`WARNING: %s uses the deprecated spawn key "spawn.%s" — renamed to "spawn.%s". `+
+					`The old name still works; update the file to silence this.`,
+				path, pair.legacy, pair.current,
+			)
+			continue
+		}
+		log.Printf(
+			`WARNING: %s carries both "spawn.%s" (deprecated) and "spawn.%s" — using `+
+				`"spawn.%s" and ignoring "spawn.%s".`,
+			path, pair.legacy, pair.current, pair.current, pair.legacy,
+		)
+	}
 }
 
 // LoadSpawnConfig reads and parses the config file.
@@ -713,6 +821,7 @@ func LoadSpawnConfig(ctx context.Context, path string) SpawnConfigFile {
 		log.Printf("WARNING: parse %s failed (%v) — spawn caps fall back to their defaults", path, err)
 		return SpawnConfigFile{}
 	}
+	file.applyLegacySpawnKeys(path)
 	return file
 }
 
@@ -763,8 +872,8 @@ func ResolveMaxConcurrent(
 	path string,
 ) (ConcurrentLimits, error) {
 	soft, err := resolveThreshold(ctx, thresholdSpec{
-		raw: file.Spawn.MaxConcurrent, env: envSoft, envName: EnvMaxConcurrent,
-		key: "maxConcurrent", path: path, fallback: DefaultMaxConcurrent, noun: "concurrent-worker",
+		raw: file.Spawn.MaxWorkerSoft, env: envSoft, envName: EnvMaxConcurrent,
+		key: "maxWorkerSoft", path: path, fallback: DefaultMaxConcurrent, noun: "concurrent-worker",
 	})
 	if err != nil {
 		return ConcurrentLimits{}, err
@@ -776,8 +885,8 @@ func ResolveMaxConcurrent(
 		return ConcurrentLimits{Source: soft.Source, HardSource: soft.Source}, nil
 	}
 	hard, err := resolveThreshold(ctx, thresholdSpec{
-		raw: file.Spawn.MaxConcurrentHard, env: envHard, envName: EnvMaxConcurrentHard,
-		key: "maxConcurrentHard", path: path, fallback: DefaultMaxConcurrentHard, noun: "concurrent-worker",
+		raw: file.Spawn.MaxWorkerHard, env: envHard, envName: EnvMaxConcurrentHard,
+		key: "maxWorkerHard", path: path, fallback: DefaultMaxConcurrentHard, noun: "concurrent-worker",
 	})
 	if err != nil {
 		return ConcurrentLimits{}, err
@@ -788,18 +897,18 @@ func ResolveMaxConcurrent(
 			"%s is 0, which is not a hard concurrent-worker limit — refusing to spawn rather than "+
 				"removing the ceiling while the soft cap stays in force, because a fleet that looks capped and is "+
 				"not is discovered only by the load it was meant to bound. Set a non-negative integer above the "+
-				`soft cap, or use the off switch: "spawn.maxConcurrent": 0 disables BOTH thresholds.`,
-			thresholdWhere(hard.Source, EnvMaxConcurrentHard, "maxConcurrentHard", path),
+				`soft cap, or use the off switch: "spawn.maxWorkerSoft": 0 disables BOTH thresholds.`,
+			thresholdWhere(hard.Source, EnvMaxConcurrentHard, "maxWorkerHard", path),
 		)
 	}
 	if *hard.Limit < *soft.Limit {
 		return ConcurrentLimits{}, errors.Errorf(
 			ctx,
-			`the hard concurrent-worker limit is below the soft one: "spawn.maxConcurrent" resolves to `+
-				`%d (source: %s) but "spawn.maxConcurrentHard" resolves to %d `+
+			`the hard concurrent-worker limit is below the soft one: "spawn.maxWorkerSoft" resolves to `+
+				`%d (source: %s) but "spawn.maxWorkerHard" resolves to %d `+
 				`(source: %s) — refusing to spawn rather than running under a ceiling beneath its own `+
 				`floor, which would empty the operator-named band and refuse every spawn at the soft count. Raise `+
-				`spawn.maxConcurrentHard in %s to at least %d, or lower spawn.maxConcurrent.`,
+				`spawn.maxWorkerHard in %s to at least %d, or lower spawn.maxWorkerSoft.`,
 			*soft.Limit, soft.Source, *hard.Limit, hard.Source, path, *soft.Limit,
 		)
 	}
@@ -819,7 +928,7 @@ func ResolveMaxManagers(
 	path string,
 ) (ManagerLimits, error) {
 	soft, err := resolveThreshold(ctx, thresholdSpec{
-		raw: file.Spawn.MaxManagers, key: "maxManagers", path: path,
+		raw: file.Spawn.MaxManagersSoft, key: "maxManagersSoft", path: path,
 		fallback: DefaultMaxManagers, noun: "concurrent-manager",
 	})
 	if err != nil {
@@ -840,17 +949,17 @@ func ResolveMaxManagers(
 			ctx,
 			`"spawn.maxManagersHard" in %s is 0, which is not a hard concurrent-manager limit — refusing `+
 				`to spawn rather than removing the ceiling while the soft cap stays in force. Set a non-negative `+
-				`integer above the soft cap, or use the off switch: "spawn.maxManagers": 0 disables BOTH thresholds.`,
+				`integer above the soft cap, or use the off switch: "spawn.maxManagersSoft": 0 disables BOTH thresholds.`,
 			path,
 		)
 	}
 	if *hard.Limit < *soft.Limit {
 		return ManagerLimits{}, errors.Errorf(
 			ctx,
-			`the hard concurrent-manager limit is below the soft one: "spawn.maxManagers" resolves to `+
+			`the hard concurrent-manager limit is below the soft one: "spawn.maxManagersSoft" resolves to `+
 				`%d (source: %s) but "spawn.maxManagersHard" resolves to %d `+
 				`(source: %s) — refusing to spawn rather than running under a ceiling beneath its own `+
-				`floor. Raise spawn.maxManagersHard in %s to at least %d, or lower spawn.maxManagers.`,
+				`floor. Raise spawn.maxManagersHard in %s to at least %d, or lower spawn.maxManagersSoft.`,
 			*soft.Limit, soft.Source, *hard.Limit, hard.Source, path, *soft.Limit,
 		)
 	}
@@ -1045,8 +1154,8 @@ func ConcurrentLimitRefusal(
 		return fmt.Sprintf(
 			"the fleet is FULL: %d live workers against a hard cap of %d "+
 				"(source: %s), so nothing opens — not even an operator-named task. The soft "+
-				"cap is %d (source: %s). Raise spawn.maxConcurrentHard in "+
-				"%s to open past %d, or set spawn.maxConcurrent to 0 for unlimited.",
+				"cap is %d (source: %s). Raise spawn.maxWorkerHard in "+
+				"%s to open past %d, or set spawn.maxWorkerSoft to 0 for unlimited.",
 			count, *limits.HardLimit, limits.HardSource, *limits.Limit, limits.Source,
 			configFile, *limits.HardLimit,
 		)
@@ -1056,7 +1165,7 @@ func ConcurrentLimitRefusal(
 			"the fleet-wide concurrent-worker limit is reached: %d live, %d "+
 				"allowed (source: %s). Open nothing further and report the remainder as "+
 				"held-on-limit; it is picked up next sweep. An OPERATOR-NAMED task may still open here — this one was "+
-				"not named, so it is refused. Raise spawn.maxConcurrent in %s, or "+
+				"not named, so it is refused. Raise spawn.maxWorkerSoft in %s, or "+
 				"set it to 0 for unlimited.",
 			count, *limits.Limit, limits.Source, configFile,
 		)
@@ -1094,15 +1203,15 @@ func ManagerLimitRefusal(
 			`%s: %d live managers (Fleet Manager excluded) against a hard cap of `+
 				`%d — "spawn.maxManagersHard" (source: %s) — so nothing opens, not `+
 				`even an operator-named manager. Raise spawn.maxManagersHard in %s, or set `+
-				`spawn.maxManagers to 0 for unlimited.`,
+				`spawn.maxManagersSoft to 0 for unlimited.`,
 			ManagerFleetFull, count, *limits.HardLimit, limits.HardSource, configFile,
 		)
 	}
 	if count >= *limits.Limit && !operatorNamed {
 		return fmt.Sprintf(
 			`the concurrent-manager limit is reached: %d live managers (Fleet Manager excluded), `+
-				`%d allowed — "spawn.maxManagers" (source: %s). An OPERATOR-NAMED manager `+
-				`may still open here — this one was not named, so it is refused. Raise spawn.maxManagers in `+
+				`%d allowed — "spawn.maxManagersSoft" (source: %s). An OPERATOR-NAMED manager `+
+				`may still open here — this one was not named, so it is refused. Raise spawn.maxManagersSoft in `+
 				`%s, or set it to 0 for unlimited.`,
 			count, *limits.Limit, limits.Source, configFile,
 		)
