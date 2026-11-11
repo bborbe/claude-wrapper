@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.17.3
 
 - fix: **a headless `spawn_agent` with `shipping: true` now starts the worker in `acceptEdits` instead of `auto`.** The roster tool decoded the flag and dropped it, and the reply never named the mode, so a caller could not tell. Measured 2026-11-11: 119 of 120 live children in `auto`, none in `acceptEdits`, and a live replay with `shipping: true` reported `auto`. The reply gains `permission_mode` and `permission_mode_source` (`shipping` / `default`), and the tool schema documents `shipping`. The mode has exactly one source — the flag — so `bypassPermissions` stays unreachable through this tool; the tab and A2A refusals are unchanged. Spec `specs/in-progress/001-bug-headless-spawn-drops-shipping-permission-mode.md`.
 
