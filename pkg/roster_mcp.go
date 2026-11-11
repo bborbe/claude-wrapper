@@ -472,7 +472,7 @@ func (s *RosterToolServer) taskForResume(
 		}
 		vaults = listed
 	}
-	if ref := TaskBySessionID(vaults, body.Resume); ref != nil {
+	if ref := TaskBySessionID(ctx, vaults, body.Resume); ref != nil {
 		return ref
 	}
 	if strings.TrimSpace(body.Task) == "" {

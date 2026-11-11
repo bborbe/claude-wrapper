@@ -494,20 +494,36 @@ type TaskRef struct {
 // a guard that read only a named task would never fire on the path that matters.
 // The task folders are scanned by file because nothing writes an index, and a
 // stale index would answer for a session id that has since moved.
-func TaskBySessionID(vaults []Vault, sessionID string) *TaskRef {
+//
+// ⚠️ A full scan is not free: 11 281 task files measured ~1.2 s cold on
+// 2026-11-11, dominated by one open() per file rather than by bytes read. That is
+// paid once per headless resume, never per turn. The ctx check is what bounds it:
+// a cancelled or timed-out spawn stops scanning instead of holding the handler.
+func TaskBySessionID(ctx context.Context, vaults []Vault, sessionID string) *TaskRef {
 	id := strings.TrimSpace(sessionID)
 	if id == "" {
 		return nil
 	}
 	for _, vault := range vaults {
-		root := strings.TrimSpace(vault.Path)
-		if root == "" {
-			continue
+		if ref := taskRefInVault(ctx, vault, id); ref != nil {
+			return ref
 		}
-		for _, folder := range taskFolders {
-			if ref := taskRefIn(filepath.Join(root, folder), vault.Name, id); ref != nil {
-				return ref
-			}
+	}
+	return nil
+}
+
+// taskRefInVault returns the task in one vault whose id matches, or nil.
+func taskRefInVault(ctx context.Context, vault Vault, id string) *TaskRef {
+	root := strings.TrimSpace(vault.Path)
+	if root == "" {
+		return nil
+	}
+	for _, folder := range taskFolders {
+		if ref := taskRefIn(filepath.Join(root, folder), vault.Name, id); ref != nil {
+			return ref
+		}
+		if ctx.Err() != nil {
+			return nil
 		}
 	}
 	return nil
