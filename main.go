@@ -99,7 +99,7 @@ func main() {
 
 	mux := newMux(supervisor, sequencer, locks, *listen, *mcpTurnTimeout)
 
-	startFleetFaces(ctx, mux, supervisor, decider, ledger, *attentionURL, *heartbeatInterval)
+	startFleetFaces(ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval)
 
 	// The startup deadline is the only verb that can clear a child stuck in
 	// `starting`: it never emits an init event, so nothing else reaches it.
@@ -306,6 +306,8 @@ func startFleetFaces(
 	// than being built here because the supervisor writes the turn-end verdict
 	// through the same client — one writer, one timeout, one attribution line.
 	ledger pkg.LedgerReader,
+	// locks is the one per-session lock set; set_agent_permission_mode fails fast on it.
+	locks *pkg.SessionLocks,
 	attentionURL string,
 	heartbeatInterval time.Duration,
 ) {
@@ -400,16 +402,32 @@ func startFleetFaces(
 		// the session id, the caller's `SendMessage` takes the registry name, and this
 		// is the only place that maps one to the other.
 		Registry: registry,
+		// The same lock set the REST and /mcp faces take, so a mode change refuses
+		// with `running a sequence` instead of queuing on this face only.
+		Locks: locks,
+		// The append-only switch history; without it every reply says `recorded: false`.
+		PermissionModeLog: pkg.NewPermissionModeLog("", now),
 	})
 
-	// The central heartbeat poster. It runs beside the HTTP server rather than
-	// inside a handler because it is a timer, not a request: a session with no
-	// supervisor of its own has nothing posting for it, and this is what makes
-	// liveness independent of which server spawned what.
-	// The ledger goes in so the poster can tell a finished session from a live one.
-	// The registry answers "does this pid exist?", which is true for a headless
-	// worker's child long after its turn ended — see pkg/heartbeat.go's
-	// terminalLedgerStatuses.
+	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
+}
+
+// startHeartbeatPoster runs the central heartbeat poster.
+//
+// It runs beside the HTTP server rather than inside a handler because it is a
+// timer, not a request: a session with no supervisor of its own has nothing
+// posting for it, and this is what makes liveness independent of which server
+// spawned what. The ledger goes in so the poster can tell a finished session
+// from a live one, and the registry answers "does this pid exist?" — true for a
+// headless worker's child long after its turn ended (see pkg/heartbeat.go's
+// terminalLedgerStatuses).
+func startHeartbeatPoster(
+	ctx context.Context,
+	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatClient,
+	ledger pkg.LedgerReader,
+	heartbeatInterval time.Duration,
+) {
 	poster := pkg.NewHeartbeatPoster(registry, heartbeats, ledger, heartbeatInterval)
 	go func() {
 		if err := poster.Run(ctx); err != nil {

@@ -101,8 +101,16 @@ type PermissionMode string
 
 // The permission modes a child accepts.
 const (
-	PermissionModeDefault           PermissionMode = "default"
-	PermissionModeAcceptEdits       PermissionMode = "acceptEdits"
+	PermissionModeDefault     PermissionMode = "default"
+	PermissionModeAcceptEdits PermissionMode = "acceptEdits"
+	// PermissionModeAuto is the mode every roster and REST headless child is
+	// spawned in (DefaultPermissionMode).
+	//
+	// ⚠️ It is in the accepted set because a worker switched away from `auto` can
+	// never be switched back otherwise: the same closed list gates the mode-change
+	// routes. `/mcp` `spawn_session` keeps its own `bypassPermissions` default,
+	// which is unchanged.
+	PermissionModeAuto              PermissionMode = "auto"
 	PermissionModeBypassPermissions PermissionMode = "bypassPermissions"
 	PermissionModePlan              PermissionMode = "plan"
 )
@@ -112,6 +120,7 @@ func AvailablePermissionModes() []PermissionMode {
 	return []PermissionMode{
 		PermissionModeDefault,
 		PermissionModeAcceptEdits,
+		PermissionModeAuto,
 		PermissionModeBypassPermissions,
 		PermissionModePlan,
 	}
