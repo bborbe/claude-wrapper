@@ -97,16 +97,16 @@ The tick owns exactly one cap of its own: **at most 50 rows opened per tick** �
 
 - [ ] **AC10** — **A hanging predicate is abandoned and the next tick still fires.** A test drives `Run` with a source whose `Rows` never returns, asserts the first tick's line is written with a timeout reason within the tick timeout, and that a second tick line appears after the following interval. Evidence: two printed `flagged-tick` lines from one `Run` call.
 
-- [ ] **AC12** — **`main.go` actually starts the goroutine.** `grep -n 'go startFlaggedTick' main.go` returns at least one match. Evidence: the grep output, quoted. This exists because an unwired tick is otherwise indistinguishable from a working one until AC11's 30-minute observation on the host — a 30-minute wait is not a usable gate for a one-line omission.
+- [ ] **AC12** — **`main.go` actually starts the goroutine.** `grep -nE '^[[:space:]]*go[[:space:]]+startFlaggedTick\(' main.go` returns at least one match. Evidence: the grep output, quoted. This exists because an unwired tick is otherwise indistinguishable from a working one until AC11's 35-minute observation on the host — a 35-minute wait is not a usable gate for a one-line omission.
 
-- [ ] **Post-Deploy (Rung-2):** AC11 — A real eligible flagged row reopens without a model in the path.
+- [ ] **Post-Deploy (Rung-2):** **AC11** — A real eligible flagged row reopens without a model in the path.
 
   - `deploy_check:` `go version -m ~/.local/bin/claude-wrapper | sed -n 's/.*vcs\.revision=\(.*\)/\1/p'`
   - `deploy_target:` `$(git rev-parse HEAD)`
 
   **Precondition:** choose a row whose spawn-ledger `spawned_at` is already more than 60 minutes old, so the recently-spawned guard does not apply to it.
 
-  After `make install` and `launchctl kickstart -k gui/$UID/de.bborbe.claude-wrapper`, within **30 minutes** — the 15-minute tick interval plus up to 12.5 minutes of start-rate pacing (50 rows at `spawn.maxStartsPerMinute: 4`); the recently-spawned guard contributes nothing because the precondition excludes it — the daemon's log contains at least one line whose `rows=` names a session id that a `flagged-rows.py --json` reading taken afterwards reports as `liveness: LIVE` for that row. Evidence: the `flagged-tick` line quoted verbatim, the matching row quoted from the post-tick `--json` read, and the `deploy_check` revision matching `deploy_target`.
+  After `make install` and `launchctl kickstart -k gui/$UID/de.bborbe.claude-wrapper`, within **35 minutes** — the 15-minute tick interval, plus up to 2 minutes for the predicate to return, plus up to 12.5 minutes of start-rate pacing (50 rows at `spawn.maxStartsPerMinute: 4`); the recently-spawned guard contributes nothing because the precondition excludes it, and the post-tick `--json` reading sits outside the window — the daemon's log contains at least one line whose `rows=` names a session id that a `flagged-rows.py --json` reading taken afterwards reports as `liveness: LIVE` for that row. Evidence: the `flagged-tick` line quoted verbatim, the matching row quoted from the post-tick `--json` read, and the `deploy_check` revision matching `deploy_target`.
 
   ⚠️ This AC is the one the laziest implementation fails: a tick wired to a source that returns no rows logs `flagged-tick opened=0 refused=0 skipped=0 rows=` forever and satisfies every other AC.
 
@@ -123,15 +123,15 @@ The tick owns exactly one cap of its own: **at most 50 rows opened per tick** �
 - `go test -v -count=1 ./pkg -args -ginkgo.focus='bounds rows per tick' -ginkgo.v` — AC7.
 - `go test -v -count=1 ./pkg -args -ginkgo.focus='passes the row mode to the caps' -ginkgo.v` — AC8.
 - `for f in kind vault name role mode session_id liveness branch blocked_by refused; do printf '%s ' "$f"; grep -c "$f" docs/eligibility-predicate.md; done` — AC9, ten lines each with a non-zero count.
-- `for t in OPENING_ACTORS REFUSAL_REASONS agent-set-flag manager-row; do printf '%s ' "$t"; grep -c "$t" docs/eligibility-predicate.md; done` — AC9, four lines each with a non-zero count.
+- `for t in OPENING_ACTORS REFUSAL_REASONS operator legacy agent-set-flag manager-row; do printf '%s ' "$t"; grep -c "$t" docs/eligibility-predicate.md; done` — AC9, six lines each with a non-zero count.
+- `grep -nE '^[[:space:]]*go[[:space:]]+startFlaggedTick\(' main.go` — AC12, at least one match. Anchored call-shaped on purpose: a bare `grep 'go startFlaggedTick'` matches a comment, which is how an unwired goroutine passes this check.
 - `go test -v -count=1 ./pkg -args -ginkgo.focus='abandons a hanging predicate' -ginkgo.v` — AC10.
 
 **Operator rung** (needs the host, the launchd job and the real vaults):
 
 - `make install` — builds, codesigns, installs to `~/.local/bin/claude-wrapper`.
 - `launchctl kickstart -k gui/$UID/de.bborbe.claude-wrapper` — restarts the daemon.
-- `grep -n 'go startFlaggedTick' main.go` — AC12, at least one match.
-- AC11's 30-minute observation.
+- AC11's 35-minute observation.
 
 ## Desired Behavior
 
@@ -168,7 +168,7 @@ The tick owns exactly one cap of its own: **at most 50 rows opened per tick** �
 
 ## Suggested Decomposition
 
-`DB1`–`DB6` are `## Desired Behavior` items 1–6, in order.
+`DB1`–`DB6` are `## Desired Behavior` items 1–6, in order. `AC11` is verification-only (the Post-Deploy observation of a real row reopening) and is covered by every prompt together rather than by any one — its absence from the table below is deliberate, not a gap.
 
 | # | Prompt focus | Covers DBs | Covers ACs | Depends on |
 |---|---|---|---|---|
