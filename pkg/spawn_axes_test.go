@@ -415,12 +415,13 @@ var _ = ginkgo.Describe("spawn axes — SC1: every axis key carries a Soft/Hard 
 })
 
 var _ = ginkgo.Describe("spawn axes — SC2: the pre-rename keys still parse", func() {
-	// 61 + 13 = 74 <= 91 and 46 + 13 = 59 <= 61 and 4 + 9 = 13 <= 13, so the
-	// folded config is valid at both tiers and the resolve step is not the thing
-	// under test.
+	// 61 + 13 = 74 <= 91 and 46 + 13 = 59 <= 61 and 4 + 8 = 12 <= 13, so the folded config
+	// is valid at both tiers and the resolve step is not the thing under test. Every value
+	// differs from its built-in default, so a fold that silently did nothing would leave a
+	// different number behind rather than the same one.
 	const preRename = `{"spawn":{"maxConcurrent":61,"maxConcurrentHard":91,` +
 		`"maxManagers":13,"maxSessions":91,"maxHeadless":46,"maxInteractive":13,` +
-		`"maxTopicManagers":4,"maxGoalManagers":9}}`
+		`"maxTopicManagers":4,"maxGoalManagers":8}}`
 
 	ginkgo.It("loads a pre-rename config and warns once per key, naming both forms", func() {
 		var file SpawnConfigFile
@@ -436,10 +437,28 @@ var _ = ginkgo.Describe("spawn axes — SC2: the pre-rename keys still parse", f
 			context.Background(), func(string) string { return "" }, file, "/cfg.json",
 		)
 		gomega.Expect(err).To(gomega.BeNil())
-		worker, ok := axes.LimitsFor(AxisWorker)
-		gomega.Expect(ok).To(gomega.BeTrue())
-		gomega.Expect(*worker.Limit).To(gomega.Equal(61))
-		gomega.Expect(*worker.HardLimit).To(gomega.Equal(91))
+
+		// Every axis, not just the worker pair: a fold that dropped one key would still
+		// resolve, because the built-in defaults nest too. The assertion has to be on the
+		// resolved VALUE, never on the absence of a refusal.
+		for _, expected := range []struct {
+			axis string
+			soft int
+			hard int
+		}{
+			{AxisWorker, 61, 91},
+			{AxisManager, 13, DefaultMaxManagersHard},
+			{AxisSession, 91, DefaultMaxSessionsHard},
+			{AxisHeadless, 46, DefaultMaxHeadlessHard},
+			{AxisInteractive, 13, DefaultMaxInteractiveHard},
+			{AxisTopicManager, 4, DefaultMaxTopicManagersHard},
+			{AxisGoalManager, 8, DefaultMaxGoalManagersHard},
+		} {
+			limits, ok := axes.LimitsFor(expected.axis)
+			gomega.Expect(ok).To(gomega.BeTrue(), expected.axis)
+			gomega.Expect(*limits.Limit).To(gomega.Equal(expected.soft), expected.axis)
+			gomega.Expect(*limits.HardLimit).To(gomega.Equal(expected.hard), expected.axis)
+		}
 	})
 
 	ginkgo.It("lets the current name win when both forms of one axis are present", func() {
