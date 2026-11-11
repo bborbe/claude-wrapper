@@ -410,7 +410,8 @@ func startFleetFaces(
 		Vaults:    vaults,
 		Tabs:      tabs,
 		Now:       now,
-		Caps:      caps,
+		// The fleet-wide caps; shared with the flagged tick so both read one limit.
+		Caps: caps,
 		// The id → name join send_agent_message needs for a headless worker: it holds
 		// the session id, the caller's `SendMessage` takes the registry name, and this
 		// is the only place that maps one to the other.

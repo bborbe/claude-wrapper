@@ -207,7 +207,7 @@ var _ = ginkgo.Describe("spawn limit resolvers", func() {
 		_, err := ResolveMaxConcurrent(ctx, "7", "9", file, "cfg.json")
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`"spawn.maxConcurrent" in cfg.json is "lots"`))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`"spawn.maxWorkerSoft" in cfg.json is "lots"`))
 	})
 
 	ginkgo.It("refuses a bad environment value by its variable name", func() {
@@ -243,7 +243,7 @@ var _ = ginkgo.Describe("spawn limit resolvers", func() {
 		_, err := ResolveMaxConcurrent(ctx, "", "", file, "cfg.json")
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`"spawn.maxConcurrentHard" in cfg.json is 0`))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`"spawn.maxWorkerHard" in cfg.json is 0`))
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("disables BOTH thresholds."))
 	})
 
@@ -356,7 +356,7 @@ var _ = ginkgo.Describe("spawn limit refusals", func() {
 			"the fleet-wide concurrent-worker limit is reached: 2 live, 2 allowed (source: config). " +
 				"Open nothing further and report the remainder as held-on-limit; it is picked up next sweep. " +
 				"An OPERATOR-NAMED task may still open here — this one was not named, so it is refused. " +
-				"Raise spawn.maxConcurrent in /cfg.json, or set it to 0 for unlimited.",
+				"Raise spawn.maxWorkerSoft in /cfg.json, or set it to 0 for unlimited.",
 		))
 	})
 
@@ -382,7 +382,7 @@ var _ = ginkgo.Describe("spawn limit refusals", func() {
 
 		gomega.Expect(refusal).To(gomega.HavePrefix("the fleet is FULL: 5 live workers against a hard cap of 5"))
 		gomega.Expect(refusal).To(gomega.ContainSubstring("not even an operator-named task"))
-		gomega.Expect(refusal).To(gomega.ContainSubstring("spawn.maxConcurrentHard in /cfg.json"))
+		gomega.Expect(refusal).To(gomega.ContainSubstring("spawn.maxWorkerHard in /cfg.json"))
 	})
 
 	ginkgo.It("allows everything when the pair is off", func() {
@@ -409,8 +409,8 @@ var _ = ginkgo.Describe("spawn limit refusals", func() {
 
 		gomega.Expect(refusal).To(gomega.Equal(
 			`the concurrent-manager limit is reached: 1 live managers (Fleet Manager excluded), 1 allowed — ` +
-				`"spawn.maxManagers" (source: config). An OPERATOR-NAMED manager may still open here — this one ` +
-				`was not named, so it is refused. Raise spawn.maxManagers in /cfg.json, or set it to 0 for unlimited.`,
+				`"spawn.maxManagersSoft" (source: config). An OPERATOR-NAMED manager may still open here — this one ` +
+				`was not named, so it is refused. Raise spawn.maxManagersSoft in /cfg.json, or set it to 0 for unlimited.`,
 		))
 	})
 
@@ -542,7 +542,7 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("2 live, 2 allowed (source: config)"))
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("spawn.maxConcurrent in " + path))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("spawn.maxWorkerSoft in " + path))
 	})
 
 	ginkgo.It("re-reads the config per call, so a lowered cap applies with no restart", func() {
