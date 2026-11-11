@@ -659,7 +659,7 @@ func (s *RosterToolServer) answerPermission(
 	//
 	// A write failure is logged and dropped. It must not turn an answer into an error the
 	// manager reads as a denied permission.
-	if err := RecordAnswerReach(ctx, sessionID, "mcp-answer-permission", time.Now()); err != nil {
+	if err := RecordAnswerReach(ctx, sessionID, "mcp-answer-permission", s.currentDateTime().Now()); err != nil {
 		log.Printf("WARNING: answer reach record for %s failed: %v", sessionID, err)
 	}
 	if err := json.Unmarshal(args, &body); err != nil {

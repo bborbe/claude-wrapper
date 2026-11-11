@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
@@ -19,7 +20,7 @@ var _ = ginkgo.Describe("RecordAnswerReach", func() {
 	var (
 		ctx     context.Context
 		dir     string
-		now     time.Time
+		now     libtime.DateTime
 		reachAt string
 	)
 
@@ -27,7 +28,7 @@ var _ = ginkgo.Describe("RecordAnswerReach", func() {
 		ctx = context.Background()
 		dir = ginkgo.GinkgoT().TempDir()
 		gomega.Expect(os.Setenv(answerReachDirEnv, dir)).To(gomega.Succeed())
-		now = time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+		now = libtime.NewDateTime(2026, time.November, 11, 9, 0, 0, 0, time.UTC)
 		reachAt = filepath.Join(dir, "sid-1."+AnswerReachLegMCP+".json")
 	})
 
@@ -70,6 +71,24 @@ var _ = ginkgo.Describe("RecordAnswerReach", func() {
 		entries, err := os.ReadDir(dir)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(entries).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("is written by the handler on entry, even when the call is refused", func() {
+		// ⚠️ The handler-level half. `answerPermission` records the reach BEFORE it decodes
+		// its arguments, so a call naming no agent — which is the shape the coverage sentinel
+		// uses — still proves it reached the route. A reach written only on success would miss
+		// that shape entirely, and the whole point is to certify the route, not the answer.
+		server := &RosterToolServer{}
+		_, err := server.answerPermission(ctx, json.RawMessage(`{"request_id":"sentinel"}`), "sid-handler")
+		gomega.Expect(err).To(gomega.HaveOccurred()) // agent_id is required — the call is refused
+
+		body, readErr := os.ReadFile(filepath.Join(dir, "sid-handler."+AnswerReachLegMCP+".json"))
+		gomega.Expect(readErr).NotTo(gomega.HaveOccurred())
+
+		var record AnswerReach
+		gomega.Expect(json.Unmarshal(body, &record)).To(gomega.Succeed())
+		gomega.Expect(record.SessionID).To(gomega.Equal("sid-handler"))
+		gomega.Expect(record.Leg).To(gomega.Equal("mcp"))
 	})
 
 	ginkgo.It("writes nothing for an empty session id", func() {

@@ -9,9 +9,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 )
 
 // AnswerReachLegMCP is the reach leg written by this file.
@@ -73,7 +73,7 @@ func answerReachDir() string {
 //
 // A failure is returned for the caller to log and then ignored: a state-write error must never
 // turn an answer into an error the manager reads as a denied permission.
-func RecordAnswerReach(ctx context.Context, sessionID string, outcome string, now time.Time) error {
+func RecordAnswerReach(ctx context.Context, sessionID string, outcome string, now libtime.DateTime) error {
 	if sessionID == "" {
 		// A call that cannot name its caller cannot be keyed, and the spawn gate refuses an
 		// unnamed session anyway — fabricating a reach for it would manufacture evidence.
@@ -89,20 +89,22 @@ func RecordAnswerReach(ctx context.Context, sessionID string, outcome string, no
 	if dir == "" {
 		return errors.Errorf(ctx, "cannot resolve a state directory for answer reaches")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0o750 / 0o600 rather than 0755 / 0644: the repo lints with gosec, and a reach names a
+	// session — a directory the user alone can read is the right default for it.
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return errors.Wrapf(ctx, err, "create reach dir %s failed", dir)
 	}
 	body, err := json.Marshal(AnswerReach{
 		SessionID: sessionID,
 		Leg:       AnswerReachLegMCP,
-		TS:        now.UTC().Format("2006-01-02T15:04:05.000Z"),
+		TS:        now.Time().UTC().Format("2006-01-02T15:04:05.000Z"),
 		Outcome:   outcome,
 	})
 	if err != nil {
 		return errors.Wrapf(ctx, err, "marshal reach failed")
 	}
 	path := filepath.Join(dir, sessionID+"."+AnswerReachLegMCP+".json")
-	if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
 		return errors.Wrapf(ctx, err, "write reach %s failed", path)
 	}
 	return nil
