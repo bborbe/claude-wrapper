@@ -97,7 +97,7 @@ with `answer_pending`; the child then continues the same turn.
   request" and skips preflight entirely, so the declared type is checked rather
   than assumed. An absent `Content-Type` is rejected for the same reason, and a
   body over 1 MiB is refused with `413` rather than truncated into a parse error.
-- **`permission_mode` must be one of** `default`, `acceptEdits`,
+- **`permission_mode` must be one of** `default`, `acceptEdits`, `auto`,
   `bypassPermissions`, `plan`. An unrecognised value is refused rather than
   handed to the child.
 
@@ -367,7 +367,7 @@ different from the one requested.
 Changes the permission mode of a **running** session, so a session that started
 on the wrong mode no longer has to be respawned.
 
-Body: `{"mode": "acceptEdits"}` — one of `default`, `acceptEdits`,
+Body: `{"mode": "acceptEdits"}` — one of `default`, `acceptEdits`, `auto`,
 `bypassPermissions`, `plan`.
 
 ```json
@@ -404,7 +404,7 @@ Kills the child. `204` on success.
 
 | Status | Meaning |
 |---|---|
-| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id`. On the change routes: an empty or control-character model name on `…/model`, and a mode outside `default`/`acceptEdits`/`bypassPermissions`/`plan` on `…/permission-mode` |
+| `400` | invalid spawn options — a malformed `env` key or value, a flag-shaped or empty `mcp_configs` entry, or a non-UUID `resume`. Nothing was spawned and no temp file was left behind. Also an unknown macro name on `…/commands`, an out-of-set `kind` on a question registration, and a `DELETE …/question` with no `request_id`. On the change routes: an empty or control-character model name on `…/model`, and a mode outside `default`/`acceptEdits`/`auto`/`bypassPermissions`/`plan` on `…/permission-mode` |
 | `404` | unknown session — the id was never spawned here, or has been forgotten |
 | `409` | answered-already, or the session holds no open question to answer, or a macro that needs confirmation was sent without `confirm`, or a sequence was started on a session that is not idle, or a `…/permission-mode` change found the per-session lock held by a running sequence, or a `resume` spawn named a conversation whose child is still running |
 | `410` | child exited — it is gone and accepts no control |

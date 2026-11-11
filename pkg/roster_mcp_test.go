@@ -67,7 +67,7 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 		gomega.Expect(body.Error.Message).To(gomega.ContainSubstring("X-Claude-Code-Session-Id"))
 	})
 
-	ginkgo.It("lists exactly the nine roster tools", func() {
+	ginkgo.It("lists exactly the ten roster tools", func() {
 		recorder := postRPC(
 			rosterForServer(),
 			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
@@ -89,7 +89,7 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 		}
 		gomega.Expect(names).To(gomega.ConsistOf(
 			"list_agents", "agent_status", "stop_agent",
-			"spawn_agent", "send_agent_message",
+			"spawn_agent", "send_agent_message", "set_agent_permission_mode",
 			"answer_permission", "await_permission", "pending_permissions",
 			"read_push_config",
 		))

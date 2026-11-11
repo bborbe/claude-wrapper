@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -35,21 +36,24 @@ const maxAwaitPermission = 5 * time.Minute
 
 // Roster tool names, as they appear to an MCP client.
 const (
-	ToolSpawnAgent         ToolName = "spawn_agent"
-	ToolSendAgentMessage   ToolName = "send_agent_message"
-	ToolListAgents         ToolName = "list_agents"
-	ToolAgentStatus        ToolName = "agent_status"
-	ToolStopAgent          ToolName = "stop_agent"
-	ToolAnswerPermission   ToolName = "answer_permission"
-	ToolAwaitPermission    ToolName = "await_permission"
-	ToolPendingPermissions ToolName = "pending_permissions"
-	ToolReadPushConfig     ToolName = "read_push_config"
+	ToolSpawnAgent             ToolName = "spawn_agent"
+	ToolSendAgentMessage       ToolName = "send_agent_message"
+	ToolListAgents             ToolName = "list_agents"
+	ToolAgentStatus            ToolName = "agent_status"
+	ToolStopAgent              ToolName = "stop_agent"
+	ToolSetAgentPermissionMode ToolName = "set_agent_permission_mode"
+	ToolAnswerPermission       ToolName = "answer_permission"
+	ToolAwaitPermission        ToolName = "await_permission"
+	ToolPendingPermissions     ToolName = "pending_permissions"
+	ToolReadPushConfig         ToolName = "read_push_config"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
 //
 // Nine of the supervisor's nine — the last one, `read_push_config`, is the read
-// half of the A2A push round trip.
+// half of the A2A push round trip — plus `set_agent_permission_mode`, the live
+// mode switch a manager needs because a headless worker has no pane to press
+// Shift+Tab in.
 func RosterToolNames() []ToolName {
 	return []ToolName{
 		ToolListAgents,
@@ -57,6 +61,7 @@ func RosterToolNames() []ToolName {
 		ToolStopAgent,
 		ToolSpawnAgent,
 		ToolSendAgentMessage,
+		ToolSetAgentPermissionMode,
 		ToolAnswerPermission,
 		ToolAwaitPermission,
 		ToolPendingPermissions,
@@ -113,6 +118,15 @@ type RosterToolServer struct {
 	// worker's name cannot be resolved, and send_agent_message says so rather than
 	// naming a channel the caller cannot address.
 	Registry SessionRegistry
+	// Locks is the same per-session sequence lock the REST and /mcp faces take.
+	// set_agent_permission_mode fails fast on it rather than queuing, so the three
+	// faces cannot disagree about whether a change waits or refuses. Nil means the
+	// switch refuses, which is correct only for a daemon started without one.
+	Locks *SessionLocks
+	// PermissionModeLog records every switch. Nil is legal — the switch still
+	// lands in the child, and only its audit line is skipped, which the reply
+	// reports as `recorded: false`.
+	PermissionModeLog PermissionModeLog
 }
 
 // currentDateTime returns the clock the pane polls run on.
@@ -273,6 +287,8 @@ func (s *RosterToolServer) invoke(
 		return s.agentStatus(ctx, args)
 	case ToolStopAgent:
 		return s.stopAgent(ctx, args, sessionID)
+	case ToolSetAgentPermissionMode:
+		return s.setAgentPermissionMode(ctx, args, sessionID)
 	case ToolAnswerPermission:
 		return s.answerPermission(ctx, args, sessionID)
 	case ToolAwaitPermission:
@@ -893,6 +909,241 @@ func (s *RosterToolServer) stopAgent(
 	})
 }
 
+// switchablePermissionModes is the closed set set_agent_permission_mode accepts.
+//
+// ⚠️ Exactly two values, matched case-sensitively, and deliberately not more:
+//   - `acceptEdits` stops the auto-mode classifier from gating an edit, a commit or
+//     a push, while `permissions.allow` and every PreToolUse hook still apply — so
+//     `deny-prod-deploy.sh` keeps refusing a prod deploy in a switched worker.
+//   - `auto` is what every headless child starts in, so a worker switched away from
+//     it must be switchable back.
+//
+// `bypassPermissions` stays out because it lifts the permission-prompt path
+// entirely — no park, no policy consult, nothing for the operator to see — and a
+// manager is itself a model session. `plan` stalls a worker that has to ship,
+// `dontAsk` silently denies everything outside the allow-list, and `default`
+// parks every tool for the manager. The cap is the operator's decision of
+// 2026-11-11.
+var switchablePermissionModes = []string{ShippingPermissionMode, "auto"}
+
+// allowedSwitchablePermissionMode reports whether a caller-supplied mode is one
+// this tool may hand to a child.
+func allowedSwitchablePermissionMode(mode string) bool {
+	return slices.Contains(switchablePermissionModes, mode)
+}
+
+// setAgentPermissionMode switches a RUNNING local headless worker's permission
+// mode.
+//
+// ⚠️ Why this exists: the documented remedy for an auto-mode classifier denial is
+// "switch to accept edits (Shift+Tab)", and a headless worker has no pane, so the
+// remedy is unperformable. Between 2026-11-05 and 2026-11-11 the attention store
+// logged 131 Shift+Tab closer lines, each an operator card nobody could act on.
+// The daemon already switches a running child's mode through the SDK control
+// request on its `/mcp` face; managers bind `/supervisor/mcp`, so this is the same
+// capability on the face the people who need it actually hold.
+//
+// The mode is checked BEFORE any lookup, so a crafted value never reaches the
+// child whatever the target turns out to be.
+func (s *RosterToolServer) setAgentPermissionMode(
+	ctx context.Context,
+	args json.RawMessage,
+	callerSessionID string,
+) (string, error) {
+	var body struct {
+		AgentID string `json:"agent_id"`
+		Mode    string `json:"mode"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return "", errors.Wrapf(ctx, err, "decode arguments failed")
+	}
+	if body.AgentID == "" {
+		return "", errors.Errorf(ctx, "agent_id is required")
+	}
+	if !allowedSwitchablePermissionMode(body.Mode) {
+		return "", errors.Errorf(
+			ctx,
+			"permission mode %q is not switchable through this tool — the only modes it sets are "+
+				"%s. `bypassPermissions` is unreachable on purpose: it lifts every approval gate on "+
+				"another model session, and `acceptEdits` already stops the auto-mode classifier",
+			body.Mode,
+			strings.Join(switchablePermissionModes, ", "),
+		)
+	}
+	session, err := s.switchableSession(ctx, body.AgentID)
+	if err != nil {
+		return "", err
+	}
+	if s.Locks == nil {
+		return "", errors.Errorf(ctx, "permission mode change is not wired")
+	}
+	// TryAcquire, not Acquire: a compaction can hold the lock for minutes, and the
+	// REST route fails fast with 409 for exactly that reason. The three faces must
+	// not disagree about whether a change queues or refuses.
+	release, ok := s.Locks.TryAcquire(session.ID)
+	if !ok {
+		return "", errors.Errorf(ctx, "session %q is running a sequence", session.ID)
+	}
+	defer release()
+	// Read BEFORE the call: the reply reports what the session held, and after a
+	// switch the daemon's own listing already holds the new value.
+	previous := session.PermissionMode
+	reported, err := s.Supervisor.SetPermissionMode(ctx, session.ID, body.Mode)
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "switch permission mode failed")
+	}
+	recorded := s.recordPermissionModeChange(
+		ctx, session.ID, callerSessionID, previous, body.Mode, reported,
+	)
+	return marshalJSON(ctx, map[string]any{
+		"agent_id": session.ID,
+		// ⚠️ The child's own answer, never the request echoed back: a child that
+		// refused the mode must not read as a success, and a child that answered a
+		// different mode must be visible.
+		"permission_mode": reported,
+		"previous_mode":   previous,
+		"requested":       body.Mode,
+		"recorded":        recorded,
+	})
+}
+
+// switchableSession returns the held child a mode switch may target, or the
+// refusal naming the route that applies to the target it actually is.
+//
+// The ownership boundary is the point rather than a limitation: this daemon holds
+// a headless child's stdin, which is what makes a mode change reach it. A tab
+// worker's mode belongs to its pane, and a cluster worker's is fixed at spawn.
+func (s *RosterToolServer) switchableSession(
+	ctx context.Context,
+	agentID string,
+) (*Session, error) {
+	if agent := s.a2aAgent(ctx, agentID); agent != nil {
+		return nil, errors.Errorf(
+			ctx,
+			"set_agent_permission_mode acts on a local headless worker only — %s is a cluster "+
+				"(A2A) worker, whose permission mode is fixed at spawn; respawn it with "+
+				"`shipping: true` to start it in %s",
+			agentID,
+			ShippingPermissionMode,
+		)
+	}
+	if s.Supervisor == nil {
+		return nil, errors.Errorf(ctx, "set_agent_permission_mode is not wired")
+	}
+	session, err := s.Supervisor.Get(ctx, agentID)
+	if err != nil {
+		if !errors.Is(err, ErrSessionNotFound) {
+			return nil, errors.Wrapf(ctx, err, "read agent %s", agentID)
+		}
+		return nil, s.refuseUnheldSwitchTarget(ctx, agentID)
+	}
+	if session.State == StateExited {
+		return nil, errors.Errorf(
+			ctx,
+			"set_agent_permission_mode acts on a local headless worker only — %s has exited, so "+
+				"there is no child to switch; respawn it with `shipping: true`",
+			agentID,
+		)
+	}
+	// Defensive: the supervisor only spawns headless children, so an interactive
+	// session here would mean an adopted tab. Its mode is its pane's, not ours.
+	if session.Mode == SpawnModeInteractive {
+		return nil, errors.Errorf(
+			ctx,
+			"set_agent_permission_mode acts on a local headless worker only — %s is a tab worker, "+
+				"whose permission mode belongs to its pane; switch it there with Shift+Tab",
+			agentID,
+		)
+	}
+	return session, nil
+}
+
+// refuseUnheldSwitchTarget names the route that applies to a target this daemon
+// holds no child for.
+//
+// The ledger is what separates the three cases: an `interactive` row is a tab
+// worker, any other row is a worker spawned elsewhere (cluster, or a headless
+// child of a previous daemon process), and no row at all means the id names
+// nothing here.
+func (s *RosterToolServer) refuseUnheldSwitchTarget(
+	ctx context.Context,
+	agentID string,
+) error {
+	if s.Ledger != nil {
+		rows, err := s.Ledger.Rows(ctx)
+		if err != nil {
+			log.Printf(
+				"WARNING: the ledger could not be read (%v) — refusing %q as an unknown target",
+				err,
+				agentID,
+			)
+		}
+		for _, row := range rows {
+			if row.SessionID != agentID && row.AgentID != agentID {
+				continue
+			}
+			if row.Mode == SpawnModeInteractive {
+				return errors.Errorf(
+					ctx,
+					"set_agent_permission_mode acts on a local headless worker only — %s is a tab "+
+						"worker, whose permission mode belongs to its pane; switch it there with "+
+						"Shift+Tab",
+					agentID,
+				)
+			}
+			return errors.Errorf(
+				ctx,
+				"set_agent_permission_mode acts on a local headless worker only — %s is a %s "+
+					"worker this daemon holds no child for, so there is no stdin to switch; "+
+					"respawn it headless with `shipping: true` to start it in %s",
+				agentID,
+				row.Mode,
+				ShippingPermissionMode,
+			)
+		}
+	}
+	return errors.Errorf(
+		ctx,
+		"set_agent_permission_mode acts on a local headless worker only — %s names no worker on "+
+			"this daemon",
+		agentID,
+	)
+}
+
+// recordPermissionModeChange appends the audit line and reports whether it landed.
+//
+// A failed write does not undo the switch: it has already reached the child, and
+// a mode nobody recorded is still the mode the worker holds. The reply carries
+// `recorded: false` and the daemon log gets one line, so the gap is visible
+// rather than implied to be absent.
+func (s *RosterToolServer) recordPermissionModeChange(
+	ctx context.Context,
+	agentID string,
+	callerSessionID string,
+	from string,
+	requested string,
+	to string,
+) bool {
+	if s.PermissionModeLog == nil {
+		return false
+	}
+	if err := s.PermissionModeLog.Write(ctx, PermissionModeChange{
+		AgentID:         agentID,
+		CallerSessionID: callerSessionID,
+		From:            from,
+		Requested:       requested,
+		To:              to,
+	}); err != nil {
+		log.Printf(
+			"WARNING: permission mode change record for %s could not be written: %v",
+			agentID,
+			err,
+		)
+		return false
+	}
+	return true
+}
+
 // spawnAgentArgs is every argument a spawn call may carry.
 type spawnAgentArgs struct {
 	Target string `json:"target"`
@@ -1487,9 +1738,34 @@ func writeRosterError(resp http.ResponseWriter, status int, code string, message
 	})
 }
 
-// rosterToolDefinitions describes the three tools to an MCP client.
+// rosterToolDefinitions describes the roster face's tools to an MCP client.
 func rosterToolDefinitions() []any {
-	return append(spawnToolDefinitions(), parkToolDefinitions()...)
+	definitions := append(spawnToolDefinitions(), parkToolDefinitions()...)
+	return append(definitions, modeToolDefinitions()...)
+}
+
+// modeToolDefinitions describes the live permission-mode switch.
+func modeToolDefinitions() []any {
+	return []any{
+		toolDef(ToolSetAgentPermissionMode,
+			"Switch a RUNNING local headless worker's permission mode. Only `acceptEdits` and "+
+				"`auto` are accepted: `acceptEdits` stops the auto-mode classifier from gating edits, "+
+				"commits and pushes while `permissions.allow` and every PreToolUse hook still apply, "+
+				"and `auto` hands each call back to the classifier. `bypassPermissions` is "+
+				"unreachable on purpose. Only a headless worker THIS daemon holds can be switched — "+
+				"a tab worker's mode belongs to its pane and a cluster (A2A) worker's is fixed at "+
+				"spawn. The reply carries `permission_mode`, the mode the CHILD reports (never the "+
+				"request echoed back), plus `previous_mode` and `recorded`.",
+			map[string]any{
+				"agent_id": stringProp("id of the local headless worker to switch"),
+				"mode": map[string]any{
+					"type":        "string",
+					"enum":        switchablePermissionModes,
+					"description": "acceptEdits or auto; every other mode is refused",
+				},
+			},
+			"agent_id", "mode"),
+	}
 }
 
 // spawnToolDefinitions describes the spawn and steering tools.
