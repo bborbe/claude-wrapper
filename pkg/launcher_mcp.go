@@ -77,5 +77,21 @@ func LauncherMCPConfig(launcher string) string {
 	if err != nil {
 		return ""
 	}
-	return ParseLauncherMCPConfig(string(raw))
+	config := ParseLauncherMCPConfig(string(raw))
+	if config == "" {
+		return ""
+	}
+	// The path is handed to the child as `--mcp-config`, so a launcher naming a file
+	// that no longer exists would fail every spawn — a worse outcome than the fewer
+	// servers this fix exists to restore. Checked here rather than at the call site so
+	// every caller gets the same guard.
+	//
+	// gosec reads the value as tainted because it is parsed out of a file; the file is
+	// the operator's own launcher script, never a request, so this is a read of a
+	// configured path rather than a traversal sink.
+	//nolint:gosec // G703: the path comes from the operator's launcher script, not from a request.
+	if _, err := os.Stat(config); err != nil {
+		return ""
+	}
+	return config
 }

@@ -71,10 +71,23 @@ var _ = ginkgo.Describe("ParseLauncherMCPConfig", func() {
 var _ = ginkgo.Describe("LauncherMCPConfig", func() {
 	ginkgo.It("reads the config path out of a launcher script on disk", func() {
 		dir := ginkgo.GinkgoT().TempDir()
+		config := filepath.Join(dir, "mcp.json")
+		gomega.Expect(os.WriteFile(config, []byte(`{"mcpServers":{}}`), 0o600)).To(gomega.Succeed())
 		launcher := filepath.Join(dir, "cc-test")
 		gomega.Expect(os.WriteFile(launcher, []byte(
-			"#!/bin/bash\nclaude --mcp-config \"/etc/mcp.json\"\n"), 0o755)).To(gomega.Succeed())
-		gomega.Expect(LauncherMCPConfig(launcher)).To(gomega.Equal("/etc/mcp.json"))
+			"#!/bin/bash\nclaude --mcp-config \""+config+"\"\n"), 0o755)).To(gomega.Succeed())
+		gomega.Expect(LauncherMCPConfig(launcher)).To(gomega.Equal(config))
+	})
+
+	// The path is handed to the child as --mcp-config, so a launcher naming a file
+	// that no longer exists would fail every spawn — worse than the fewer servers
+	// this fix restores.
+	ginkgo.It("returns empty when the named config file does not exist", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		launcher := filepath.Join(dir, "cc-stale")
+		gomega.Expect(os.WriteFile(launcher, []byte(
+			"#!/bin/bash\nclaude --mcp-config \"/nonexistent/mcp.json\"\n"), 0o755)).To(gomega.Succeed())
+		gomega.Expect(LauncherMCPConfig(launcher)).To(gomega.BeEmpty())
 	})
 
 	// A missing launcher is a MISSING CONFIG, not a failed spawn: the worker must
