@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.20.3
 
 - test: **the 2026-11-11 nesting incident is now a regression test, on both key spellings.** `maxConcurrent` 90 + `maxManagers` 13 = 103 against a `maxSessions` of 90 (and 120 + 20 = 140 against a hard 120) refused every spawn with `NESTING_VIOLATION` until the operator repaired the file; the suite covered the *shape* of an over-committed config but never that exact arithmetic, so the shape that actually took the fleet down had no test. The new spec asserts the message carries all three numbers — both children and the sum — and runs the same config under the pre-rename and current names, because the old-name arm alone passes on the pre-rename code and would be evidence of nothing. It belongs here rather than in a live probe: the refusal is a property of `ResolveSpawnAxes`, the config is its argument, there is no load-time check to observe, and `spawn_agent` takes no config override — so a live run can only ever exercise the valid arm. Verified to fail: pointing the assertion at a wrong sum fails the spec. Change set: `pkg/spawn_axes_test.go`, `CHANGELOG.md`.
 
