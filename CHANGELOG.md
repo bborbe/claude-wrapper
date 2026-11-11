@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.20.2
 
 - fix: **a missing `X-Claude-Code-Session-Id` header now fails the one call that needs it instead of the whole MCP handshake, so a session keeps its `supervisor` tools.** `ServeHTTP` checked the header before dispatch, so `initialize` and `tools/list` were refused with HTTP 400 and the client registered no tools at all — measured 2026-11-11: 39 of 59 live sessions carried no `mcp__supervisor__*` tools while the server was configured and reachable. Only four calls actually consume the session (`spawn_agent`, `stop_agent`, `set_agent_permission_mode`, `answer_permission`); every protocol method and every read-only roster tool (`list_agents`, `agent_status`, `pending_permissions`, `await_permission`, `read_push_config`, `send_agent_message`) takes none. The check moved into `callTool`, where a session-less call to one of those four returns the MCP-conventional `isError` tool result naming `missing_session_header`, at HTTP 200 — attributable to the one call and invisible to the handshake. `writeRosterError` lost its last caller and is deleted. Change set: `pkg/roster_mcp.go`, `pkg/roster_mcp_test.go`, `pkg/errors.go`, `CHANGELOG.md`.
 
