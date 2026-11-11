@@ -150,6 +150,36 @@ var _ = ginkgo.Describe("spawn axes — SC3: the nesting invariant", func() {
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`"spawn.maxGoalManagersSoft" 7`))
 	})
 
+	ginkgo.It("refuses the 2026-11-11 config under both spellings, naming all three numbers", func() {
+		// The incident, verbatim: `maxConcurrent` 90 + `maxManagers` 13 = 103 against a
+		// `maxSessions` of 90, and 120 + 20 = 140 against a hard 120. Every spawn was
+		// refused with this message until the operator repaired the file.
+		//
+		// Encoded as a regression test rather than only as a live probe, because the refusal
+		// is a property of the VALIDATION FUNCTION — the config is its argument. There is no
+		// load-time check to observe and no config override on `spawn_agent`, so a live run
+		// could only ever exercise the valid arm and would prove nothing about this one.
+		//
+		// Both spellings, because the rename must not break the refusal: the old-name arm
+		// alone passes on the pre-rename code and would be evidence of nothing.
+		for _, body := range []string{
+			`{"spawn":{"maxConcurrent":90,"maxConcurrentHard":120,` +
+				`"maxManagers":13,"maxManagersHard":20,"maxSessions":90,"maxSessionsHard":120}}`,
+			`{"spawn":{"maxWorkerSoft":90,"maxWorkerHard":120,` +
+				`"maxManagersSoft":13,"maxManagersHard":20,"maxSessionsSoft":90,"maxSessionsHard":120}}`,
+		} {
+			_, err := axesFrom(body)
+			gomega.Expect(err).NotTo(gomega.BeNil())
+			gomega.Expect(err.Error()).To(gomega.HavePrefix(NestingViolation))
+			// All three numbers: both children and the sum they exceed.
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(`"spawn.maxWorkerSoft" 90`))
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(`"spawn.maxManagersSoft" 13`))
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(`= 103`))
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(`cap of 90`))
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("the soft caps nest wrongly"))
+		}
+	})
+
 	ginkgo.It("refuses worker + manager above the session backstop", func() {
 		_, err := axesFrom(`{"spawn":{"maxSessions":80,"maxSessionsHard":100}}`)
 		gomega.Expect(err).NotTo(gomega.BeNil())
