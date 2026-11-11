@@ -13,9 +13,9 @@ zero value **silently**, opening or refusing the wrong rows with no error.
 
 | | |
 |---|---|
-| Source | `~/Documents/workspaces/claude-supervisor/scripts/flagged-rows.py` |
-| Deployed copy | `~/.claude/plugins/marketplaces/claude-supervisor/scripts/flagged-rows.py` |
-| Invocation | `<python3> <script> --json` |
+| Source | `scripts/flagged-rows.py`, in the `claude-supervisor` repo |
+| Deployed copy | `scripts/flagged-rows.py` under the claude-supervisor marketplace clone |
+| Invocation | `<python3> <script> --json`; `--flagged-rows-script` sets the path |
 | Cost | ~2 minutes against the real vaults |
 | Ownership | `claude-supervisor` — read-only from this repo |
 
