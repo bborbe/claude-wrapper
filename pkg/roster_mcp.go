@@ -69,6 +69,22 @@ func RosterToolNames() []ToolName {
 	}
 }
 
+// sessionRequiredTools are the calls that RECORD their caller, and so cannot run
+// without an attributed session.
+//
+// Everything else on this face serves a session-less client: the protocol methods
+// (`initialize`, `notifications/initialized`, `ping`, `tools/list`) and the
+// read-only tools (`list_agents`, `agent_status`, `pending_permissions`,
+// `await_permission`, `read_push_config`, `send_agent_message`).
+func sessionRequiredTools() map[ToolName]struct{} {
+	return map[ToolName]struct{}{
+		ToolSpawnAgent:             {},
+		ToolStopAgent:              {},
+		ToolSetAgentPermissionMode: {},
+		ToolAnswerPermission:       {},
+	}
+}
+
 // RosterToolServer serves the supervisor's roster tools over streamable HTTP.
 //
 // It is a THIRD MCP face, and the three point in different directions:
@@ -150,17 +166,10 @@ func (s *RosterToolServer) ServeHTTP(resp http.ResponseWriter, req *http.Request
 		resp.WriteHeader(http.StatusForbidden)
 		return
 	}
+	// The attribution header is read here and enforced by the call that needs it
+	// (see callTool). Enforcing it here refused the whole MCP handshake, which took
+	// every tool down with it — `tools/list` included, and that one needs no session.
 	sessionID := req.Header.Get(SessionHeader)
-	if sessionID == "" {
-		writeRosterError(
-			resp,
-			http.StatusBadRequest,
-			"missing_session_header",
-			ErrMissingSessionHeader.Error()+
-				" — a roster call is attributed to the calling session, so it is refused rather than defaulted",
-		)
-		return
-	}
 	switch req.Method {
 	case http.MethodPost:
 		if !isJSONRequest(req) {
@@ -260,6 +269,12 @@ func (s *RosterToolServer) callTool(
 	}
 	if err := json.Unmarshal(params, &body); err != nil {
 		return nil, &rpcError{Code: -32602, Message: "invalid params"}
+	}
+	// The refusal belongs to the one call that needs a session, not to the
+	// handshake: a session-less client keeps its tools and reads this as a failed
+	// tool call, which is exactly what it is.
+	if _, required := sessionRequiredTools()[ToolName(body.Name)]; required && sessionID == "" {
+		return toolResult(ErrSessionRequired.Error(), true), nil
 	}
 	text, err := s.invoke(ctx, body.Name, body.Arguments, sessionID)
 	if err != nil {
@@ -370,6 +385,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 		Role:           body.Role,
 		Policy:         body.Policy,
 		Resume:         body.Resume,
+		MCPConfigs:     s.headlessMCPConfigs(ctx, body, cwd),
 	})
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "spawn agent failed")
@@ -577,6 +593,44 @@ func (s *RosterToolServer) headlessModel(
 	return LauncherModel(launcher)
 }
 
+// headlessMCPConfigs returns the MCP config files a headless spawn must hand its
+// child, resolved from the same launcher headlessModel reads.
+//
+// Without this the child receives ONLY the generated `claude-wrapper` config, so
+// every server the vault declares — `supervisor`, `a2a`, `sentry` — is absent. A
+// manager that comes up without the supervisor tools cannot open a worker
+// headless at all: `/supervisor:open` takes its wezterm fallback, which is a tab
+// by construction. Measured 2026-11-11: 33 of 34 tool-less live sessions had
+// never loaded the server, against 17 tab sessions that had it because the
+// launcher script carries `--mcp-config` itself.
+//
+// nil rather than a guess: a spawn whose launcher cannot be resolved still opens
+// with fewer servers, which is a degraded worker, not a refused one.
+func (s *RosterToolServer) headlessMCPConfigs(
+	ctx context.Context,
+	body spawnAgentArgs,
+	cwd string,
+) []string {
+	vault, err := s.vaultFor(ctx, body, cwd)
+	if err != nil || vault == nil {
+		return nil
+	}
+	if launcher := TaskLauncher(vault.Path, body.Task); launcher != "" {
+		if config := LauncherMCPConfig(launcher); config != "" {
+			return []string{config}
+		}
+	}
+	launcher, _, err := launcherForVault(ctx, vault)
+	if err != nil {
+		return nil
+	}
+	config := LauncherMCPConfig(launcher)
+	if config == "" {
+		return nil
+	}
+	return []string{config}
+}
+
 // vaultFor resolves the vault a spawn belongs to: the one it named, else the most
 // specific configured vault containing the cwd. nil when neither resolves — a
 // spawn with only a cwd outside every vault keeps its default model rather than
@@ -660,7 +714,12 @@ func (s *RosterToolServer) answerPermission(
 	// A write failure is logged and dropped. It must not turn an answer into an error the
 	// manager reads as a denied permission.
 	if err := RecordAnswerReach(ctx, sessionID, "mcp-answer-permission", s.currentDateTime().Now()); err != nil {
-		log.Printf("WARNING: answer reach record for %s failed: %v", sessionID, err)
+		// %q, not %s: the id reaches this from a request header, so a newline in it
+		// would let a caller forge a log line. %q escapes every control character,
+		// which is the fix; gosec's taint analysis flags the sink regardless of the
+		// verb, so the finding is a false positive once the escaping is in place.
+		//nolint:gosec // G706: %q escapes control characters, so no log line can be forged.
+		log.Printf("WARNING: answer reach record for %q failed: %v", sessionID, err)
 	}
 	if err := json.Unmarshal(args, &body); err != nil {
 		return "", errors.Wrapf(ctx, err, "decode arguments failed")
@@ -1739,16 +1798,6 @@ func (s *RosterToolServer) recordStop(ctx context.Context, row *AgentRow, caller
 	}); err != nil {
 		log.Printf("WARNING: ledger post for stopped session %s failed: %v", row.SessionID, err)
 	}
-}
-
-// writeRosterError writes the repo's {error:{code,message}} shape with a named
-// code, so a caller can tell a refusal apart from a transport fault.
-func writeRosterError(resp http.ResponseWriter, status int, code string, message string) {
-	resp.Header().Set("Content-Type", "application/json")
-	resp.WriteHeader(status)
-	_ = json.NewEncoder(resp).Encode(map[string]any{
-		"error": map[string]string{"code": code, "message": message},
-	})
 }
 
 // rosterToolDefinitions describes the roster face's tools to an MCP client.
