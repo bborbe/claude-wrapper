@@ -424,9 +424,12 @@ func (s *RosterToolServer) refuseTerminalResume(
 	}
 	ref := s.taskForResume(ctx, body, cwd)
 	if ref == nil {
+		// One line, and it asserts no CAUSE: the vault list may have been
+		// unreadable or simply held no match, and a message naming the wrong one
+		// would send a reader looking in the wrong place.
 		log.Printf(
-			"resume guard: session %s is claimed by no task in any configured vault — "+
-				"allowing the resume unresolved",
+			"resume guard: no task could be resolved for session %s — allowing the "+
+				"resume unresolved",
 			session,
 		)
 		return nil

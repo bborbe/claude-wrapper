@@ -110,7 +110,14 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume guard", func() {
 		server = &RosterToolServer{
 			Supervisor: supervisor,
 			Spawner:    &fakeSpawner{},
-			Vaults:     &fakeVaults{vaults: []Vault{{Name: "test-vault", Path: dir}}},
+			// WorkerLauncher is load-bearing only for the vault-named spec: a spawn
+			// that names a vault resolves it to a directory AND a launcher, and one
+			// with neither is refused before the guard is ever reached.
+			Vaults: &fakeVaults{vaults: []Vault{{
+				Name:           "test-vault",
+				Path:           dir,
+				WorkerLauncher: "/bin/true",
+			}}},
 		}
 
 		logs = &bytes.Buffer{}
@@ -207,6 +214,23 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume guard", func() {
 
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(supervisor.spawned).To(gomega.HaveLen(1))
+	})
+
+	// The by-title fallback: a caller that names its task is checked on it even
+	// when the session id resolves to nothing, because a task file may predate its
+	// `claude_session_id:` being written.
+	ginkgo.It("refuses a caller-named terminal task whose session id resolves to nothing", func() {
+		writeTask(title, "status: completed\nclaude_session_id: some-other-session\n")
+
+		_, err := spawn(
+			`{"prompt":"continue","resume":"` + sessionID + `","interactive":false,` +
+				`"cwd":"` + dir + `","vault":"test-vault","task":"` + title + `"}`,
+		)
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("task-terminal"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring(title))
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
 	})
 
 	// Fail-open is deliberate — no task claims the session, so nothing can be

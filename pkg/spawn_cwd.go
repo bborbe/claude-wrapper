@@ -519,11 +519,8 @@ func taskRefInVault(ctx context.Context, vault Vault, id string) *TaskRef {
 		return nil
 	}
 	for _, folder := range taskFolders {
-		if ref := taskRefIn(filepath.Join(root, folder), vault.Name, id); ref != nil {
+		if ref := taskRefIn(ctx, filepath.Join(root, folder), vault.Name, id); ref != nil {
 			return ref
-		}
-		if ctx.Err() != nil {
-			return nil
 		}
 	}
 	return nil
@@ -534,12 +531,19 @@ func taskRefInVault(ctx context.Context, vault Vault, id string) *TaskRef {
 // An unreadable directory is nil rather than an error: a vault with no task
 // folder simply holds no task for this session, and the caller's question is
 // "does one claim it", not "is every vault well formed".
-func taskRefIn(dir, vaultName, id string) *TaskRef {
+//
+// The ctx check sits INSIDE the file loop, not around it: the loop is where the
+// scan actually spends its time, so a check that only ran between folders would
+// let a cancelled spawn finish reading all 11 281 files before noticing.
+func taskRefIn(ctx context.Context, dir, vaultName, id string) *TaskRef {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return nil
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
