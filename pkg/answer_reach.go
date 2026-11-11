@@ -104,6 +104,7 @@ func RecordAnswerReach(ctx context.Context, sessionID string, outcome string, no
 		return errors.Wrapf(ctx, err, "marshal reach failed")
 	}
 	path := filepath.Join(dir, sessionID+"."+AnswerReachLegMCP+".json")
+	//nolint:gosec // G703: sessionID passed isBareAnswerReachID above — no separator, no traversal, no control characters.
 	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
 		return errors.Wrapf(ctx, err, "write reach %s failed", path)
 	}
@@ -112,11 +113,18 @@ func RecordAnswerReach(ctx context.Context, sessionID string, outcome string, no
 
 // isBareAnswerReachID reports whether the id is safe to join into a path — one filename, no
 // traversal. Mirrors `isBareSessionId` in claude-supervisor's `server/answer-reach.mjs`.
+//
+// Control characters are refused as well: the id is also logged on a failed write, and a
+// newline in it would let a caller forge a log line. gosec's taint analysis cannot see
+// through this function, so the two call sites carry a `//nolint:gosec` naming it.
 func isBareAnswerReachID(sessionID string) bool {
 	if sessionID == "" || sessionID == "." || sessionID == ".." {
 		return false
 	}
 	for _, r := range sessionID {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
 		switch r {
 		case '/', '\\', 0:
 			return false
