@@ -50,21 +50,56 @@ func postRPC(
 }
 
 var _ = ginkgo.Describe("RosterToolServer", func() {
-	ginkgo.It("refuses a request with no session header, naming the refusal", func() {
-		recorder := postRPC(rosterForServer(), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, "")
+	ginkgo.It("serves the handshake and tools/list with no session header", func() {
+		server := rosterForServer()
 
-		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusBadRequest))
+		handshake := postRPC(
+			server,
+			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+			"",
+		)
+		gomega.Expect(handshake.Code).To(gomega.Equal(http.StatusOK))
+
+		listing := postRPC(server, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, "")
+		gomega.Expect(listing.Code).To(gomega.Equal(http.StatusOK))
 		var body struct {
-			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
+			Result struct {
+				Tools []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		gomega.Expect(json.Unmarshal(listing.Body.Bytes(), &body)).To(gomega.Succeed())
+		// A missing attribution header must not cost the session its tools: the
+		// handshake and the listing need no session at all.
+		gomega.Expect(body.Result.Tools).NotTo(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses only the call that records its caller, naming the refusal", func() {
+		recorder := postRPC(
+			rosterForServer(),
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call",`+
+				`"params":{"name":"answer_permission","arguments":{"agent_id":"nobody"}}}`,
+			"",
+		)
+
+		// A failed tool is a successful call carrying isError: the refusal is
+		// attributed to this one call, and the handshake is untouched.
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
+		var body struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
 		}
 		gomega.Expect(json.Unmarshal(recorder.Body.Bytes(), &body)).To(gomega.Succeed())
+		gomega.Expect(body.Result.IsError).To(gomega.BeTrue())
+		gomega.Expect(body.Result.Content).NotTo(gomega.BeEmpty())
 		// A named code, never a defaulted session: an unattributed call would be
 		// recorded against a session that does not exist.
-		gomega.Expect(body.Error.Code).To(gomega.Equal("missing_session_header"))
-		gomega.Expect(body.Error.Message).To(gomega.ContainSubstring("X-Claude-Code-Session-Id"))
+		gomega.Expect(body.Result.Content[0].Text).To(gomega.ContainSubstring("missing_session_header"))
 	})
 
 	ginkgo.It("lists exactly the ten roster tools", func() {

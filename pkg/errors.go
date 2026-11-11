@@ -67,6 +67,17 @@ var (
 	// session that does not exist — a ledger row that reads as evidence and names
 	// nobody.
 	ErrMissingSessionHeader = stderrors.New("missing X-Claude-Code-Session-Id header")
+	// ErrSessionRequired is the PER-CALL refusal: a tool that records its caller
+	// was asked to run without one.
+	//
+	// It carries the `missing_session_header` code the transport used to answer
+	// with, so a client that matched on the code still can — but it fails the one
+	// call instead of the whole MCP handshake. Failing the handshake took every
+	// tool down, `tools/list` included, and `tools/list` needs no session at all.
+	ErrSessionRequired = stderrors.New(
+		"missing_session_header: " + ErrMissingSessionHeader.Error() +
+			" — a roster call is attributed to the calling session, so it is refused rather than defaulted",
+	)
 	// ErrAgentNotOwned is returned when stop_agent names a session this daemon
 	// did not spawn.
 	//
