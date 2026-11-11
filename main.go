@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +34,28 @@ const shutdownGrace = 500 * time.Millisecond
 // process. The drain bound and the shutdown grace together must fit inside it.
 const launchdExitTimeout = 5 * time.Second
 
+// defaultFlaggedRowsScript is the deployed copy of the fleet's eligibility
+// predicate. The marketplace copy is the one the running fleet uses, so it is
+// the default rather than the source checkout — a tick reading a stale source
+// tree would disagree with `/supervisor:open --flagged` about what is eligible.
+const defaultFlaggedRowsScript = "~/.claude/plugins/marketplaces/claude-supervisor/scripts/flagged-rows.py"
+
+// flaggedTickFlags are the reopen tick's two flags, registered together so
+// main stays inside its length budget.
+type flaggedTickFlags struct {
+	interval *time.Duration
+	script   *string
+}
+
+func registerFlaggedTickFlags() flaggedTickFlags {
+	return flaggedTickFlags{
+		interval: flag.Duration("flagged-tick-interval", pkg.DefaultFlaggedTickInterval,
+			"how often to reopen flagged rows that have gone dark; 0 disables the tick"),
+		script: flag.String("flagged-rows-script", defaultFlaggedRowsScript,
+			"path to claude-supervisor's flagged-rows.py, which decides which rows are eligible"),
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -51,6 +75,7 @@ func main() {
 		"base URL of attention-controller, which serves the spawn ledger and the session-heartbeat store")
 	heartbeatInterval := flag.Duration("heartbeat-interval", pkg.DefaultHeartbeatInterval,
 		"how often to stamp a heartbeat for every live session")
+	flagged := registerFlaggedTickFlags()
 	stateDir := flag.String("state-dir", "",
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
 	drainBound := flag.Duration("drain-bound", 4*time.Second,
@@ -99,7 +124,10 @@ func main() {
 
 	mux := newMux(supervisor, sequencer, locks, *listen, *mcpTurnTimeout)
 
-	startFleetFaces(ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval)
+	startFleetFaces(
+		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
+		*flagged.interval, *flagged.script,
+	)
 
 	// The startup deadline is the only verb that can clear a child stuck in
 	// `starting`: it never emits an init event, so nothing else reaches it.
@@ -310,29 +338,16 @@ func startFleetFaces(
 	locks *pkg.SessionLocks,
 	attentionURL string,
 	heartbeatInterval time.Duration,
+	flaggedTickInterval time.Duration,
+	flaggedRowsScript string,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
 	heartbeats := pkg.NewHeartbeatClient(attentionURL, nil)
 
-	// The board arms. One process reads the store for every child it holds, which
-	// is what removes the per-session poller from the headless path.
-	deliveryCtx, stopDelivery := signal.NotifyContext(
-		context.Background(), os.Interrupt, syscall.SIGTERM,
-	)
-	delivery := &pkg.BoardDelivery{
-		Supervisor: supervisor,
-		Store:      pkg.NewBoardStore(attentionURL, nil),
-		Decider:    decider,
-	}
-	go func() {
-		defer stopDelivery()
-		if err := delivery.Run(deliveryCtx); err != nil {
-			log.Printf("board delivery stopped: %v", err)
-		}
-	}()
+	startBoardDelivery(supervisor, decider, attentionURL)
 
-	// The A2A spawn targets: docker and k8s workers, created on an
+	// The A2A spawn targets: docker and k8s workers, created on ann
 	// a2a-worker-controller. A configuration that cannot be read disables the
 	// tools rather than failing the daemon — a daemon with no controller is a
 	// daemon whose local work still runs.
@@ -356,9 +371,8 @@ func startFleetFaces(
 	// roster. A third face beside /mcp and --mcp-stdio, and separate from both on
 	// purpose — /mcp is Codex driving one child, --mcp-stdio is a child asking
 	// for a verdict, and this one answers across sessions.
-	// The local-tab spawn path: a WezTerm tab under the vault's cc-* launcher.
-	// Without these two the daemon refuses every `local` spawn by name, which is
-	// why they are wired here rather than left for a caller to construct.
+	// The local-tab spawn path: a tab under the vault's cc-* launcher. Without
+	// these the daemon refuses every `local` spawn by name.
 	tabs := pkg.NewTabClient("")
 	vaults := pkg.NewVaultCLILister()
 	tabSpawner := pkg.NewTabSpawner(
@@ -372,6 +386,9 @@ func startFleetFaces(
 		// path omits the hook rather than naming one that does not exist.
 		"",
 	)
+
+	// The fleet-wide caps; shared with the flagged tick so both read one limit.
+	caps := pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil)
 
 	mux.Handle("/supervisor/mcp", &pkg.RosterToolServer{
 		Roster: pkg.NewRoster(
@@ -393,11 +410,7 @@ func startFleetFaces(
 		Vaults:    vaults,
 		Tabs:      tabs,
 		Now:       now,
-		// The fleet-wide caps (spawn.maxConcurrent / maxConcurrentHard /
-		// maxManagers / maxManagersHard / maxStartsPerMinute), read per spawn from
-		// the same config file as the spawn mode. Without it a spawn past the cap
-		// opens instead of being refused.
-		Caps: pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil),
+		Caps:      caps,
 		// The id → name join send_agent_message needs for a headless worker: it holds
 		// the session id, the caller's `SendMessage` takes the registry name, and this
 		// is the only place that maps one to the other.
@@ -409,7 +422,81 @@ func startFleetFaces(
 		PermissionModeLog: pkg.NewPermissionModeLog("", now),
 	})
 
+	go startFlaggedTick(ctx, flaggedTickInterval, flaggedRowsScript, tabSpawner, caps, ledger, now)
+
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
+}
+
+// startBoardDelivery runs the board arms: one process reads the store for every
+// child it holds, which is what removes the per-session poller from the headless
+// path.
+func startBoardDelivery(
+	supervisor pkg.Supervisor,
+	decider *pkg.PermissionDecider,
+	attentionURL string,
+) {
+	deliveryCtx, stopDelivery := signal.NotifyContext(
+		context.Background(), os.Interrupt, syscall.SIGTERM,
+	)
+	delivery := &pkg.BoardDelivery{
+		Supervisor: supervisor,
+		Store:      pkg.NewBoardStore(attentionURL, nil),
+		Decider:    decider,
+	}
+	go func() {
+		defer stopDelivery()
+		if err := delivery.Run(deliveryCtx); err != nil {
+			log.Printf("board delivery stopped: %v", err)
+		}
+	}()
+}
+
+// startFlaggedTick reopens flagged rows that have gone dark.
+//
+// The close side is deterministic — launchd's idle-reaper closes idle headless
+// workers on a 900 s tick — so the reopen side has to be too. It was a model
+// step in the fleet round, measured at 0 opens across 100 digests (2026-11-11),
+// which is why 19 of 28 eligible flagged tasks sat with no live session.
+//
+// An interval of 0 disables the tick: a tick wired to a suspect predicate
+// reopens rows that are already running.
+func startFlaggedTick(
+	ctx context.Context,
+	interval time.Duration,
+	script string,
+	spawner pkg.TabSpawner,
+	caps pkg.SpawnCaps,
+	ledger pkg.LedgerReader,
+	now libtime.CurrentDateTimeGetter,
+) {
+	if interval <= 0 {
+		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
+		return
+	}
+	tick := &pkg.FlaggedTick{
+		Source:   pkg.ExecFlaggedRowsSource{Script: expandHome(script)},
+		Spawner:  spawner,
+		Caps:     caps,
+		Ledger:   ledger,
+		Now:      now,
+		Interval: interval,
+	}
+	if err := tick.Run(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("flagged tick stopped: %v", err)
+	}
+}
+
+// expandHome resolves a leading `~/`, which neither exec nor the shell expands
+// for a flag value that arrives pre-quoted.
+func expandHome(path string) string {
+	if !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/"))
 }
 
 // startHeartbeatPoster runs the central heartbeat poster.
