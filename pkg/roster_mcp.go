@@ -1831,7 +1831,7 @@ func spawnToolDefinitions() []any {
 					"spawn.mode, then interactive)"),
 				"operator_named": boolProp("whether the OPERATOR named THIS task by hand — the exemption " +
 					"that lets one task open while the fleet sits between its soft and hard worker caps " +
-					"(spawn.maxConcurrent / spawn.maxConcurrentHard; the manager pair likewise for " +
+					"(spawn.maxWorkerSoft / spawn.maxWorkerHard; the manager pair likewise for " +
 					"role=manager). The caller resolves it from the task's own operator-set flag and passes " +
 					"it; the server never infers it. Omit for an ordinary spawn, which is refused at the " +
 					"soft cap. An operator-named spawn is still refused at the hard cap."),

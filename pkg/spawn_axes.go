@@ -148,17 +148,18 @@ var axisLabels = map[string]string{
 	AxisGoalManager:  "goal manager",
 }
 
-// axisKeys is the config key per axis, soft first. The worker and manager axes
-// reuse the keys they shipped with — renaming them would strand every operator's
-// existing config.json silently.
+// axisKeys is the config key per axis, soft first. Every key carries an explicit
+// Soft/Hard suffix so the nesting invariant is readable from the names alone;
+// the pre-rename spellings still parse, folded in by
+// `applyLegacySpawnKeys` with a warning naming both forms.
 var axisKeys = map[string][2]string{
-	AxisSession:      {"maxSessions", "maxSessionsHard"},
-	AxisWorker:       {"maxConcurrent", "maxConcurrentHard"},
-	AxisHeadless:     {"maxHeadless", "maxHeadlessHard"},
-	AxisInteractive:  {"maxInteractive", "maxInteractiveHard"},
-	AxisManager:      {"maxManagers", "maxManagersHard"},
-	AxisTopicManager: {"maxTopicManagers", "maxTopicManagersHard"},
-	AxisGoalManager:  {"maxGoalManagers", "maxGoalManagersHard"},
+	AxisSession:      {"maxSessionsSoft", "maxSessionsHard"},
+	AxisWorker:       {"maxWorkerSoft", "maxWorkerHard"},
+	AxisHeadless:     {"maxHeadlessSoft", "maxHeadlessHard"},
+	AxisInteractive:  {"maxInteractiveSoft", "maxInteractiveHard"},
+	AxisManager:      {"maxManagersSoft", "maxManagersHard"},
+	AxisTopicManager: {"maxTopicManagersSoft", "maxTopicManagersHard"},
+	AxisGoalManager:  {"maxGoalManagersSoft", "maxGoalManagersHard"},
 }
 
 // axisPlurals is the population word a refusal counts, so a reader sees
@@ -236,27 +237,27 @@ func ResolveSpawnAxes(
 	axes := SpawnAxes{Worker: worker, Manager: manager}
 	for _, spec := range []axisSpec{
 		{
-			name: AxisSession, rawSoft: file.Spawn.MaxSessions, rawHard: file.Spawn.MaxSessionsHard,
+			name: AxisSession, rawSoft: file.Spawn.MaxSessionsSoft, rawHard: file.Spawn.MaxSessionsHard,
 			softEnv: getenv(EnvMaxSessions), hardEnv: getenv(EnvMaxSessionsHard),
 			defaultSoft: DefaultMaxSessions, defaultHard: DefaultMaxSessionsHard,
 		},
 		{
-			name: AxisHeadless, rawSoft: file.Spawn.MaxHeadless, rawHard: file.Spawn.MaxHeadlessHard,
+			name: AxisHeadless, rawSoft: file.Spawn.MaxHeadlessSoft, rawHard: file.Spawn.MaxHeadlessHard,
 			softEnv: getenv(EnvMaxHeadless), hardEnv: getenv(EnvMaxHeadlessHard),
 			defaultSoft: DefaultMaxHeadless, defaultHard: DefaultMaxHeadlessHard,
 		},
 		{
-			name: AxisInteractive, rawSoft: file.Spawn.MaxInteractive, rawHard: file.Spawn.MaxInteractiveHard,
+			name: AxisInteractive, rawSoft: file.Spawn.MaxInteractiveSoft, rawHard: file.Spawn.MaxInteractiveHard,
 			softEnv: getenv(EnvMaxInteractive), hardEnv: getenv(EnvMaxInteractiveHard),
 			defaultSoft: DefaultMaxInteractive, defaultHard: DefaultMaxInteractiveHard,
 		},
 		{
-			name: AxisTopicManager, rawSoft: file.Spawn.MaxTopicManagers, rawHard: file.Spawn.MaxTopicManagersHard,
+			name: AxisTopicManager, rawSoft: file.Spawn.MaxTopicManagersSoft, rawHard: file.Spawn.MaxTopicManagersHard,
 			softEnv: getenv(EnvMaxTopicManagers), hardEnv: getenv(EnvMaxTopicManagersHard),
 			defaultSoft: DefaultMaxTopicManagers, defaultHard: DefaultMaxTopicManagersHard,
 		},
 		{
-			name: AxisGoalManager, rawSoft: file.Spawn.MaxGoalManagers, rawHard: file.Spawn.MaxGoalManagersHard,
+			name: AxisGoalManager, rawSoft: file.Spawn.MaxGoalManagersSoft, rawHard: file.Spawn.MaxGoalManagersHard,
 			softEnv: getenv(EnvMaxGoalManagers), hardEnv: getenv(EnvMaxGoalManagersHard),
 			defaultSoft: DefaultMaxGoalManagers, defaultHard: DefaultMaxGoalManagersHard,
 		},
