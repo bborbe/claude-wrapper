@@ -312,6 +312,9 @@ func (s *RosterToolServer) spawnLocalAgent(
 	if err != nil {
 		return "", err
 	}
+	if err := s.refuseTerminalResume(ctx, body, cwd); err != nil {
+		return "", err
+	}
 	if err := s.enforceCaps(ctx, body, SpawnModeHeadless); err != nil {
 		return "", err
 	}
@@ -387,6 +390,106 @@ func (s *RosterToolServer) headlessCwd(
 		return "", err
 	}
 	return target.Cwd, nil
+}
+
+// terminalTaskStatus reports whether a task status means the work is over.
+//
+// `hold` and a deferred task are deliberately NOT terminal: a parked or deferred
+// worker is exactly what the park-watch resume exists to bring back, so refusing
+// those would break the leg this guard protects.
+func terminalTaskStatus(status string) bool {
+	return status == "completed" || status == "aborted"
+}
+
+// refuseTerminalResume refuses a resume whose task is already finished.
+//
+// The resume that fires in production is `spawn_agent(resume=<id>)` with no
+// `task` and no `vault` — the keepalive actor's path-A call — so the session id
+// is the only identity available, and the task is resolved by the
+// `claude_session_id:` it carries. A caller that DOES name a task is checked on
+// that too: a task file may predate the id being written, and a completed task
+// named by the caller is the same defect whether or not the id is recorded yet.
+//
+// An unresolvable id is ALLOWED with one log line. No task claims the session,
+// so there is nothing to prove terminal, and refusing would break every existing
+// path-A resume; the log line is what keeps that fail-open observable.
+func (s *RosterToolServer) refuseTerminalResume(
+	ctx context.Context,
+	body spawnAgentArgs,
+	cwd string,
+) error {
+	session := strings.TrimSpace(body.Resume)
+	if session == "" {
+		return nil
+	}
+	ref := s.taskForResume(ctx, body, cwd)
+	if ref == nil {
+		// One line, and it asserts no CAUSE: the vault list may have been
+		// unreadable or simply held no match, and a message naming the wrong one
+		// would send a reader looking in the wrong place.
+		log.Printf(
+			"resume guard: no task could be resolved for session %s — allowing the "+
+				"resume unresolved",
+			session,
+		)
+		return nil
+	}
+	if !terminalTaskStatus(ref.Status) {
+		return nil
+	}
+	return errors.Wrapf(
+		ctx,
+		ErrTaskTerminal,
+		"resume of session %s refused: its task %q in vault %q is %s, and a finished "+
+			"task must not be handed a live worker again — closing is the fleet's only "+
+			"way to reclaim a spawn slot",
+		session,
+		ref.Title,
+		ref.Vault,
+		ref.Status,
+	)
+}
+
+// taskForResume resolves the task a resumed session belongs to, or nil.
+//
+// The session id is asked first and is authoritative: it names the conversation
+// being continued. The named task is a SECOND signal for a caller that supplies
+// one — a task file may predate its `claude_session_id:` being written — so both
+// are consulted rather than one.
+func (s *RosterToolServer) taskForResume(
+	ctx context.Context,
+	body spawnAgentArgs,
+	cwd string,
+) *TaskRef {
+	var vaults []Vault
+	if s.Vaults != nil {
+		listed, err := s.Vaults.List(ctx)
+		if err != nil {
+			log.Printf(
+				"resume guard: the vault list is unreadable (%v) — allowing session %s "+
+					"unresolved rather than guessing a status",
+				err,
+				body.Resume,
+			)
+			return nil
+		}
+		vaults = listed
+	}
+	if ref := TaskBySessionID(ctx, vaults, body.Resume); ref != nil {
+		return ref
+	}
+	if strings.TrimSpace(body.Task) == "" {
+		return nil
+	}
+	vault, err := s.vaultFor(ctx, body, cwd)
+	if err != nil || vault == nil {
+		return nil
+	}
+	status := TaskStatus(vault.Path, body.Task)
+	if status == "" {
+		return nil
+	}
+	return &TaskRef{Title: body.Task, Status: status, Vault: vault.Name}
 }
 
 // headlessModel returns the model a headless spawn must pass to the child.

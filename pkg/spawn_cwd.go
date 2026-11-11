@@ -427,6 +427,36 @@ func LauncherModel(launcher string) string {
 	return ParseLauncherModel(string(raw))
 }
 
+// taskFolders are the vault folders a task file may live in, in lookup order.
+//
+// `25 Tasks` is the current folder; `24 Tasks` is kept because an older vault
+// still uses it, and a wrong folder must not silently disable a lookup.
+var taskFolders = []string{"25 Tasks", "24 Tasks"}
+
+// taskText returns a task file's text, or "" when no vault folder holds it.
+//
+// The title reaches this from the spawn body, so a separator or `..` is refused
+// rather than joined: a caller-supplied name must not read outside the vault's
+// own task folder.
+func taskText(vaultPath, task string) string {
+	title := strings.TrimSpace(task)
+	root := strings.TrimSpace(vaultPath)
+	if title == "" || root == "" {
+		return ""
+	}
+	if strings.ContainsAny(title, `/\`) || hasDotDotSegment(title) {
+		return ""
+	}
+	for _, folder := range taskFolders {
+		raw, err := os.ReadFile(filepath.Join(root, folder, title+".md"))
+		if err != nil {
+			continue
+		}
+		return string(raw)
+	}
+	return ""
+}
+
 // TaskLauncher returns the launcher a task names in its own `launcher:`
 // frontmatter, or "" when it names none.
 //
@@ -435,21 +465,103 @@ func LauncherModel(launcher string) string {
 // headless arm can honour. The lookup is by file name under the vault's task
 // folder because the spawn body carries the task TITLE (`task`), not a path.
 func TaskLauncher(vaultPath, task string) string {
-	title := strings.TrimSpace(task)
-	root := strings.TrimSpace(vaultPath)
-	if title == "" || root == "" {
-		return ""
+	return frontmatterValue(taskText(vaultPath, task), "launcher")
+}
+
+// TaskStatus returns the `status:` a task declares in its own frontmatter, or ""
+// when the task cannot be read.
+//
+// Empty is deliberately not folded into a verdict here: the caller decides what
+// an absent status means, and hiding that decision would make an unreadable task
+// look like a considered answer.
+func TaskStatus(vaultPath, task string) string {
+	return frontmatterValue(taskText(vaultPath, task), "status")
+}
+
+// TaskRef is a task file a lookup resolved: its title, its `status:` and the
+// vault it was found in.
+type TaskRef struct {
+	Title  string
+	Status string
+	Vault  string
+}
+
+// TaskBySessionID returns the task whose `claude_session_id:` names sessionID,
+// or nil when no configured vault holds one.
+//
+// The session id is the only identity a resume carries in production: the
+// keepalive actor calls `spawn_agent(resume=…)` with no `task` and no `vault`, so
+// a guard that read only a named task would never fire on the path that matters.
+// The task folders are scanned by file because nothing writes an index, and a
+// stale index would answer for a session id that has since moved.
+//
+// ⚠️ A full scan is not free: 11 281 task files measured ~1.2 s cold on
+// 2026-11-11, dominated by one open() per file rather than by bytes read. That is
+// paid once per headless resume, never per turn. The ctx check is what bounds it:
+// a cancelled or timed-out spawn stops scanning instead of holding the handler.
+func TaskBySessionID(ctx context.Context, vaults []Vault, sessionID string) *TaskRef {
+	id := strings.TrimSpace(sessionID)
+	if id == "" {
+		return nil
 	}
-	// `25 Tasks` is the current folder; `24 Tasks` is kept because an older vault
-	// still uses it, and a wrong folder must not silently disable the field.
-	for _, folder := range []string{"25 Tasks", "24 Tasks"} {
-		raw, err := os.ReadFile(filepath.Join(root, folder, title+".md"))
+	for _, vault := range vaults {
+		if ref := taskRefInVault(ctx, vault, id); ref != nil {
+			return ref
+		}
+	}
+	return nil
+}
+
+// taskRefInVault returns the task in one vault whose id matches, or nil.
+func taskRefInVault(ctx context.Context, vault Vault, id string) *TaskRef {
+	root := strings.TrimSpace(vault.Path)
+	if root == "" {
+		return nil
+	}
+	for _, folder := range taskFolders {
+		if ref := taskRefIn(ctx, filepath.Join(root, folder), vault.Name, id); ref != nil {
+			return ref
+		}
+	}
+	return nil
+}
+
+// taskRefIn returns the task in dir whose `claude_session_id:` names id, or nil.
+//
+// An unreadable directory is nil rather than an error: a vault with no task
+// folder simply holds no task for this session, and the caller's question is
+// "does one claim it", not "is every vault well formed".
+//
+// The ctx check sits INSIDE the file loop, not around it: the loop is where the
+// scan actually spends its time, so a check that only ran between folders would
+// let a cancelled spawn finish reading all 11 281 files before noticing.
+func taskRefIn(ctx context.Context, dir, vaultName, id string) *TaskRef {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			continue
 		}
-		return frontmatterValue(string(raw), "launcher")
+		text := string(raw)
+		if frontmatterValue(text, "claude_session_id") != id {
+			continue
+		}
+		return &TaskRef{
+			Title:  strings.TrimSuffix(entry.Name(), ".md"),
+			Status: frontmatterValue(text, "status"),
+			Vault:  vaultName,
+		}
 	}
-	return ""
+	return nil
 }
 
 // TaskLauncherModel returns the model the task's own launcher names, or "".

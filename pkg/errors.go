@@ -98,4 +98,12 @@ var (
 	// Never defaulted to the bare `claude` binary: that routes around the router
 	// env, the MCP config and the model selection every cc-* script carries.
 	ErrNoLauncher = stderrors.New("no launcher")
+	// ErrTaskTerminal is returned when a resume targets a conversation whose task
+	// is already `completed` or `aborted`.
+	//
+	// A resume that reopens finished work silently undoes the close that reclaimed
+	// its spawn slot, so the refusal is the close's counterpart rather than a
+	// nicety — and it is a sentinel so a caller can tell it from a transport
+	// failure that happened to mention a task.
+	ErrTaskTerminal = stderrors.New("task-terminal")
 )
