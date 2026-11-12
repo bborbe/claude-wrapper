@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **a child with no resolved model now falls back to the `cc-private-deepseek` launcher's model instead of Claude Code's default.** A headless child is a bare `claude --print`; when caller, task and vault launcher all resolved nothing (and always on `spawn_session`, which passed `model` raw), no `--model` reached it and it inherited settings.json's `claude-opus-5-5`, which the router sends to the Anthropic subscription. Measured 2026-11-12: one live headless worker with no `--model` among workers all carrying `deepseek-v4-flash-max[1m]`. `startChild` now resolves through `resolveChildModel` before the session record is stored, and logs a WARNING when even the fallback launcher is unreadable.
+
 ## v0.22.0
 
 - fix: **`spawn_agent` now refuses `role: agent` + `interactive: true` instead of opening a tab.** The 2026-11-12 operator ruling is that all agents are headless and only interactive and manager rows open tabs; the docs and the ledger gate said so, but nothing structurally prevented a spawn site from passing `interactive: true` for an agent row. The refusal lives in `spawnLocalTarget` — the local branch that resolves the mode — and is keyed on the caller's `role` **argument**, never on the resolved role: an absent `role` resolves to `agent` (`DefaultRole`), so keying on the resolution would also refuse the documented debug hatch and every pre-role caller. The paired spec pins that discriminator — explicit `role: agent` refuses, an absent `role` still opens, and `role: human` still opens — so a resolved-role implementation fails it. It fires before `resolveSpawnMode` and before any worker or ledger row exists. The A2A (`docker`/`k8s`) branch is unchanged and stays a separate refusal site. Change set: `pkg/roster_mcp.go`, `pkg/roster_role_test.go`, `CHANGELOG.md`.
