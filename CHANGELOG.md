@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.22.1
 
 - fix: **a child with no resolved model now falls back to the `cc-private-deepseek` launcher's model instead of Claude Code's default.** A headless child is a bare `claude --print`; when caller, task and vault launcher all resolved nothing (and always on `spawn_session`, which passed `model` raw), no `--model` reached it and it inherited settings.json's `claude-opus-5-5`, which the router sends to the Anthropic subscription. Measured 2026-11-12: one live headless worker with no `--model` among workers all carrying `deepseek-v4-flash-max[1m]`. `startChild` now resolves through `resolveChildModel` before the session record is stored, and logs a WARNING when even the fallback launcher is unreadable.
 
