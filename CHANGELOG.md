@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.21.1
 
 - fix: **the flagged tick's log line now carries `reasons=`, and its predicate timeout is 25 minutes.** Measured 2026-11-12: ten consecutive ticks logged `opened=0 refused=4..33 skipped=6..29 rows=` while a live `flagged-rows.py` capture offered **twelve eligible ABSENT task rows**, all with `refused: []`. The reason strings were already computed per row and then dropped by `Line()`, so the one artifact the operator reads could not say why a tick refused anything — the counts tracked the number of attempted spawns, which is consistent with every `Spawn` call failing but could not be confirmed. `reasons=` (capped at five entries, first failure first) makes the cause readable. The timeout was also raised from 10 minutes after a tick was killed at that bound on 2026-11-12 10:15; the predicate walks every vault's task pages and its cost tracks fleet size. 25 minutes is deliberately larger than the interval — the loop is sequential, so an overrun delays the next tick rather than overlapping it, and a slow read is a liveness delay while a killed read is a tick that did nothing.
 
