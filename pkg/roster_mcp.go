@@ -1354,6 +1354,23 @@ func (s *RosterToolServer) spawnLocalTarget(
 			body.Target,
 		)
 	}
+	// A `role: agent` row is headless always — the 2026-11-12 operator ruling is
+	// that all agents are headless and only interactive and manager rows open
+	// tabs. The guard is keyed on the CALLER'S `role` ARGUMENT, never on the
+	// resolved role: an absent `role` resolves to `agent` (DefaultRole), so
+	// keying on the resolution would also refuse the documented debug hatch and
+	// every pre-role caller. Keying on the argument refuses exactly the explicit
+	// `role: agent` + `interactive: true` call the ruling forbids.
+	if strings.TrimSpace(body.Role) == RoleAgent &&
+		body.Interactive != nil && *body.Interactive {
+		return "", errors.Errorf(
+			ctx,
+			"`role: agent` is headless always — the operator ruling is that all agents "+
+				"are headless and only interactive and manager rows open tabs. Omit "+
+				"`interactive`, or set it false, for an agent worker; use `role: human` or "+
+				"`role: manager` if this really is a tab",
+		)
+	}
 	// The mode goes through the node's FULL chain (`resolveSpawnMode`): the
 	// explicit `interactive` argument, then SUPERVISOR_SPAWN_MODE, then
 	// `spawn.mode` in the config file, then the `interactive` default. An earlier
