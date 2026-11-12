@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.22.2
 
 - fix: **the flagged tick only opens `ABSENT` rows, and reads the predicate off its critical path.** Two defects, both found by running it rather than by any test.
   **Eligibility:** `decision()` skipped only `liveness: LIVE`, so `none` and `UNKNOWN` were eligible too — a row the predicate could not classify would have been opened, and a running row could be opened twice. `--no-liveness` reports `none` for every row, so the permissive form would have reopened the entire fleet. The spec says "for each ABSENT row"; only `ABSENT` is eligible now, with `not-absent` as its own skip reason so the log distinguishes "could not classify" from "definitely running".
