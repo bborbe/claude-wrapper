@@ -1366,8 +1366,8 @@ func (s *RosterToolServer) spawnLocalTarget(
 		return "", errors.Errorf(
 			ctx,
 			"`role: agent` is headless always — the operator ruling is that all agents "+
-				"are headless and only interactive and manager rows open tabs. Omit "+
-				"`interactive`, or set it false, for an agent worker; use `role: human` or "+
+				"are headless and only interactive and manager rows open tabs. Set "+
+				"`interactive: false` for an agent worker; use `role: human` or "+
 				"`role: manager` if this really is a tab",
 		)
 	}
