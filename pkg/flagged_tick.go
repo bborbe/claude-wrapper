@@ -48,10 +48,14 @@ const (
 	// test input.
 	recentlySpawnedWindow = 60 * time.Minute
 
-	// predicateTimeout bounds one predicate read. The real script measured ~2
-	// minutes against the vaults, so a hung read must be abandoned rather than
-	// stalling every later tick on a single goroutine.
-	predicateTimeout = 2 * time.Minute
+	// predicateTimeout bounds one predicate read.
+	//
+	// ⚠️ Measured, not estimated: the deployed predicate did NOT return inside
+	// two minutes on 2026-11-12 — the first live tick was killed at the old
+	// 2-minute bound and logged `run python3 failed: signal: killed`. It walks
+	// every configured vault's task pages, so its runtime scales with the fleet's
+	// size. 10 minutes leaves headroom while staying under the 15-minute interval.
+	predicateTimeout = 10 * time.Minute
 )
 
 // The refusal and skip reasons, named so the log line is greppable and so a

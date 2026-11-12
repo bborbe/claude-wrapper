@@ -16,10 +16,10 @@ zero value **silently**, opening or refusing the wrong rows with no error.
 | Source | `scripts/flagged-rows.py`, in the `claude-supervisor` repo |
 | Deployed copy | `scripts/flagged-rows.py` under the claude-supervisor marketplace clone |
 | Invocation | `<python3> <script> --json`; `--flagged-rows-script` sets the path |
-| Cost | ~2 minutes against the real vaults |
+| Cost | several minutes — it walks every vault's task pages, so it scales with fleet size. Measured over 2 minutes on 2026-11-12. |
 | Ownership | `claude-supervisor` — read-only from this repo |
 
-The tick bounds the read with a timeout (`predicateTimeout`, 2 minutes) and
+The tick bounds the read with a timeout (`predicateTimeout`, 10 minutes) and
 abandons a hung read rather than stalling every later tick.
 
 ## Fields the tick consumes
