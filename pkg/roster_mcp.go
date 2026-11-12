@@ -569,8 +569,9 @@ func (s *RosterToolServer) taskForResume(
 // default model while every interactive tab read deepseek, because nothing ever
 // passed `--model`.
 //
-// "" means no model could be resolved, and the child keeps its own default —
-// never a guess, for the same reason ParseLauncherModel refuses one.
+// "" means no model could be resolved here; startChild then falls back to
+// fallbackModelLauncher's model rather than leaving the child on Claude Code's
+// default.
 func (s *RosterToolServer) headlessModel(
 	ctx context.Context,
 	body spawnAgentArgs,

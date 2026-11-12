@@ -848,6 +848,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	if err != nil {
 		return nil, err
 	}
+	options.Model = childModel(id, options.Model)
 	mcpConfig, err := writeMCPConfig(ctx, id, s.selfURL, s.childHold())
 	if err != nil {
 		return nil, err
@@ -1032,6 +1033,40 @@ func holdArgs(hold time.Duration) []string {
 		return nil
 	}
 	return []string{"--mcp-hold", hold.String()}
+}
+
+// fallbackModelLauncher names the launcher whose model a child runs on when no
+// caller, task or vault launcher resolved one.
+//
+// A child is a bare `claude --print`, so with no `--model` it takes Claude
+// Code's own default from settings.json, which the router sends to the
+// Anthropic subscription rather than deepseek. Measured 2026-11-12: a headless
+// worker with no `--model` sent `claude-opus-5-5` while every other worker
+// carried `deepseek-v4-flash-max[1m]`. Deliberately global — it applies only
+// when every narrower source resolved nothing.
+const fallbackModelLauncher = "cc-private-deepseek"
+
+// resolveChildModel returns model, or fallbackLauncher's model when model is
+// blank. "" only when the fallback launcher cannot be read either.
+func resolveChildModel(model, fallbackLauncher string) string {
+	if model = strings.TrimSpace(model); model != "" {
+		return model
+	}
+	return LauncherModel(fallbackLauncher)
+}
+
+// childModel resolves the model a spawn passes to its child and warns when
+// none resolved, since that child silently runs on Claude Code's default.
+func childModel(id, model string) string {
+	resolved := resolveChildModel(model, fallbackModelLauncher)
+	if resolved == "" {
+		log.Printf(
+			"WARNING: spawn %s: no model resolved (fallback launcher %q unreadable); child runs on Claude Code's default",
+			id,
+			fallbackModelLauncher,
+		)
+	}
+	return resolved
 }
 
 // buildArgs pins the flags the wrapper depends on. The stream formats are
