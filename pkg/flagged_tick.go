@@ -50,12 +50,16 @@ const (
 
 	// predicateTimeout bounds one predicate read.
 	//
-	// ⚠️ Measured, not estimated: the deployed predicate did NOT return inside
-	// two minutes on 2026-11-12 — the first live tick was killed at the old
-	// 2-minute bound and logged `run python3 failed: signal: killed`. It walks
-	// every configured vault's task pages, so its runtime scales with the fleet's
-	// size. 10 minutes leaves headroom while staying under the 15-minute interval.
-	predicateTimeout = 10 * time.Minute
+	// ⚠️ Twice raised from measurement, not estimate. At 2 minutes the first live
+	// tick was killed (`run python3 failed: signal: killed`); at 10 minutes a tick
+	// was killed again on 2026-11-12 10:15. The predicate walks every configured
+	// vault's task pages, so its cost tracks fleet size and keeps growing.
+	//
+	// 25 minutes is deliberately larger than the tick interval: the loop is
+	// sequential, so an overrun delays the NEXT tick rather than overlapping it,
+	// and a slow read is a liveness delay while a killed read is a tick that did
+	// nothing at all. The bound exists to abandon a hung read, never a slow one.
+	predicateTimeout = 25 * time.Minute
 )
 
 // The refusal and skip reasons, named so the log line is greppable and so a
@@ -84,11 +88,38 @@ type FlaggedTickResult struct {
 // `rows=` is the field the liveness measurement pairs against a reaper close: a
 // count alone cannot be matched to a session, so the keys are part of the line
 // rather than a second line a caller might not write.
+//
+// `reasons=` exists because counts alone are undiagnosable. Measured 2026-11-12:
+// the deployed tick logged `opened=0 refused=17..33` across ten ticks while the
+// predicate offered twelve eligible ABSENT rows, and nothing in the line said
+// why — the reason strings were already computed per row and then dropped here.
+// Capped so a large fleet cannot produce a megabyte line; the head of the list
+// carries the cause because the first failure is what stops a tick.
 func (r FlaggedTickResult) Line() string {
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"flagged-tick opened=%d refused=%d skipped=%d rows=%s",
 		len(r.Opened), len(r.Refused), len(r.Skipped), strings.Join(r.Opened, ","),
 	)
+	if reasons := summariseReasons(r); reasons != "" {
+		line += " reasons=" + reasons
+	}
+	return line
+}
+
+// maxLoggedReasons bounds the reasons field.
+const maxLoggedReasons = 5
+
+func summariseReasons(r FlaggedTickResult) string {
+	all := make([]string, 0, len(r.Refused)+len(r.Skipped))
+	all = append(all, r.Refused...)
+	all = append(all, r.Skipped...)
+	if len(all) == 0 {
+		return ""
+	}
+	if len(all) > maxLoggedReasons {
+		all = all[:maxLoggedReasons]
+	}
+	return strings.Join(all, "; ")
 }
 
 // FlaggedTick reopens flagged rows that have gone dark.
