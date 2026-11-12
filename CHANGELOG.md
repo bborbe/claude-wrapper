@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the flagged tick only opens `ABSENT` rows, and reads the predicate off its critical path.** Two defects, both found by running it rather than by any test.
+  **Eligibility:** `decision()` skipped only `liveness: LIVE`, so `none` and `UNKNOWN` were eligible too — a row the predicate could not classify would have been opened, and a running row could be opened twice. `--no-liveness` reports `none` for every row, so the permissive form would have reopened the entire fleet. The spec says "for each ABSENT row"; only `ABSENT` is eligible now, with `not-absent` as its own skip reason so the log distinguishes "could not classify" from "definitely running".
+  **Blocking read:** the predicate measured **18.8 minutes wall against 75 seconds of CPU** (2026-11-12) — `flagged-rows.py` probes liveness by spawning a subprocess per row and those probes time out. Reading it synchronously meant one slow read cost an entire tick, making the loop's period `read + interval` (~34 min) instead of the 15 minutes the spec names. The read now runs in its own goroutine refreshing a cached row set; the tick fires on schedule against the last good set, so a slow read costs freshness rather than a tick. A tick that fires before the first read returns logs `skipped: predicate has not returned yet` instead of blocking.
+  The probe cost itself is `claude-supervisor`'s code and is out of scope here.
+
 ## v0.22.1
 
 - fix: **a child with no resolved model now falls back to the `cc-private-deepseek` launcher's model instead of Claude Code's default.** A headless child is a bare `claude --print`; when caller, task and vault launcher all resolved nothing (and always on `spawn_session`, which passed `model` raw), no `--model` reached it and it inherited settings.json's `claude-opus-5-5`, which the router sends to the Anthropic subscription. Measured 2026-11-12: one live headless worker with no `--model` among workers all carrying `deepseek-v4-flash-max[1m]`. `startChild` now resolves through `resolveChildModel` before the session record is stored, and logs a WARNING when even the fallback launcher is unreadable.

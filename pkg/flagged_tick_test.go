@@ -201,7 +201,13 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			}, false, reasonBlocked),
 			ginkgo.Entry("live", FlaggedRow{
 				Name: "live", Liveness: "LIVE",
-			}, false, reasonAlreadyLive),
+			}, false, reasonNotAbsent),
+			ginkgo.Entry("none", FlaggedRow{
+				Name: "none", Liveness: "none",
+			}, false, reasonNotAbsent),
+			ginkgo.Entry("unknown", FlaggedRow{
+				Name: "unknown", Liveness: "UNKNOWN",
+			}, false, reasonNotAbsent),
 			ginkgo.Entry("jump", FlaggedRow{
 				Name: "jump", Liveness: "ABSENT", Branch: "jump",
 			}, false, reasonAlreadyLive),

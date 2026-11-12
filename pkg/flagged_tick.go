@@ -10,6 +10,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -66,6 +67,7 @@ const (
 // test asserts on the same string the operator reads.
 const (
 	reasonBlocked         = "blocked"
+	reasonNotAbsent       = "not-absent"
 	reasonAlreadyLive     = "already-live"
 	reasonRecentlySpawned = "recently-spawned"
 	reasonRowBudget       = "row budget"
@@ -147,20 +149,52 @@ type FlaggedTick struct {
 	Logf func(format string, args ...any)
 }
 
+// flaggedRowCache holds the most recent predicate read.
+//
+// It exists because the predicate measured 18.8 MINUTES wall against 75 seconds
+// of CPU (2026-11-12): `flagged-rows.py` probes liveness by spawning a subprocess
+// per row, and those probes time out. Reading it synchronously on the tick meant
+// one slow read cost an entire tick — the loop's period became read + interval
+// (~34 min) instead of the 15 minutes SC1 names.
+//
+// With the cache the tick always fires on schedule against the last good row set,
+// and a slow read costs freshness rather than a tick.
+type flaggedRowCache struct {
+	mutex sync.RWMutex
+	rows  []FlaggedRow
+	err   error
+	set   bool
+}
+
+func (c *flaggedRowCache) store(rows []FlaggedRow, err error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.rows, c.err, c.set = rows, err, true
+}
+
+func (c *flaggedRowCache) snapshot() (rows []FlaggedRow, err error, ok bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.rows, c.err, c.set
+}
+
 // Run ticks until the context ends.
 //
 // The first tick fires immediately rather than after one interval: a daemon that
 // restarts after a deploy should reopen what went dark during the restart, and
 // waiting a full interval to do it is a liveness gap the restart itself created.
+// Until the first read returns the tick logs `skipped` rather than blocking.
 func (t *FlaggedTick) Run(ctx context.Context) error {
 	interval := t.Interval
 	if interval <= 0 {
 		interval = DefaultFlaggedTickInterval
 	}
+	cache := &flaggedRowCache{}
+	go t.refreshLoop(ctx, cache, interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		t.tickAndLog(ctx)
+		t.tickAndLog(ctx, cache)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -169,14 +203,33 @@ func (t *FlaggedTick) Run(ctx context.Context) error {
 	}
 }
 
-// tickAndLog runs one tick and writes its single line.
-func (t *FlaggedTick) tickAndLog(ctx context.Context) {
-	result, err := t.Tick(ctx)
+// refreshLoop keeps the row set warm, off the tick's critical path.
+func (t *FlaggedTick) refreshLoop(
+	ctx context.Context, cache *flaggedRowCache, interval time.Duration,
+) {
+	for {
+		rows, err := t.readRows(ctx)
+		cache.store(rows, err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
+}
+
+// tickAndLog runs one tick against the cached row set and writes its line.
+func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
+	rows, err, ok := cache.snapshot()
+	if !ok {
+		t.logf("flagged-tick skipped: predicate has not returned yet")
+		return
+	}
 	if err != nil {
 		t.logf("flagged-tick failed: %v", err)
 		return
 	}
-	t.logf("%s", result.Line())
+	t.logf("%s", t.tickFromRows(ctx, rows).Line())
 }
 
 func (t *FlaggedTick) logf(format string, args ...any) {
@@ -193,11 +246,19 @@ func (t *FlaggedTick) logf(format string, args ...any) {
 // is the only evidence a 24 h measurement has: `refused=3` with no reasons would
 // be indistinguishable from a tick that opened nothing because it was broken.
 func (t *FlaggedTick) Tick(ctx context.Context) (FlaggedTickResult, error) {
-	var result FlaggedTickResult
 	rows, err := t.readRows(ctx)
 	if err != nil {
-		return result, err
+		return FlaggedTickResult{}, err
 	}
+	return t.tickFromRows(ctx, rows), nil
+}
+
+// tickFromRows is the decision pass, separated from the read so the running loop
+// can feed it a cached row set.
+func (t *FlaggedTick) tickFromRows(
+	ctx context.Context, rows []FlaggedRow,
+) FlaggedTickResult {
+	var result FlaggedTickResult
 	recent := t.recentlySpawned(ctx)
 	now := t.now()
 	for _, row := range orderFlaggedRows(rows) {
@@ -231,7 +292,7 @@ func (t *FlaggedTick) Tick(ctx context.Context) (FlaggedTickResult, error) {
 		}
 		result.Opened = append(result.Opened, row.Key())
 	}
-	return result, nil
+	return result
 }
 
 // readRows bounds one predicate read.
@@ -315,7 +376,18 @@ func decision(
 	if len(row.BlockedBy) > 0 {
 		return reasonBlocked, false, true
 	}
-	if row.Liveness == "LIVE" || row.Branch == "jump" {
+	// Only ABSENT is eligible.
+	//
+	// ⚠️ This used to skip only LIVE, which made `none` and `UNKNOWN` eligible
+	// too — a row the predicate could not classify would have been opened, and a
+	// row already running would have been opened a second time. The spec says
+	// "for each ABSENT row"; anything the predicate could not prove absent is
+	// left alone. `none` is what `--no-liveness` reports for every row, so the
+	// permissive form would have reopened the entire fleet.
+	if row.Liveness != "ABSENT" {
+		return reasonNotAbsent, false, true
+	}
+	if row.Branch == "jump" {
 		return reasonAlreadyLive, false, true
 	}
 	if at, ok := recent[row.SessionID]; ok && now.Sub(at) < recentlySpawnedWindow {
