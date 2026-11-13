@@ -64,3 +64,22 @@ func RunTick(ctx context.Context, interval time.Duration, tick func(context.Cont
 		}
 	}
 }
+
+// expandedDir expands a leading `~` in a default store path.
+//
+// ⚠️ `filepath.Join("~/.claude/state", "x")` does NOT expand the tilde — it
+// produces the relative path `~/.claude/state/x`, which creates a directory
+// literally named `~` under the process's working directory. Every default path
+// in this package is written with `~/`, so every one goes through here.
+//
+// It delegates to the package's existing expandHome (permissions_log.go) rather
+// than a second implementation, and falls back to the raw path when the home
+// directory cannot be resolved: a job writing to the wrong place is bad, but a
+// job panicking on start is worse.
+func expandedDir(dir string) string {
+	expanded, err := expandHome(dir)
+	if err != nil {
+		return dir
+	}
+	return expanded
+}

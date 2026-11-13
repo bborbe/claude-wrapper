@@ -213,7 +213,7 @@ func (j *StateLedgerJob) path(date string) string {
 	if dir == "" {
 		dir = DefaultStateLedgerDir
 	}
-	return filepath.Join(dir, "events-"+date+".jsonl")
+	return filepath.Join(expandedDir(dir), "events-"+date+".jsonl")
 }
 
 func (j *StateLedgerJob) now() time.Time {

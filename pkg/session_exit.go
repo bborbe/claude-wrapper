@@ -129,7 +129,7 @@ func (r *SessionExitFileRecorder) path(sid string) string {
 	if dir == "" {
 		dir = DefaultSessionExitDir
 	}
-	return filepath.Join(dir, "session-"+sid+".log")
+	return filepath.Join(expandedDir(dir), "session-"+sid+".log")
 }
 
 func (r *SessionExitFileRecorder) now() time.Time {
