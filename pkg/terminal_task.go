@@ -54,7 +54,12 @@ func (r *dirAnchoredTaskResolver) Resolve(
 		for _, path := range paths {
 			fields, err := readFrontmatter(ctx, path)
 			if err != nil {
-				return AnchoredTask{}, errors.Wrapf(ctx, err, "read task %q failed", path)
+				// A file renamed or deleted between the glob and the open (Obsidian
+				// renames) must not abort the scan for every other task.
+				if !errors.Is(err, os.ErrNotExist) {
+					log.Printf("WARNING: read task %q failed, skipped: %v", path, err)
+				}
+				continue
 			}
 			if fields["claude_session_id"] != sessionID {
 				continue
@@ -74,7 +79,7 @@ func readFrontmatter(ctx context.Context, path string) (map[string]string, error
 	// #nosec G304 -- path comes from the operator's configured task dirs
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, errors.Wrapf(ctx, err, "open failed")
+		return nil, errors.Wrap(ctx, err, "open failed")
 	}
 	defer file.Close()
 	fields := map[string]string{}
@@ -98,7 +103,7 @@ func readFrontmatter(ctx context.Context, path string) (map[string]string, error
 		fields[strings.TrimSpace(key)] = unquoteYAMLScalar(value)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, errors.Wrapf(ctx, err, "scan failed")
+		return nil, errors.Wrap(ctx, err, "scan failed")
 	}
 	// No closing delimiter: not a frontmatter block.
 	return map[string]string{}, nil
