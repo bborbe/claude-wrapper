@@ -446,7 +446,15 @@ func startFleetFaces(
 		PermissionModeLog: pkg.NewPermissionModeLog("", now),
 	})
 
-	go startFlaggedTick(ctx, flaggedTickInterval, flaggedRowsScript, tabSpawner, caps, ledger, now)
+	go startFlaggedTick(
+		ctx,
+		flaggedTickInterval,
+		flaggedRowsScript,
+		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
+		caps,
+		ledger,
+		now,
+	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
 }
@@ -488,7 +496,7 @@ func startFlaggedTick(
 	ctx context.Context,
 	interval time.Duration,
 	script string,
-	spawner pkg.TabSpawner,
+	reopener pkg.FlaggedReopener,
 	caps pkg.SpawnCaps,
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
@@ -499,7 +507,7 @@ func startFlaggedTick(
 	}
 	tick := &pkg.FlaggedTick{
 		Source:   pkg.ExecFlaggedRowsSource{Script: expandHome(script)},
-		Spawner:  spawner,
+		Reopener: reopener,
 		Caps:     caps,
 		Ledger:   ledger,
 		Now:      now,

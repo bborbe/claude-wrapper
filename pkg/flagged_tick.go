@@ -127,14 +127,17 @@ func summariseReasons(r FlaggedTickResult) string {
 // FlaggedTick reopens flagged rows that have gone dark.
 //
 // It is model-free by construction: the eligibility predicate is a script, the
-// spawn is the same TabSpawner the roster's `spawn_agent` already uses, and
-// nothing in the path asks a model to decide anything. That is the whole point —
-// the close side (launchd `idle-reaper`) is deterministic, so the reopen side
-// has to be too, or a flagged row stays dark whenever the model leg does not run.
+// reopen is the wrapper's own spawn paths, and nothing in the path asks a model
+// to decide anything. That is the whole point — the close side (launchd
+// `idle-reaper`) is deterministic, so the reopen side has to be too, or a flagged
+// row stays dark whenever the model leg does not run.
 type FlaggedTick struct {
-	Source  FlaggedRowSource
-	Spawner TabSpawner
-	Caps    SpawnCaps
+	Source FlaggedRowSource
+	// Reopener opens one row through the spawn path the row's mode names. It is a
+	// separate collaborator rather than a TabSpawner because a headless row must be
+	// RESUMED, and the tab path refuses `resume` by construction.
+	Reopener FlaggedReopener
+	Caps     SpawnCaps
 	// Ledger supplies the spawn times the recently-spawned guard reads. A nil
 	// ledger disables that guard rather than refusing every row.
 	Ledger LedgerReader
@@ -286,7 +289,7 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRateRefused+": "+err.Error())
 			break
 		}
-		if _, err := t.Spawner.Spawn(ctx, request(row)); err != nil {
+		if err := t.Reopener.Reopen(ctx, row); err != nil {
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
 			continue
 		}
@@ -311,20 +314,6 @@ func (t *FlaggedTick) readRows(ctx context.Context) ([]FlaggedRow, error) {
 		return nil, errors.Wrap(ctx, err, "read flagged rows")
 	}
 	return rows, nil
-}
-
-// request builds the spawn the row asks for.
-//
-// SpawnerSessionID stays empty on purpose: the tick is not a session, and
-// attributing its spawns to one would make a fleet round appear to have opened a
-// row it never touched.
-func request(row FlaggedRow) TabSpawnRequest {
-	return TabSpawnRequest{
-		Label:      row.Name,
-		Vault:      row.Vault,
-		Role:       row.Role,
-		ModeSource: "flagged-tick",
-	}
 }
 
 // recentlySpawned maps session id to its ledger spawn time.
