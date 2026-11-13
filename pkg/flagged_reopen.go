@@ -117,7 +117,9 @@ func (r *flaggedReopener) reopenHeadless(
 	if err := r.Supervisor.Send(ctx, session.ID, prompt); err != nil {
 		// The child is live by now. A reopen that leaves an idle process behind
 		// looks exactly like a working worker, so it is stopped rather than
-		// orphaned — the same reasoning `spawnLocalAgent` applies.
+		// orphaned — the same reasoning `spawnLocalAgent` applies. A fresh context
+		// because the caller's may already be cancelled, and the stop still has to
+		// run: this is cleanup, not work.
 		_ = r.Supervisor.Stop(context.Background(), session.ID)
 		return errors.Wrap(ctx, err, "deliver opening turn")
 	}
