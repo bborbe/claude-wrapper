@@ -236,8 +236,25 @@ func startStartupSweeper(
 	}
 }
 
-// warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised
-// --drain-bound past the point where launchd would SIGKILL the process mid-drain.
+// startIdleReaper closes headless children that rest idle past the operator's
+// 15-minute floor.
+//
+// It replaces `com.bborbe.idle-reaper` + `idle-reaper-tick.py`. Running inside
+// the process that holds the child removes the two things the external tick
+// could not fix: it had to read a registry to learn a state this process
+// already knows, and it could only act on a 900 s boundary.
+//
+// A stopped reaper is a warning, not a fatal: the daemon's other faces keep
+// serving, and a silent idle floor is exactly the failure the measured 8-25
+// minute lag came from — so it is named in the log rather than swallowed.
+func startIdleReaper(ctx context.Context, supervisor pkg.Supervisor) {
+	job := &pkg.IdleReaperJob{Supervisor: supervisor}
+	if err := job.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("WARNING: idle reaper stopped: %v", err)
+	}
+}
+
+// warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised// --drain-bound past the point where launchd would SIGKILL the process mid-drain.
 //
 // The bound is a flag, so nothing else keeps the drain and the shutdown grace
 // inside launchd's exit timeout — and a silent overrun turns a drain into a kill
@@ -457,6 +474,11 @@ func startFleetFaces(
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
+
+	// The idle floor, moved off launchd. The daemon holds the exact moment a
+	// child went idle, so the interval is only the worst-case lag past the floor,
+	// never the trigger.
+	go startIdleReaper(ctx, supervisor)
 }
 
 // startBoardDelivery runs the board arms: one process reads the store for every
