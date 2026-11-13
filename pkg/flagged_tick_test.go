@@ -42,6 +42,107 @@ func (s *recordingSpawner) snapshot() []TabSpawnRequest {
 	return out
 }
 
+// recordingReopener records every row it is asked to reopen.
+//
+// The tick's own tests use this rather than a spawner because the decision pass
+// is what they cover; the spawn REQUEST is asserted against the reopener below,
+// which is where the empty-`prompt` defect lived.
+type recordingReopener struct {
+	mutex sync.Mutex
+	rows  []FlaggedRow
+	err   error
+}
+
+func (r *recordingReopener) Reopen(_ context.Context, row FlaggedRow) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.rows = append(r.rows, row)
+	return r.err
+}
+
+func (r *recordingReopener) snapshot() []FlaggedRow {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	out := make([]FlaggedRow, len(r.rows))
+	copy(out, r.rows)
+	return out
+}
+
+// recordingSupervisor records the headless spawn it was handed.
+type recordingSupervisor struct {
+	mutex     sync.Mutex
+	spawns    []SpawnOptions
+	sends     []string
+	stopped   []string
+	spawnErr  error
+	sendErr   error
+	sessionID string
+}
+
+func (s *recordingSupervisor) Spawn(
+	_ context.Context, options SpawnOptions,
+) (*Session, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.spawns = append(s.spawns, options)
+	if s.spawnErr != nil {
+		return nil, s.spawnErr
+	}
+	id := s.sessionID
+	if id == "" {
+		id = "spawned"
+	}
+	return &Session{ID: id}, nil
+}
+
+func (s *recordingSupervisor) Send(_ context.Context, id string, text string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.sends = append(s.sends, id+": "+text)
+	return s.sendErr
+}
+
+func (s *recordingSupervisor) Stop(_ context.Context, id string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.stopped = append(s.stopped, id)
+	return nil
+}
+
+func (s *recordingSupervisor) snapshot() []SpawnOptions {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	out := make([]SpawnOptions, len(s.spawns))
+	copy(out, s.spawns)
+	return out
+}
+
+func (s *recordingSupervisor) sent() []string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	out := make([]string, len(s.sends))
+	copy(out, s.sends)
+	return out
+}
+
+// staticVaults answers a fixed vault list.
+type staticVaults struct {
+	vaults []Vault
+	err    error
+}
+
+func (v staticVaults) List(_ context.Context) ([]Vault, error) {
+	return v.vaults, v.err
+}
+
+func testVaults() staticVaults {
+	return staticVaults{vaults: []Vault{{
+		Name:           "private-personal",
+		Path:           "/tmp/vault-private-personal",
+		WorkerLauncher: "cc-private",
+	}}}
+}
+
 // recordingCaps records the arguments every cap call received.
 type recordingCaps struct {
 	mutex       sync.Mutex
@@ -164,13 +265,13 @@ func rowWith(role, mode, name string) FlaggedRow {
 	}
 }
 
-func newTick(source FlaggedRowSource, spawner TabSpawner, caps SpawnCaps) *FlaggedTick {
+func newTick(source FlaggedRowSource, reopener FlaggedReopener, caps SpawnCaps) *FlaggedTick {
 	return &FlaggedTick{
-		Source:  source,
-		Spawner: spawner,
-		Caps:    caps,
-		Now:     fixedNow(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)),
-		Logf:    func(string, ...any) {},
+		Source:   source,
+		Reopener: reopener,
+		Caps:     caps,
+		Now:      fixedNow(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)),
+		Logf:     func(string, ...any) {},
 	}
 }
 
@@ -227,15 +328,15 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 				rows[i] = rowWith("agent", "headless", "row")
 				rows[i].SessionID = string(rune('a'+i%26)) + string(rune('0'+i/26))
 			}
-			spawner := &recordingSpawner{}
+			reopener := &recordingReopener{}
 			caps := &recordingCaps{}
-			result, err := newTick(staticSource{rows: rows}, spawner, caps).Tick(context.Background())
+			result, err := newTick(staticSource{rows: rows}, reopener, caps).Tick(context.Background())
 			gomega.Expect(err).To(gomega.BeNil())
 			ginkgo.GinkgoWriter.Printf(
-				"opened=%d refused=%d spawns=%d\n",
-				len(result.Opened), len(result.Refused), len(spawner.snapshot()),
+				"opened=%d refused=%d reopens=%d\n",
+				len(result.Opened), len(result.Refused), len(reopener.snapshot()),
 			)
-			gomega.Expect(spawner.snapshot()).To(gomega.HaveLen(maxRowsPerTick))
+			gomega.Expect(reopener.snapshot()).To(gomega.HaveLen(maxRowsPerTick))
 			gomega.Expect(result.Opened).To(gomega.HaveLen(maxRowsPerTick))
 			gomega.Expect(result.Refused).To(gomega.HaveLen(10))
 		})
@@ -248,13 +349,13 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 				rowWith("manager", "headless", "manager-row"),
 				rowWith("human", "interactive", "human-row"),
 			}
-			spawner := &recordingSpawner{}
-			_, err := newTick(staticSource{rows: rows}, spawner, &recordingCaps{}).
+			reopener := &recordingReopener{}
+			_, err := newTick(staticSource{rows: rows}, reopener, &recordingCaps{}).
 				Tick(context.Background())
 			gomega.Expect(err).To(gomega.BeNil())
-			requests := spawner.snapshot()
-			ginkgo.GinkgoWriter.Printf("first=%s\n", requests[0].Label)
-			gomega.Expect(requests[0].Label).To(gomega.Equal("human-row"))
+			requests := reopener.snapshot()
+			ginkgo.GinkgoWriter.Printf("first=%s\n", requests[0].Name)
+			gomega.Expect(requests[0].Name).To(gomega.Equal("human-row"))
 			gomega.Expect(requests).To(gomega.HaveLen(3))
 		})
 	})
@@ -266,25 +367,25 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 				rowWith("agent", "headless", "two"),
 				rowWith("agent", "headless", "three"),
 			}
-			spawner := &recordingSpawner{}
+			reopener := &recordingReopener{}
 			caps := &recordingCaps{workerErr: stderrors.New("maxConcurrent reached")}
-			result, err := newTick(staticSource{rows: rows}, spawner, caps).
+			result, err := newTick(staticSource{rows: rows}, reopener, caps).
 				Tick(context.Background())
 			gomega.Expect(err).To(gomega.BeNil())
-			ginkgo.GinkgoWriter.Printf("spawns=%d refused=%d\n",
-				len(spawner.snapshot()), len(result.Refused))
-			gomega.Expect(spawner.snapshot()).To(gomega.BeEmpty())
+			ginkgo.GinkgoWriter.Printf("reopens=%d refused=%d\n",
+				len(reopener.snapshot()), len(result.Refused))
+			gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
 			gomega.Expect(result.Refused).To(gomega.HaveLen(1))
 		})
 
 		ginkgo.It("spawns nothing when ReserveStart refuses", func() {
 			rows := []FlaggedRow{rowWith("agent", "headless", "one")}
-			spawner := &recordingSpawner{}
+			reopener := &recordingReopener{}
 			caps := &recordingCaps{rateErr: stderrors.New("maxStartsPerMinute reached")}
-			result, err := newTick(staticSource{rows: rows}, spawner, caps).
+			result, err := newTick(staticSource{rows: rows}, reopener, caps).
 				Tick(context.Background())
 			gomega.Expect(err).To(gomega.BeNil())
-			gomega.Expect(spawner.snapshot()).To(gomega.BeEmpty())
+			gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
 			gomega.Expect(result.Refused).To(gomega.HaveLen(1))
 		})
 	})
@@ -296,7 +397,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 				rowWith("human", "interactive", "i"),
 			}
 			caps := &recordingCaps{}
-			_, err := newTick(staticSource{rows: rows}, &recordingSpawner{}, caps).
+			_, err := newTick(staticSource{rows: rows}, &recordingReopener{}, caps).
 				Tick(context.Background())
 			gomega.Expect(err).To(gomega.BeNil())
 			modes := caps.modes()
@@ -309,7 +410,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 	ginkgo.Describe("cancels a slow predicate", func() {
 		ginkgo.It("returns context.Canceled rather than hanging", func() {
 			ctx, cancel := context.WithCancel(context.Background())
-			tick := newTick(blockingSource{}, &recordingSpawner{}, &recordingCaps{})
+			tick := newTick(blockingSource{}, &recordingReopener{}, &recordingCaps{})
 			tick.Interval = 10 * time.Millisecond
 			done := make(chan error, 1)
 			go func() { done <- tick.Run(ctx) }()
@@ -325,7 +426,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 	ginkgo.Describe("abandons a hanging predicate", func() {
 		ginkgo.It("keeps ticking after an abandoned read", func() {
 			source := &countingSource{block: true}
-			tick := newTick(source, &recordingSpawner{}, &recordingCaps{})
+			tick := newTick(source, &recordingReopener{}, &recordingCaps{})
 			tick.Interval = 10 * time.Millisecond
 			tick.ReadTimeout = 5 * time.Millisecond
 			ctx, cancel := context.WithCancel(context.Background())
@@ -368,12 +469,83 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 		})
 	})
 
+	ginkgo.Describe("reopens a row through the spawn path its mode names", func() {
+		// ⚠️ Regression: the tick used to hand the tab spawner a request with no
+		// `prompt`, which it refuses before any side effect. Every eligible row
+		// therefore failed with `prompt is required: invalid spawn options` and
+		// `opened` was zero for the tick's entire history. These cases assert the
+		// request the spawner actually validates, not that a fake was called.
+		newReopener := func(
+			supervisor *recordingSupervisor, spawner *recordingSpawner,
+		) FlaggedReopener {
+			return NewFlaggedReopener(supervisor, spawner, testVaults())
+		}
+
+		ginkgo.It("resumes a headless row by its session id and sends the work turn", func() {
+			supervisor := &recordingSupervisor{sessionID: "resumed"}
+			spawner := &recordingSpawner{}
+			row := rowWith("agent", "headless", "Some Task")
+			row.SessionID = "abc-123"
+			gomega.Expect(newReopener(supervisor, spawner).Reopen(context.Background(), row)).
+				To(gomega.BeNil())
+
+			spawns := supervisor.snapshot()
+			sent := supervisor.sent()
+			ginkgo.GinkgoWriter.Printf("resume=%q sent=%v tabSpawns=%d\n",
+				spawns[0].Resume, sent, len(spawner.snapshot()))
+			gomega.Expect(spawns).To(gomega.HaveLen(1))
+			gomega.Expect(spawns[0].Resume).To(gomega.Equal("abc-123"))
+			gomega.Expect(spawner.snapshot()).To(gomega.BeEmpty())
+			gomega.Expect(sent).To(gomega.HaveLen(1))
+			gomega.Expect(sent[0]).To(gomega.ContainSubstring(`/vault-cli:work-on-task "Some Task"`))
+		})
+
+		ginkgo.It("creates a headless row that has no session id", func() {
+			supervisor := &recordingSupervisor{}
+			row := rowWith("agent", "headless", "Some Task")
+			gomega.Expect(newReopener(supervisor, &recordingSpawner{}).
+				Reopen(context.Background(), row)).To(gomega.BeNil())
+
+			spawns := supervisor.snapshot()
+			gomega.Expect(spawns).To(gomega.HaveLen(1))
+			gomega.Expect(spawns[0].Resume).To(gomega.BeEmpty())
+			gomega.Expect(supervisor.sent()).To(gomega.HaveLen(1))
+		})
+
+		ginkgo.It("hands a tab row a non-empty prompt", func() {
+			supervisor := &recordingSupervisor{}
+			spawner := &recordingSpawner{}
+			row := rowWith("human", "interactive", "Direct Task")
+			gomega.Expect(newReopener(supervisor, spawner).Reopen(context.Background(), row)).
+				To(gomega.BeNil())
+
+			requests := spawner.snapshot()
+			ginkgo.GinkgoWriter.Printf("prompt=%q\n", requests[0].Prompt)
+			gomega.Expect(requests).To(gomega.HaveLen(1))
+			gomega.Expect(requests[0].Prompt).
+				To(gomega.Equal(`/vault-cli:work-on-task "Direct Task"`))
+			gomega.Expect(supervisor.snapshot()).To(gomega.BeEmpty())
+		})
+
+		ginkgo.It("stops a headless child whose opening turn could not be delivered", func() {
+			supervisor := &recordingSupervisor{
+				sessionID: "orphan",
+				sendErr:   stderrors.New("stdin closed"),
+			}
+			row := rowWith("agent", "headless", "Some Task")
+			err := newReopener(supervisor, &recordingSpawner{}).
+				Reopen(context.Background(), row)
+			gomega.Expect(err).NotTo(gomega.BeNil())
+			gomega.Expect(supervisor.stopped).To(gomega.ConsistOf("orphan"))
+		})
+	})
+
 	ginkgo.Describe("skips a recently spawned row", func() {
 		ginkgo.It("does not open a session spawned inside the window", func() {
 			at := time.Date(2026, 11, 11, 11, 55, 0, 0, time.UTC)
 			row := rowWith("agent", "headless", "fresh")
 			row.SessionID = "fresh"
-			tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingSpawner{}, &recordingCaps{})
+			tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
 			tick.Ledger = ledgerWith{rows: []LedgerRow{
 				{SessionID: "fresh", SpawnedAt: at.Format(time.RFC3339)},
 			}}

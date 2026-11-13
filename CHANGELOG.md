@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the flagged reopen tick can actually reopen a row.** Its spawn request carried no `prompt` and no session, so `tabSpawner.Spawn` refused every eligible row before any side effect with `prompt is required: invalid spawn options` — 47 times in the daemon log between 2026-11-12 11:24 and 2026-11-13 11:15, and **zero** `opened>=1` ticks in the tick's entire history. The count-only log line made this look like a fleet with nothing to open.
+  **A headless row is now RESUMED, not tab-spawned.** The tab path refuses `resume` by construction (the `cc-*` launcher is never handed `--resume`), so a row with a `claude_session_id` opened through it would have started a fresh conversation while the tick believed it continued one. `NewFlaggedReopener` routes by the row's own mode: headless goes through `Supervisor.Spawn(Resume: …)`, tab rows keep the tab spawner, and both carry a non-empty work turn (`/vault-cli:work-on-task "<task>"`) — a resume with no turn would be idle from its first second and reaped again inside one tick.
+  The tick's tests could not catch this: their fake spawner recorded whatever request it was handed and validated nothing. The reopen now has its own recording supervisor and spawner, and the tab case asserts the prompt the real spawner validates.
+
 ## v0.22.2
 
 - fix: **the flagged tick only opens `ABSENT` rows, and reads the predicate off its critical path.** Two defects, both found by running it rather than by any test.
