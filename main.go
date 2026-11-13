@@ -236,21 +236,31 @@ func startStartupSweeper(
 	}
 }
 
-// startIdleReaper closes headless children that rest idle past the operator's
-// 15-minute floor.
+// startLifecycleJobs runs the ticks that used to be launchd jobs, now that the
+// service holds the state they poll.
 //
-// It replaces `com.bborbe.idle-reaper` + `idle-reaper-tick.py`. Running inside
-// the process that holds the child removes the two things the external tick
-// could not fix: it had to read a registry to learn a state this process
-// already knows, and it could only act on a 900 s boundary.
-//
-// A stopped reaper is a warning, not a fatal: the daemon's other faces keep
-// serving, and a silent idle floor is exactly the failure the measured 8-25
-// minute lag came from — so it is named in the log rather than swallowed.
-func startIdleReaper(ctx context.Context, supervisor pkg.Supervisor) {
-	job := &pkg.IdleReaperJob{Supervisor: supervisor}
-	if err := job.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("WARNING: idle reaper stopped: %v", err)
+// Each is started in its own goroutine and each names its own failure: a job
+// that dies must not take the others with it, and a silent one is exactly the
+// failure the measured 8-25 minute lag came from.
+func startLifecycleJobs(
+	ctx context.Context,
+	supervisor pkg.Supervisor,
+	now libtime.CurrentDateTimeGetter,
+) {
+	jobs := []interface {
+		Run(context.Context) error
+	}{
+		&pkg.IdleReaperJob{Supervisor: supervisor},
+		&pkg.StateLedgerJob{Supervisor: supervisor, Now: now},
+	}
+	for _, job := range jobs {
+		go func(j interface {
+			Run(context.Context) error
+		}) {
+			if err := j.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("WARNING: lifecycle job stopped: %v", err)
+			}
+		}(job)
 	}
 }
 
@@ -475,10 +485,9 @@ func startFleetFaces(
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
 
-	// The idle floor, moved off launchd. The daemon holds the exact moment a
-	// child went idle, so the interval is only the worst-case lag past the floor,
-	// never the trigger.
-	go startIdleReaper(ctx, supervisor)
+	// The jobs that used to run as launchd ticks. They read state this process
+	// already holds, so they live here rather than outside it.
+	startLifecycleJobs(ctx, supervisor, now)
 }
 
 // startBoardDelivery runs the board arms: one process reads the store for every
