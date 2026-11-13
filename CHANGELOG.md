@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the idle reaper runs inside the daemon.** `com.bborbe.idle-reaper` evaluated a 15-minute floor on a 900 s tick, so a headless child that went idle one second after a tick waited the whole interval before anything looked at it — measured 2026-11-13: completed workers stayed live 8.5, 10.5 and 14 minutes past their last turn. The floor now runs as a tick inside the process that already holds the child, and the interval survives only as the worst-case lag past the floor.
+  **Only a headless child is reaped.** An interactive child is a tab a person is looking at; closing it on an idle timer would take the tab away. State stays the trigger and is never derived from an age — a child inside a long tool call is silent too and stays `generating`, and reading its silence as idle is the inversion this service exists to remove. A child with `pending_turns` is skipped as well, since a turn written but not yet started still reads `idle`.
+  Every skip is a named reason in the tick's line (`not-headless`, `not-idle`, `turn-pending`, `exited`, `no-age`, `under-floor`), because `skipped=7` with no reasons would read exactly like a tick that was broken.
+
 ## v0.23.1
 
 - fix: **the flagged reopen tick can actually reopen a row.** Its spawn request carried no `prompt` and no session, so `tabSpawner.Spawn` refused every eligible row before any side effect with `prompt is required: invalid spawn options` — 47 times in the daemon log between 2026-11-12 11:24 and 2026-11-13 11:15, and **zero** `opened>=1` ticks in the tick's entire history. The count-only log line made this look like a fleet with nothing to open.
