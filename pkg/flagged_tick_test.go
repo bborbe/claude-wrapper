@@ -236,6 +236,32 @@ func (l ledgerWith) Post(context.Context, string, LedgerRow) error { return nil 
 
 func (l ledgerWith) Patch(context.Context, string, LedgerPatch) error { return nil }
 
+// recordingLedger records the rows Post was handed.
+type recordingLedger struct {
+	mutex sync.Mutex
+	rows  []LedgerRow
+	err   error
+}
+
+func (l *recordingLedger) Rows(context.Context) ([]LedgerRow, error) { return nil, l.err }
+
+func (l *recordingLedger) Post(_ context.Context, _ string, row LedgerRow) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	l.rows = append(l.rows, row)
+	return l.err
+}
+
+func (l *recordingLedger) Patch(context.Context, string, LedgerPatch) error { return nil }
+
+func (l *recordingLedger) snapshot() []LedgerRow {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	out := make([]LedgerRow, len(l.rows))
+	copy(out, l.rows)
+	return out
+}
+
 // recordingRunner records the argv it was handed and returns fixed stdout.
 type recordingRunner struct {
 	argv []string
@@ -476,34 +502,51 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 		// `opened` was zero for the tick's entire history. These cases assert the
 		// request the spawner actually validates, not that a fake was called.
 		newReopener := func(
-			supervisor *recordingSupervisor, spawner *recordingSpawner,
+			supervisor *recordingSupervisor, spawner *recordingSpawner, ledger *recordingLedger,
 		) FlaggedReopener {
-			return NewFlaggedReopener(supervisor, spawner, testVaults())
+			return NewFlaggedReopener(
+				supervisor,
+				spawner,
+				testVaults(),
+				ledger,
+				fixedNow(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)),
+			)
 		}
 
 		ginkgo.It("resumes a headless row by its session id and sends the work turn", func() {
 			supervisor := &recordingSupervisor{sessionID: "resumed"}
 			spawner := &recordingSpawner{}
+			ledger := &recordingLedger{}
 			row := rowWith("agent", "headless", "Some Task")
 			row.SessionID = "abc-123"
-			gomega.Expect(newReopener(supervisor, spawner).Reopen(context.Background(), row)).
+			gomega.Expect(newReopener(supervisor, spawner, ledger).Reopen(context.Background(), row)).
 				To(gomega.BeNil())
 
 			spawns := supervisor.snapshot()
 			sent := supervisor.sent()
-			ginkgo.GinkgoWriter.Printf("resume=%q sent=%v tabSpawns=%d\n",
-				spawns[0].Resume, sent, len(spawner.snapshot()))
+			ginkgo.GinkgoWriter.Printf("resume=%q sent=%v tabSpawns=%d ledger=%d\n",
+				spawns[0].Resume, sent, len(spawner.snapshot()), len(ledger.snapshot()))
 			gomega.Expect(spawns).To(gomega.HaveLen(1))
 			gomega.Expect(spawns[0].Resume).To(gomega.Equal("abc-123"))
 			gomega.Expect(spawner.snapshot()).To(gomega.BeEmpty())
 			gomega.Expect(sent).To(gomega.HaveLen(1))
 			gomega.Expect(sent[0]).To(gomega.ContainSubstring(`/vault-cli:work-on-task "Some Task"`))
+			// ⚠️ A headless reopen that files no ledger row is invisible to the caps
+			// AND to the tick's own recently-spawned guard, so the next tick would
+			// open a second copy of a row whose child is still starting.
+			rows := ledger.snapshot()
+			gomega.Expect(rows).To(gomega.HaveLen(1))
+			gomega.Expect(rows[0].SessionID).To(gomega.Equal("resumed"))
+			gomega.Expect(rows[0].ResumedFrom).To(gomega.Equal("abc-123"))
+			gomega.Expect(rows[0].Role).To(gomega.Equal("agent"))
+			gomega.Expect(rows[0].Mode).To(gomega.Equal(SpawnModeHeadless))
+			gomega.Expect(rows[0].SpawnedAt).To(gomega.Equal("2026-11-11T12:00:00Z"))
 		})
 
 		ginkgo.It("creates a headless row that has no session id", func() {
 			supervisor := &recordingSupervisor{}
 			row := rowWith("agent", "headless", "Some Task")
-			gomega.Expect(newReopener(supervisor, &recordingSpawner{}).
+			gomega.Expect(newReopener(supervisor, &recordingSpawner{}, &recordingLedger{}).
 				Reopen(context.Background(), row)).To(gomega.BeNil())
 
 			spawns := supervisor.snapshot()
@@ -516,7 +559,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			supervisor := &recordingSupervisor{}
 			spawner := &recordingSpawner{}
 			row := rowWith("human", "interactive", "Direct Task")
-			gomega.Expect(newReopener(supervisor, spawner).Reopen(context.Background(), row)).
+			gomega.Expect(newReopener(supervisor, spawner, &recordingLedger{}).Reopen(context.Background(), row)).
 				To(gomega.BeNil())
 
 			requests := spawner.snapshot()
@@ -533,7 +576,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 				sendErr:   stderrors.New("stdin closed"),
 			}
 			row := rowWith("agent", "headless", "Some Task")
-			err := newReopener(supervisor, &recordingSpawner{}).
+			err := newReopener(supervisor, &recordingSpawner{}, &recordingLedger{}).
 				Reopen(context.Background(), row)
 			gomega.Expect(err).NotTo(gomega.BeNil())
 			gomega.Expect(supervisor.stopped).To(gomega.ConsistOf("orphan"))

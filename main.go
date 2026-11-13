@@ -427,7 +427,7 @@ func startFleetFaces(
 		ctx,
 		flaggedTickInterval,
 		flaggedRowsScript,
-		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults),
+		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
 		caps,
 		ledger,
 		now,

@@ -6,10 +6,13 @@ package pkg
 
 import (
 	"context"
+	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 )
 
 // modeSourceFlaggedTick is the spawn-resolution step a reopen is attributed to.
@@ -48,6 +51,13 @@ type flaggedReopener struct {
 	Supervisor FlaggedReopenSupervisor
 	Spawner    TabSpawner
 	Vaults     VaultLister
+	// Ledger records the headless spawn. ⚠️ A headless spawn that files no row is
+	// invisible twice over: the fleet caps count by ledger role, and the tick's own
+	// recently-spawned guard reads this store — so an unrecorded reopen would be
+	// opened again by the next tick while its first child was still starting.
+	// The tab path files its own row inside the spawner.
+	Ledger LedgerReader
+	Now    libtime.CurrentDateTimeGetter
 }
 
 // NewFlaggedReopener wires the two spawn paths a flagged row may take.
@@ -55,8 +65,16 @@ func NewFlaggedReopener(
 	supervisor FlaggedReopenSupervisor,
 	spawner TabSpawner,
 	vaults VaultLister,
+	ledger LedgerReader,
+	now libtime.CurrentDateTimeGetter,
 ) FlaggedReopener {
-	return &flaggedReopener{Supervisor: supervisor, Spawner: spawner, Vaults: vaults}
+	return &flaggedReopener{
+		Supervisor: supervisor,
+		Spawner:    spawner,
+		Vaults:     vaults,
+		Ledger:     ledger,
+		Now:        now,
+	}
 }
 
 // Reopen opens one flagged row and gives it its first turn.
@@ -123,7 +141,45 @@ func (r *flaggedReopener) reopenHeadless(
 		_ = r.Supervisor.Stop(context.Background(), session.ID)
 		return errors.Wrap(ctx, err, "deliver opening turn")
 	}
+	r.recordSpawn(ctx, row, session)
 	return nil
+}
+
+// recordSpawn files the headless spawn's ledger row.
+//
+// A failure is logged, never returned: the spawn has already happened, and
+// refusing a live worker because the store was down would turn a store outage
+// into a row that is dark despite having a session.
+func (r *flaggedReopener) recordSpawn(
+	ctx context.Context,
+	row FlaggedRow,
+	session *Session,
+) {
+	if r.Ledger == nil {
+		return
+	}
+	if err := r.Ledger.Post(ctx, "", LedgerRow{
+		SessionID:   session.ID,
+		AgentID:     session.ID,
+		Label:       row.Name,
+		Cwd:         session.Cwd,
+		Mode:        SpawnModeHeadless,
+		ModeSource:  modeSourceFlaggedTick,
+		Role:        row.Role,
+		ResumedFrom: row.SessionID,
+		Location:    "local",
+		SpawnedAt:   r.now().Format(time.RFC3339),
+	}); err != nil {
+		log.Printf("WARNING: ledger post for reopened session %s failed: %v", session.ID, err)
+	}
+}
+
+// now is the injected clock, defaulting to the real one.
+func (r *flaggedReopener) now() time.Time {
+	if r.Now == nil {
+		return time.Now()
+	}
+	return r.Now.Now().Time()
 }
 
 // launcherMCPConfigs returns the launcher's MCP config file, or nil.
