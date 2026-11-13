@@ -178,6 +178,9 @@ type SupervisorPolicy struct {
 	// favour of this one. Nil is legal: the child runs, and only the verdict is
 	// unrecorded.
 	Ledger LedgerReader
+	// TaskResolver, when set, is consulted at every turn end: a child whose
+	// anchored task is completed or aborted is closed once idle. Nil disables it.
+	TaskResolver AnchoredTaskResolver
 }
 
 // NewSupervisorWithPolicy creates a Supervisor with an approval policy.
@@ -406,16 +409,17 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			log.Printf("WARNING: adopt session %s: policy unavailable: %v", record.ID, policyErr)
 		}
 		c := &child{
-			id:          record.ID,
-			pid:         record.ChildPID,
-			now:         s.now,
-			stdin:       files.Stdin,
-			eventsPath:  files.EventsPath,
-			subscribers: map[int]chan Event{},
-			tailDone:    make(chan struct{}),
-			policy:      policy,
-			ledger:      s.ledger,
-			ctx:         s.ctx,
+			id:           record.ID,
+			pid:          record.ChildPID,
+			now:          s.now,
+			stdin:        files.Stdin,
+			eventsPath:   files.EventsPath,
+			subscribers:  map[int]chan Event{},
+			tailDone:     make(chan struct{}),
+			policy:       policy,
+			ledger:       s.ledger,
+			ctx:          s.ctx,
+			taskResolver: s.policy.TaskResolver,
 			session: Session{
 				ID:       record.ID,
 				State:    StateStarting,
@@ -915,17 +919,18 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	}
 
 	c := &child{
-		id:          id,
-		pid:         cmd.Process.Pid,
-		now:         s.now,
-		cmd:         cmd,
-		stdin:       files.Stdin,
-		eventsPath:  files.EventsPath,
-		subscribers: map[int]chan Event{},
-		tailDone:    make(chan struct{}),
-		policy:      policy,
-		ledger:      s.ledger,
-		ctx:         s.ctx,
+		id:           id,
+		pid:          cmd.Process.Pid,
+		now:          s.now,
+		cmd:          cmd,
+		stdin:        files.Stdin,
+		eventsPath:   files.EventsPath,
+		subscribers:  map[int]chan Event{},
+		tailDone:     make(chan struct{}),
+		policy:       policy,
+		ledger:       s.ledger,
+		ctx:          s.ctx,
+		taskResolver: s.policy.TaskResolver,
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
@@ -1271,6 +1276,9 @@ type child struct {
 	// daemon stops is cancelled with it instead of outliving the process that
 	// could report it.
 	ctx context.Context
+	// taskResolver finds this session's anchored task at turn end; nil disables
+	// close-on-terminal-task.
+	taskResolver AnchoredTaskResolver
 }
 
 func (c *child) snapshot() *Session {
@@ -1653,6 +1661,7 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 		}
 		if !replayed {
 			c.recordTurnVerdict(event, c.closedTurnLocked())
+			c.checkTerminalTask()
 		}
 	}
 	c.publish(seq, Event(event))

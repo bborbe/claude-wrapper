@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: close a headless child at turn end when its anchored task is completed or aborted (opt-in via -close-on-terminal-task-dirs)
+
 ## v0.22.2
 
 - fix: **the flagged tick only opens `ABSENT` rows, and reads the predicate off its critical path.** Two defects, both found by running it rather than by any test.
