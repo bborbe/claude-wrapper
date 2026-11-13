@@ -68,7 +68,7 @@ func (r *subjectStateReader) State(
 	if sessionID == "" {
 		return "", false, nil
 	}
-	dir, err := r.workerDir()
+	dir, err := r.workerDir(ctx)
 	if err != nil {
 		return "", false, err
 	}
@@ -91,11 +91,11 @@ func (r *subjectStateReader) State(
 		return "", false, nil
 	}
 	slug := record.Branch + "--" + baseSlug(record.Subject)
-	stateDir, err := r.stateDirectory()
+	stateDir, err := r.stateDirectory(ctx)
 	if err != nil {
 		return "", true, err
 	}
-	until, ok, err := readSleepMarker(stateDir, slug)
+	until, ok, err := readSleepMarker(ctx, stateDir, slug)
 	if err != nil {
 		return "", true, err
 	}
@@ -106,25 +106,25 @@ func (r *subjectStateReader) State(
 }
 
 // workerDir resolves the worker-manager record directory.
-func (r *subjectStateReader) workerDir() (string, error) {
+func (r *subjectStateReader) workerDir(ctx context.Context) (string, error) {
 	if r.workerManagerDir != "" {
 		return r.workerManagerDir, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", errors.Wrapf(context.Background(), err, "resolve home dir failed")
+		return "", errors.Wrapf(ctx, err, "resolve home dir failed")
 	}
 	return filepath.Join(home, ".claude", "state", "worker-manager"), nil
 }
 
 // stateDirectory resolves the sweep-gate state directory.
-func (r *subjectStateReader) stateDirectory() (string, error) {
+func (r *subjectStateReader) stateDirectory(ctx context.Context) (string, error) {
 	if r.stateDir != "" {
 		return r.stateDir, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", errors.Wrapf(context.Background(), err, "resolve home dir failed")
+		return "", errors.Wrapf(ctx, err, "resolve home dir failed")
 	}
 	return filepath.Join(home, ".claude", "state", "sweep-gate"), nil
 }
@@ -134,15 +134,13 @@ func (r *subjectStateReader) stateDirectory() (string, error) {
 // An absent, empty, or unparseable marker is reported as absent, never as a
 // future instant: an unreadable sleep must not suppress a real lapse. The
 // boolean is "a future instant was recorded", the instant is that instant.
-func readSleepMarker(stateDir, slug string) (time.Time, bool, error) {
+func readSleepMarker(ctx context.Context, stateDir, slug string) (time.Time, bool, error) {
 	raw, err := os.ReadFile(filepath.Join(stateDir, slug+".sleeping"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return time.Time{}, false, nil
 		}
-		return time.Time{}, false, errors.Wrapf(
-			context.Background(), err, "read sleep marker %s", slug,
-		)
+		return time.Time{}, false, errors.Wrapf(ctx, err, "read sleep marker %s", slug)
 	}
 	text := strings.TrimSpace(string(raw))
 	if text == "" {

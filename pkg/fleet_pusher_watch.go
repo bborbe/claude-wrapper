@@ -54,7 +54,7 @@ type FleetPusherWatch struct {
 	// BootTime returns the machine's boot instant. A boot younger than MaxAge is
 	// a startup grace: the cadence has not had a chance to tick yet, so an absent
 	// or old heartbeat is expected rather than a dead agent. Nil uses sysctl.
-	BootTime func() (time.Time, error)
+	BootTime func(context.Context) (time.Time, error)
 	// Poster creates the condition card. Nil disables posting (and the spec drives
 	// the branch through a fake).
 	Poster AttentionPoster
@@ -127,7 +127,7 @@ func (w *FleetPusherWatch) Run(ctx context.Context) error {
 // stale and healthy cases are each forced by a spec rather than left as
 // unreachable code.
 func (w *FleetPusherWatch) Cycle(ctx context.Context) {
-	if grace, uptime, readable := w.withinGrace(); readable && grace {
+	if grace, uptime, readable := w.withinGrace(ctx); readable && grace {
 		w.logf("job=fleet-pusher-watch action=grace age=%ds", uptime)
 		return
 	}
@@ -178,12 +178,12 @@ func (w *FleetPusherWatch) Cycle(ctx context.Context) {
 // ok is false when the boot time cannot be read: an unreadable boot is not a
 // grace, and staying quiet on it would hide a dead cadence behind a probe
 // failure.
-func (w *FleetPusherWatch) withinGrace() (bool, int, bool) {
+func (w *FleetPusherWatch) withinGrace(ctx context.Context) (bool, int, bool) {
 	bootFn := w.BootTime
 	if bootFn == nil {
 		bootFn = systemBootTime
 	}
-	boot, err := bootFn()
+	boot, err := bootFn(ctx)
 	if err != nil || boot.IsZero() {
 		return false, 0, false
 	}
@@ -248,20 +248,18 @@ func (w *FleetPusherWatch) logf(format string, args ...any) {
 var bootSecPattern = regexp.MustCompile(`sec = (\d+)`)
 
 // systemBootTime reads the machine's boot instant from `sysctl kern.boottime`.
-func systemBootTime() (time.Time, error) {
+func systemBootTime(ctx context.Context) (time.Time, error) {
 	output, err := exec.Command("sysctl", "-n", "kern.boottime").Output()
 	if err != nil {
-		return time.Time{}, errors.Wrapf(context.Background(), err, "sysctl kern.boottime failed")
+		return time.Time{}, errors.Wrapf(ctx, err, "sysctl kern.boottime failed")
 	}
 	match := bootSecPattern.FindStringSubmatch(string(output))
 	if match == nil {
-		return time.Time{}, errors.Errorf(
-			context.Background(), "kern.boottime carried no sec: %q", string(output),
-		)
+		return time.Time{}, errors.Errorf(ctx, "kern.boottime carried no sec: %q", string(output))
 	}
 	seconds, err := strconv.ParseInt(match[1], 10, 64)
 	if err != nil {
-		return time.Time{}, errors.Wrapf(context.Background(), err, "parse boot seconds failed")
+		return time.Time{}, errors.Wrapf(ctx, err, "parse boot seconds failed")
 	}
 	return time.Unix(seconds, 0), nil
 }

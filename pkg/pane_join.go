@@ -70,17 +70,17 @@ func (j *weztermPaneJoiner) panes(ctx context.Context) (map[string]string, error
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "wezterm cli list failed")
 	}
-	return parseWeztermPanes(output)
+	return parseWeztermPanes(ctx, output)
 }
 
 // parseWeztermPanes reads the `pane_id` / `tty_name` pairs out of the list JSON.
-func parseWeztermPanes(raw []byte) (map[string]string, error) {
+func parseWeztermPanes(ctx context.Context, raw []byte) (map[string]string, error) {
 	var rows []struct {
 		PaneID  json.Number `json:"pane_id"`
 		TTYName string      `json:"tty_name"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
-		return nil, errors.Wrapf(context.Background(), err, "parse wezterm panes failed")
+		return nil, errors.Wrapf(ctx, err, "parse wezterm panes failed")
 	}
 	panes := make(map[string]string, len(rows))
 	for _, row := range rows {

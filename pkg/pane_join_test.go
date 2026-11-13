@@ -5,6 +5,8 @@
 package pkg
 
 import (
+	"context"
+
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
@@ -32,8 +34,8 @@ var _ = ginkgo.Describe("PaneJoin", func() {
 
 	ginkgo.Describe("parseWeztermPanes", func() {
 		ginkgo.It("reads pane_id and tty_name pairs", func() {
-			panes, err := parseWeztermPanes([]byte(
-				`[{"pane_id": 11, "tty_name": "/dev/ttys008"},` +
+			panes, err := parseWeztermPanes(context.Background(), []byte(
+				`[{"pane_id": 11, "tty_name": "/dev/ttys008"},`+
 					`{"pane_id": 16, "tty_name": "/dev/ttys023"}]`,
 			))
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())

@@ -56,7 +56,7 @@ func watchHarness(
 		HeartbeatPath: heartbeatPath,
 		Now:           fixedNow(now),
 		MaxAge:        30 * time.Minute,
-		BootTime: func() (time.Time, error) {
+		BootTime: func(context.Context) (time.Time, error) {
 			return boot, nil
 		},
 		Poster: poster,
