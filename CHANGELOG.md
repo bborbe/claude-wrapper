@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the fleet-pusher launchd jobs move in-process.** The 900 s wake tick and its 300 s watchdog were a bash script shelling out to four Python entry points (~2,163 lines) and resolving the newest installed cache version on every tick. Both are now interval jobs inside the daemon: the live-session read is the wrapper's own registry, the send half is the existing `SendWhenReady`, and the one piece the service did not have — the pid → tty → pane join — is ported from `plugin-version-census.py`. The guard's 13-verdict vocabulary is ported from `pane-wake-guard.py`, each verdict pinned by a spec over a screen captured with `wezterm cli get-text --escapes`. The tick is dry-run by default and takes `--sessions` / `--send` / `--fleet-pusher-once`, so it can be probed against two disposable sessions without waking the live fleet. Both jobs emit their line unconditionally, zeros included — the retired script printed its counter line only when non-empty, so a healthy idle tick and a dead one looked identical.
+
 ## v0.23.1
 
 - fix: **the flagged reopen tick can actually reopen a row.** Its spawn request carried no `prompt` and no session, so `tabSpawner.Spawn` refused every eligible row before any side effect with `prompt is required: invalid spawn options` — 47 times in the daemon log between 2026-11-12 11:24 and 2026-11-13 11:15, and **zero** `opened>=1` ticks in the tick's entire history. The count-only log line made this look like a fleet with nothing to open.
