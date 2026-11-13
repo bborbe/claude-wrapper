@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **A headless row is now RESUMED, not tab-spawned.** The tab path refuses `resume` by construction (the `cc-*` launcher is never handed `--resume`), so a row with a `claude_session_id` opened through it would have started a fresh conversation while the tick believed it continued one. `NewFlaggedReopener` routes by the row's own mode: headless goes through `Supervisor.Spawn(Resume: …)`, tab rows keep the tab spawner, and both carry a non-empty work turn (`/vault-cli:work-on-task "<task>"`) — a resume with no turn would be idle from its first second and reaped again inside one tick.
   **A headless reopen files its spawn-ledger row.** Without it the reopened worker was invisible twice over: the fleet caps count by ledger role, and the tick's own recently-spawned guard reads that store — so the next tick would have opened a second copy of a row whose first child was still starting. The tab path already files its row inside the spawner; the headless path now posts one with `resumed_from`, the row's role and `mode_source: flagged-tick`.
   The tick's tests could not catch this: their fake spawner recorded whatever request it was handed and validated nothing. The reopen now has its own recording supervisor, spawner and ledger, and the tab case asserts the prompt the real spawner validates.
+- feat: close a headless child at turn end when its anchored task is completed or aborted (opt-in via -close-on-terminal-task-dirs)
 
 ## v0.22.2
 
