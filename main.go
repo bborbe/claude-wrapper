@@ -247,6 +247,15 @@ func startLifecycleJobs(
 	supervisor pkg.Supervisor,
 	now libtime.CurrentDateTimeGetter,
 ) {
+	// The exit store is installed before the jobs start, because the field is
+	// copied into each child at construction — a recorder set after a spawn
+	// would miss that child's exit.
+	if setter, ok := supervisor.(interface {
+		SetSessionExitRecorder(pkg.SessionExitRecorder)
+	}); ok {
+		setter.SetSessionExitRecorder(&pkg.SessionExitFileRecorder{Now: now})
+	}
+
 	jobs := []interface {
 		Run(context.Context) error
 	}{

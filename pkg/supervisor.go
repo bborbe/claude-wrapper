@@ -223,6 +223,8 @@ type supervisor struct {
 	// instance, where the child's question never reached the wrapper that spawned
 	// it.
 	selfURL string
+	// exitRecorder writes how each child ended. Nil disables the record.
+	exitRecorder SessionExitRecorder
 	// store owns the durable half: the child's endpoints and the record that lets
 	// a successor find them.
 	store    SessionStore
@@ -418,6 +420,7 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			tailDone:     make(chan struct{}),
 			policy:       policy,
 			ledger:       s.ledger,
+			exitRecorder: s.exitRecorder,
 			ctx:          s.ctx,
 			taskResolver: s.policy.TaskResolver,
 			session: Session{
@@ -929,6 +932,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		tailDone:     make(chan struct{}),
 		policy:       policy,
 		ledger:       s.ledger,
+		exitRecorder: s.exitRecorder,
 		ctx:          s.ctx,
 		taskResolver: s.policy.TaskResolver,
 		session: Session{
@@ -1279,6 +1283,8 @@ type child struct {
 	// taskResolver finds this session's anchored task at turn end; nil disables
 	// close-on-terminal-task.
 	taskResolver AnchoredTaskResolver
+	// exitRecorder is the daemon's exit store; nil means the record is disabled.
+	exitRecorder SessionExitRecorder
 }
 
 func (c *child) snapshot() *Session {
@@ -1604,6 +1610,12 @@ func (c *child) reap(exitCode *int) {
 		c.recordAbandonedTurn(exitCode)
 	}
 	c.session.State = StateExited
+	// Recorded here rather than from a poller: this is the only place that holds
+	// both the settled session and the wait status, and a poller would have to
+	// reconstruct the second from the first.
+	if c.exitRecorder != nil {
+		c.exitRecorder.Record(c.session, c.pid, exitCode)
+	}
 	// A child killed mid-turn closes nothing, so the counter would otherwise
 	// stay positive for the life of the process and misreport the field.
 	c.pendingTurns = 0
