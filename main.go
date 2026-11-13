@@ -80,6 +80,7 @@ func main() {
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
 	drainBound := flag.Duration("drain-bound", 4*time.Second,
 		"overall budget a SIGTERM waits for children to reach a turn boundary before recording each as interrupted; must stay under launchd's ExitTimeOut (5 s) or launchd SIGKILLs the drain before it can report")
+	closeOnTerminalTaskDirs := flag.String("close-on-terminal-task-dirs", "", closeOnTerminalTaskDirsUsage)
 	flag.Parse()
 
 	if *mcpStdio {
@@ -107,6 +108,7 @@ func main() {
 	store := pkg.NewSessionStore(*stateDir)
 	supervisor, ledger := newSupervisor(
 		ctx, *claudeBin, *listen, *attentionURL, store, decider, *permissionTimeout, now,
+		taskResolverFromFlag(*closeOnTerminalTaskDirs),
 	)
 	// Re-adoption runs before the listener opens, so a supervisor that connects the
 	// instant the port is up already sees the sessions that survived the restart.
@@ -170,6 +172,7 @@ func newSupervisor(
 	decider *pkg.PermissionDecider,
 	permissionTimeout time.Duration,
 	now libtime.CurrentDateTimeGetter,
+	taskResolver pkg.AnchoredTaskResolver,
 ) (pkg.Supervisor, pkg.LedgerReader) {
 	ledger := pkg.NewLedgerClient(attentionURL, nil, now)
 	return pkg.NewSupervisorWithPolicy(
@@ -182,8 +185,28 @@ func newSupervisor(
 			Decider:           decider,
 			PermissionTimeout: permissionTimeout,
 			Ledger:            ledger,
+			TaskResolver:      taskResolver,
 		},
 	), ledger
+}
+
+const closeOnTerminalTaskDirsUsage = "comma-separated absolute task dirs; at turn end a child whose task " +
+	"(claude_session_id) is completed or aborted is closed. Empty disables"
+
+// taskResolverFromFlag builds the close-on-terminal-task resolver; an empty
+// flag returns nil, which leaves the feature off.
+func taskResolverFromFlag(value string) pkg.AnchoredTaskResolver {
+	var dirs []string
+	for _, dir := range strings.Split(value, ",") {
+		if dir = strings.TrimSpace(dir); dir != "" {
+			dirs = append(dirs, dir)
+		}
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	log.Printf("close-on-terminal-task: watching %d task dir(s)", len(dirs))
+	return pkg.NewDirAnchoredTaskResolver(dirs)
 }
 
 // startStartupSweeper terminates children that rest in `starting` past the
