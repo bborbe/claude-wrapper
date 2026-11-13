@@ -309,7 +309,9 @@ func (p *FleetPusher) rowFor(
 		row.Outcome = OutcomeDryRun
 		return row
 	}
-	if err := SendWhenReady(ctx, p.Tabs, pane, p.message(), p.Now); err != nil {
+	if err := SendWhenReadyWith(
+		ctx, p.Tabs, pane, p.message(), p.Now, PaneIsReady,
+	); err != nil {
 		row.Outcome = "failed:" + err.Error()
 		return row
 	}

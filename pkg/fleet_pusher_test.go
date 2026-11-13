@@ -244,5 +244,24 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 			gomega.Expect(result.Skipped).To(gomega.Equal(0))
 			gomega.Expect(tabs.sent["11"]).To(gomega.BeNumerically(">", 0))
 		})
+
+		// The guard's wake:suggestion verdict must be deliverable. A long-idle pane
+		// always shows Claude Code's dim next-prompt suggestion, which the spawn
+		// path's ComposerReady deliberately refuses; the wake path must accept it or
+		// every suggestion-verdict wake times out. This pins the readiness seam.
+		ginkgo.It("delivers into a dim-placeholder composer the spawn path refuses", func() {
+			placeholder := "❯ \x1b[0;2mTry \"how does this work?\"\x1b[0m\n"
+			tabs := &fakeTabs{before: placeholder, after: "❯ wake now\n❯ \n"}
+			pusher := pusherFor(
+				&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+				&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+			)
+			pusher.Send = true
+			result := pusher.Tick(context.Background())
+			gomega.Expect(result.Rows[0].Outcome).To(gomega.Equal(OutcomeDelivered))
+			gomega.Expect(tabs.sent["11"]).To(gomega.BeNumerically(">", 0))
+			gomega.Expect(ComposerReady(placeholder)).To(gomega.BeFalse())
+			gomega.Expect(PaneIsReady(placeholder)).To(gomega.BeTrue())
+		})
 	})
 })

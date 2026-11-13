@@ -340,7 +340,26 @@ func SendWhenReady(
 	text string,
 	now libtime.CurrentDateTimeGetter,
 ) error {
-	if err := waitComposer(ctx, tabs, paneID, composerDeadline, now); err != nil {
+	return SendWhenReadyWith(ctx, tabs, paneID, text, now, ComposerReady)
+}
+
+// SendWhenReadyWith is SendWhenReady with the composer-readiness rule injected.
+//
+// The spawn path must refuse a drawn-but-placeholder composer (a submit while the
+// TUI is still painting is swallowed), so its readiness rule is ComposerReady. The
+// fleet wake path is the opposite case: it reaches LONG-IDLE panes, where the dim
+// next-prompt suggestion is always present and a send into it lands — so it passes
+// PaneIsReady. Without this seam the guard can declare such a pane wakeable and the
+// send path then waits out its deadline and reports a failure.
+func SendWhenReadyWith(
+	ctx context.Context,
+	tabs TabClient,
+	paneID string,
+	text string,
+	now libtime.CurrentDateTimeGetter,
+	ready func(string) bool,
+) error {
+	if err := waitComposerWith(ctx, tabs, paneID, composerDeadline, now, ready); err != nil {
 		return err
 	}
 	if err := tabs.SendText(ctx, paneID, text); err != nil {
@@ -365,19 +384,20 @@ func SendWhenReady(
 	)
 }
 
-// waitComposer polls a pane until its composer is empty and accepting input.
-func waitComposer(
+// waitComposerWith polls a pane until ready reports its composer accepting input.
+func waitComposerWith(
 	ctx context.Context,
 	tabs TabClient,
 	paneID string,
 	timeout time.Duration,
 	now libtime.CurrentDateTimeGetter,
+	ready func(string) bool,
 ) error {
 	deadline := now.Now().Time().Add(timeout)
 	var lastErr error
 	for {
 		output, err := tabs.Text(ctx, paneID)
-		if err == nil && ComposerReady(output) {
+		if err == nil && ready(output) {
 			return nil
 		}
 		lastErr = err

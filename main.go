@@ -556,6 +556,11 @@ func startFleetPusherJobs(
 		pusher := newFleetPusher(registry, tabs, store, now)
 		pusher.HeartbeatPath = heartbeatPath
 		pusher.Interval = tickInterval
+		// ⚠️ The long-running job's whole purpose is to TYPE. `Send` defaults to
+		// false so the one-shot probe is a dry run unless `--send`, but without
+		// this line the daemon's tick would inherit that default and never deliver
+		// anything — a permanent dry run with a healthy-looking log line.
+		pusher.Send = true
 		go func() {
 			if err := pusher.Run(ctx); err != nil && ctx.Err() == nil {
 				log.Printf("fleet pusher stopped: %v", err)

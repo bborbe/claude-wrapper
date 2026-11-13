@@ -28,9 +28,10 @@ func readCapture(name string) *string {
 
 var _ = ginkgo.Describe("FleetPusher guard", func() {
 	ginkgo.Describe("PaneGuardVerdict over captured screens", func() {
-		// The 13 guard verdicts. Eleven are screens captured from a real terminal;
-		// `skip:sleeping` and `error:unreadable` are parameter/read-failure
-		// branches with no screen to capture, and are spec'd below.
+		// The guard's screen verdicts. Eleven are screens captured from a real
+		// terminal; `skip:sleeping` and `error:unreadable` are parameter/read-failure
+		// branches with no screen to capture, and `skip:state-unreadable` is spec'd
+		// in the subject-state block below.
 		table := []struct {
 			fixture string
 			verdict string
