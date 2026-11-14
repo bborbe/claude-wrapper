@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
 )
 
@@ -160,7 +161,7 @@ func (p *FleetPusher) tickAndLog(ctx context.Context) FleetPusherResult {
 	// Heartbeat first: a dead tick leaves this ageing, which is the only signal a
 	// dead agent gives. It is written BEFORE any work, so a fresh stamp does NOT
 	// mean wakes were delivered — the watchdog reads it only to detect death.
-	if err := p.writeHeartbeat(); err != nil {
+	if err := p.writeHeartbeat(ctx); err != nil {
 		p.logf("job=fleet-pusher action=heartbeat outcome=failed error=%v", err)
 	}
 	result := p.Tick(ctx)
@@ -310,7 +311,7 @@ func (p *FleetPusher) rowFor(
 		return row
 	}
 	if err := SendWhenReadyWith(
-		ctx, p.Tabs, pane, p.message(), p.Now, PaneIsReady,
+		ctx, p.Tabs, pane, p.message(), p.nowGetter(), PaneIsReady,
 	); err != nil {
 		row.Outcome = "failed:" + err.Error()
 		return row
@@ -343,16 +344,30 @@ func (p *FleetPusher) message() string {
 }
 
 // writeHeartbeat stamps the heartbeat file the watchdog reads.
-func (p *FleetPusher) writeHeartbeat() error {
+func (p *FleetPusher) writeHeartbeat(ctx context.Context) error {
 	if p.HeartbeatPath == "" {
 		return nil
 	}
 	path := expandTilde(p.HeartbeatPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return err
+		return errors.Wrapf(ctx, err, "create heartbeat dir failed")
 	}
 	stamp := p.now().UTC().Format("2006-01-02T15:04:05Z")
-	return os.WriteFile(path, []byte(stamp), 0o600)
+	if err := os.WriteFile(path, []byte(stamp), 0o600); err != nil {
+		return errors.Wrapf(ctx, err, "write heartbeat failed")
+	}
+	return nil
+}
+
+// nowGetter returns the injected clock, or a real one when none was supplied.
+//
+// The send path calls `Now()` through the interface, so a nil field is a panic
+// rather than a fallback; this makes the zero value of the struct safe.
+func (p *FleetPusher) nowGetter() libtime.CurrentDateTimeGetter {
+	if p.Now == nil {
+		return libtime.NewCurrentDateTime()
+	}
+	return p.Now
 }
 
 func (p *FleetPusher) now() time.Time {

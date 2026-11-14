@@ -101,11 +101,23 @@ func (l *boardCardLookup) ExistingCard(
 	return "", nil
 }
 
-// Run cycles until the context ends, the first cycle immediately.
+// Run cycles until the context ends.
+//
+// The first cycle waits ONE interval rather than firing immediately. The tick
+// writes its first heartbeat on its own first tick, and a daemon restart after a
+// long downtime leaves an OLD heartbeat on disk — a watchdog cycle that ran first
+// would post a false `stale` card for a tick that has not had its chance yet. The
+// retired launchd job had the same property by construction: its StartInterval
+// meant its first check was one interval after load.
 func (w *FleetPusherWatch) Run(ctx context.Context) error {
 	interval := w.Interval
 	if interval <= 0 {
 		interval = DefaultFleetPusherWatchInterval
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(interval):
 	}
 	w.Cycle(ctx)
 	ticker := time.NewTicker(interval)

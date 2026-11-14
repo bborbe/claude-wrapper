@@ -84,9 +84,9 @@ func registerFleetPusherFlags() fleetPusherFlags {
 		once: flag.Bool("fleet-pusher-once", false,
 			"run one wake tick and exit, for a scoped probe; never binds the listener"),
 		send: flag.Bool("send", false,
-			"type into idle sessions; the wake tick is a dry run by default"),
+			"type into idle sessions in a --fleet-pusher-once probe; the daemon's own tick always sends"),
 		sessions: flag.String("sessions", "",
-			"comma-separated session ids to scope the wake tick to; empty means every live session"),
+			"comma-separated session ids to scope a --fleet-pusher-once probe to; the daemon's tick covers every live session"),
 	}
 }
 

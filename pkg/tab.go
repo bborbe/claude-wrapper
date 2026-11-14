@@ -142,11 +142,17 @@ func (t *tabClient) SendText(ctx context.Context, paneID string, text string) er
 // The window is large enough to hold the composer and the last exchange: the
 // readiness and submission checks both read the tail, and a window that cuts
 // the composer reads as "not ready" forever.
+//
+// `--escapes` is load-bearing: the wake guard distinguishes Claude Code's dim
+// next-prompt suggestion from text somebody typed by its SGR attributes, and a
+// plain read returns the two identically — which turns every long-idle pane into
+// `skip:composer-not-empty` and starves the wake layer of exactly the sessions it
+// exists for. Callers that want visible text strip the escapes themselves.
 func (t *tabClient) Text(ctx context.Context, paneID string) (string, error) {
 	// #nosec G204 -- t.bin is the configured wezterm binary; paneID is an
 	// identifier WezTerm assigned, passed as its own argv word with no shell.
 	output, err := exec.CommandContext(
-		ctx, t.bin, "cli", "get-text", "--pane-id", paneID, "--start-line", "-600",
+		ctx, t.bin, "cli", "get-text", "--escapes", "--pane-id", paneID, "--start-line", "-600",
 	).Output()
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "could not read pane %s", paneID)
@@ -255,10 +261,14 @@ func ValidateTabEnv(ctx context.Context, env map[string]string) error {
 // with the glyph, with everything after it trimming to nothing. A composer that
 // is drawn but still holds a placeholder is not ready: a submit into it is
 // swallowed, which reads as a delivered message that never ran.
+//
+// The line is stripped of escapes first, because `Text` reads with `--escapes`:
+// an empty composer still carries a trailing SGR reset, and a raw comparison
+// would call every empty composer non-empty.
 func ComposerReady(text string) bool {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	for _, rawLine := range slices.Backward(lines) {
-		line := strings.TrimSpace(rawLine)
+		line := strings.TrimSpace(StripANSI(rawLine))
 		if !strings.HasPrefix(line, promptGlyph) {
 			continue
 		}
