@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the idle reaper reports a tick it missed.** `RunTick` ran `tick(ctx)` and then waited on a `time.Ticker`, recording nothing about the wait — so a reaper that stopped for 34 minutes wrote exactly the same line as one that did not, and the only way to see the difference was to read timestamps off the log by hand. Measured on the Python predecessor: 82 of 333 consecutive tick pairs more than 1000 s apart, the longest 2029 s, with no marker on any of them.
+  **A ticker coalesces, which is why counting ticks cannot find this.** When a tick blocks past its interval, or the process is suspended, the next tick fires immediately and the loop looks identical to one that waited properly; a skipped tick is simply absent, which reads the same as a tick that had nothing to do. `RunTickWithGap` measures the wall clock between iterations instead and reports the gap: `job=<name> action=tick-late gap=<duration> since=<instant>`. A start is late past half an interval — that is not jitter, the ticker delivers within scheduler noise of the cadence.
+  `RunTick` keeps its signature and delegates with no reporter, so the four other ported jobs are untouched; only `idle-reaper` opts in, because it is the one whose silence the fleet was already blind to. The clock is injected so the conditional is pinned by a test that fails if the line becomes unconditional.
+
 ## v0.25.0
 
 - feat: **all five ported jobs now start with the daemon.** `startLifecycleJobs` starts `idle-reaper`, `state-ledger`, `manager-liveness-notify` and `fleet-keeper`; `session-exit-daily` is live through the exit recorder. The last two are bound to the Python predicates they still depend on — exec'd, not re-derived, because `manager-liveness.py` carries the liveness rule and `fleet-keeper.py` carries the 18/38/51-minute settle measurement the 2026-11-01 ruling was made against. Two definitions of one judgement would disagree.

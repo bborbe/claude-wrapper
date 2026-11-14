@@ -53,9 +53,51 @@ func JobLine(name string, action string, kv ...string) string {
 // loop, so each handler's Tick must bound its own work; this helper cannot
 // cancel a tick already in flight.
 func RunTick(ctx context.Context, interval time.Duration, tick func(context.Context)) error {
+	return RunTickWithGap(ctx, interval, time.Now, nil, tick)
+}
+
+// NowFunc is the clock a tick loop reads. It is injected rather than called
+// directly so a test can drive a gap without sleeping for one.
+type NowFunc func() time.Time
+
+// RunTickWithGap is RunTick plus a report for an iteration that began late.
+//
+// A time.Ticker coalesces. When a tick blocks past its interval, or the process
+// is suspended, the next tick fires at once and the loop looks exactly as it
+// does after an ordinary wait — so the loop holds no record of the wait it did
+// not take. Counting ticks cannot reveal that either: a skipped tick is simply
+// absent, which reads the same as a tick that had nothing to do. This measures
+// the wall clock between iterations instead, and reports the gap rather than
+// the tick.
+//
+// A start is late when it is more than half an interval past the previous one.
+// That tolerance is not jitter — the ticker delivers within scheduler noise of
+// the cadence, so a start that far out is a wait the loop did not take.
+//
+// onLate is never called for the first tick: there is no previous tick to
+// measure from. A nil onLate keeps the old behaviour, which is what RunTick
+// passes.
+func RunTickWithGap(
+	ctx context.Context,
+	interval time.Duration,
+	now NowFunc,
+	onLate func(gap time.Duration, since time.Time),
+	tick func(context.Context),
+) error {
+	if now == nil {
+		now = time.Now
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var last time.Time
 	for {
+		started := now()
+		if !last.IsZero() {
+			if gap := started.Sub(last); gap > interval+interval/2 && onLate != nil {
+				onLate(gap, last)
+			}
+		}
+		last = started
 		tick(ctx)
 		select {
 		case <-ctx.Done():

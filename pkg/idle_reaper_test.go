@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -94,5 +95,100 @@ var _ = ginkgo.Describe("RunTick", func() {
 		cancel()
 		err := RunTick(ctx, time.Hour, func(context.Context) {})
 		gomega.Expect(err).To(gomega.MatchError(context.Canceled))
+	})
+})
+
+var _ = ginkgo.Describe("RunTickWithGap", func() {
+	base := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	// The interval only paces the loop; the gap is scripted on the clock, never
+	// waited for. A realistic interval here would make the test sleep for it —
+	// the ticker, not the clock, is what the loop blocks on between ticks.
+	interval := time.Millisecond
+
+	// drive runs the loop once per scripted start and returns what it reported.
+	// The clock is scripted rather than slept through: a gap is a wall-clock
+	// fact, and a test that waited 20 minutes for one would not run.
+	drive := func(starts []time.Time) []time.Duration {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		calls := 0
+		now := func() time.Time {
+			if calls >= len(starts) {
+				return starts[len(starts)-1]
+			}
+			start := starts[calls]
+			calls++
+			return start
+		}
+		reported := make([]time.Duration, 0, 1)
+		ticks := 0
+		_ = RunTickWithGap(ctx, interval, now,
+			func(gap time.Duration, _ time.Time) { reported = append(reported, gap) },
+			func(context.Context) {
+				ticks++
+				if ticks == len(starts) {
+					cancel()
+				}
+			})
+		return reported
+	}
+
+	ginkgo.It("does not report a tick that arrives on its interval", func() {
+		gomega.Expect(drive([]time.Time{base, base.Add(interval), base.Add(2 * interval)})).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("does not report a tick exactly at the tolerance", func() {
+		gomega.Expect(drive([]time.Time{base, base.Add(interval + interval/2)})).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("reports the gap when a tick arrives past the tolerance", func() {
+		gomega.Expect(drive([]time.Time{base, base.Add(2 * interval)})).To(gomega.Equal([]time.Duration{2 * interval}))
+	})
+
+	ginkgo.It("reports the tick the gap is measured from", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		calls := 0
+		now := func() time.Time {
+			calls++
+			if calls == 1 {
+				return base
+			}
+			return base.Add(3 * interval)
+		}
+		var since time.Time
+		ticks := 0
+		_ = RunTickWithGap(ctx, interval, now,
+			func(_ time.Duration, from time.Time) { since = from },
+			func(context.Context) {
+				ticks++
+				if ticks == 2 {
+					cancel()
+				}
+			})
+		gomega.Expect(since).To(gomega.Equal(base))
+	})
+
+	ginkgo.It("never reports the first tick", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		reported := 0
+		_ = RunTickWithGap(ctx, interval, func() time.Time { return base },
+			func(time.Duration, time.Time) { reported++ },
+			func(context.Context) { cancel() })
+		gomega.Expect(reported).To(gomega.Equal(0))
+	})
+})
+
+var _ = ginkgo.Describe("IdleReaperJob.reportLate", func() {
+	ginkgo.It("renders the tick-late line with the measured gap", func() {
+		var lines []string
+		job := &IdleReaperJob{Logf: func(format string, args ...any) {
+			lines = append(lines, fmt.Sprintf(format, args...))
+		}}
+		job.reportLate(20*time.Minute, time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC))
+		gomega.Expect(lines).To(gomega.Equal([]string{
+			"job=idle-reaper action=tick-late gap=20m0s since=2026-11-14T12:00:00Z",
+		}))
 	})
 })
