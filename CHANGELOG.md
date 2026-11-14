@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.26.0
 
 - feat: **the idle reaper reports a tick it missed.** `RunTick` ran `tick(ctx)` and then waited on a `time.Ticker`, recording nothing about the wait — so a reaper that stopped for 34 minutes wrote exactly the same line as one that did not, and the only way to see the difference was to read timestamps off the log by hand. Measured on the Python predecessor: 82 of 333 consecutive tick pairs more than 1000 s apart, the longest 2029 s, with no marker on any of them.
   **A ticker coalesces, which is why counting ticks cannot find this.** When a tick blocks past its interval, or the process is suspended, the next tick fires immediately and the loop looks identical to one that waited properly; a skipped tick is simply absent, which reads the same as a tick that had nothing to do. `RunTickWithGap` measures the wall clock between iterations instead and reports the gap: `job=<name> action=tick-late gap=<duration> since=<instant>`. A start is late past half an interval — that is not jitter, the ticker delivers within scheduler noise of the cadence.
