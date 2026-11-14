@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.24.1
 
 - fix: **the wake tick's delivery confirmation is escape-safe.** `SendWhenReadyWith` now takes the confirmation rule as well as the readiness rule. The spawn path keeps the echoed-message check; the wake path uses a spinner over an empty composer — the same positive evidence `pane-wake.py` used. The echoed-message check reads the raw `--escapes` screen, where SGR sequences interleave the message text, so a send that DID land read as unconfirmed: measured live on 2026-11-14, three woken sessions carried the wake message in their transcripts while the log reported `failed:`.
 
