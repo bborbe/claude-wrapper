@@ -69,10 +69,22 @@ var _ = ginkgo.Describe("DirAnchoredTaskResolver", func() {
 		gomega.Expect(result.Matches).To(gomega.Equal(0))
 	})
 
-	ginkgo.It("ignores non-md files and subdirectories", func() {
+	ginkgo.It("ignores non-md files", func() {
 		write("a.txt", "---\nclaude_session_id: "+sid+"\n---\n")
+		result, err := NewDirAnchoredTaskResolver([]string{dir}).Resolve(ctx, sid)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Matches).To(gomega.Equal(0))
+	})
+
+	// ⚠️ This assertion is the boundary, and it is separate from the non-md case on
+	// purpose. The glob is `*.md` and NON-recursive (`pkg/terminal_task.go`), so a task
+	// file in a subdirectory is invisible to close-at-turn-end — `private-personal/25
+	// Tasks/.sun` holds 12 such files today. A later "improvement" to a recursive glob
+	// would change which sessions the fleet closes, and this is the test that stops that
+	// happening silently.
+	ginkgo.It("ignores a task file in a subdirectory", func() {
 		gomega.Expect(os.Mkdir(filepath.Join(dir, "sub"), 0o700)).To(gomega.Succeed())
-		write("sub/a.md", "---\nclaude_session_id: "+sid+"\n---\n")
+		write("sub/a.md", "---\nstatus: completed\nclaude_session_id: "+sid+"\n---\n")
 		result, err := NewDirAnchoredTaskResolver([]string{dir}).Resolve(ctx, sid)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(result.Matches).To(gomega.Equal(0))
