@@ -66,6 +66,8 @@ type IdleReaperJob struct {
 	Interval time.Duration
 	// Logf writes the job's lines. Nil means log.Printf.
 	Logf func(format string, args ...any)
+	// Now is the clock the gap check reads. Nil means time.Now.
+	Now NowFunc
 }
 
 // Run ticks until ctx is done.
@@ -74,7 +76,19 @@ func (j *IdleReaperJob) Run(ctx context.Context) error {
 	if interval <= 0 {
 		interval = DefaultIdleReaperInterval
 	}
-	return RunTick(ctx, interval, j.TickAndLog)
+	return RunTickWithGap(ctx, interval, j.Now, j.reportLate, j.TickAndLog)
+}
+
+// reportLate names a tick that began later than its interval.
+//
+// The gap is what was measured and `since` is the tick it is measured from, so
+// a reader can tell a suspended daemon from a tick that blocked on its own
+// work without cross-referencing the log's timestamps.
+func (j *IdleReaperJob) reportLate(gap time.Duration, since time.Time) {
+	j.logf(JobLine(IdleReaperJobName, "tick-late",
+		"gap", gap.Round(time.Second).String(),
+		"since", since.UTC().Format(time.RFC3339),
+	))
 }
 
 // TickAndLog runs one tick and writes its lines.
