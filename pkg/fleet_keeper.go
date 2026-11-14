@@ -37,6 +37,8 @@ const (
 	FleetKeeperJobName = "fleet-keeper"
 	// fleetLapseOwedExitCode is what the keepalive returns when a lapse is owed.
 	fleetLapseOwedExitCode = 10
+	// maxFirstLineRunes bounds the checker's first line inside an error message.
+	maxFirstLineRunes = 200
 )
 
 // FleetCheck runs the keepalive and reports its output and exit code.
@@ -124,16 +126,15 @@ func fleetCardID(output string) string {
 var cardIDPattern = regexp.MustCompile(`\(card ([^)]+)\)`)
 
 // firstLine is the checker's first output line, for an error that names the
-// fault rather than dumping the whole output into a log line.
+// fault rather than dumping the whole output into a log line. It cuts on a rune
+// boundary, the same way manager_liveness's verdict column does — a byte cut can
+// split a multi-byte character.
 func firstLine(output string) string {
 	trimmed := strings.TrimSpace(output)
 	if idx := strings.IndexByte(trimmed, '\n'); idx >= 0 {
 		trimmed = trimmed[:idx]
 	}
-	if len(trimmed) > 200 {
-		trimmed = trimmed[:200]
-	}
-	return trimmed
+	return capRunes(trimmed, maxFirstLineRunes)
 }
 
 func (j *FleetKeeperJob) check(ctx context.Context) (string, int, error) {

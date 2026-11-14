@@ -205,6 +205,10 @@ func (j *ManagerLivenessJob) record(
 	now := j.now()
 	stamp := now.UTC().Format("2006-01-02T15:04:05Z")
 	verdict := verdictField(output)
+	// `notified` carries the transport's own error text on a failed send, which is
+	// multi-line as often as not — the same flattening applies, or one bad send
+	// splits the row and every later column reads as part of it.
+	notified = flattenColumn(notified)
 	row := strings.Join([]string{stamp, strconv.Itoa(code), verdict, notified, "wrapper"}, "\t")
 	if err := appendLine(ctx, filepath.Join(dir, "ledger.txt"), row); err != nil {
 		return err
@@ -249,12 +253,13 @@ func (j *ManagerLivenessJob) check(ctx context.Context) (string, int, error) {
 // read as part of the verdict. The cut is on a rune boundary — slicing bytes at
 // 300 can split a multi-byte character and leave the line invalid UTF-8.
 func verdictField(output string) string {
-	flat := strings.NewReplacer("\n", ";", "\t", " ", "\r", "").Replace(strings.TrimSpace(output))
-	runes := []rune(flat)
-	if len(runes) > maxVerdictRunes {
-		runes = runes[:maxVerdictRunes]
-	}
-	return string(runes)
+	return capRunes(flattenColumn(output), maxVerdictRunes)
+}
+
+// flattenColumn makes any string safe as ONE tab-separated column: tabs and
+// newlines become spaces, so a row split on tabs keeps its column count.
+func flattenColumn(s string) string {
+	return strings.NewReplacer("\n", " ", "\t", " ", "\r", "").Replace(strings.TrimSpace(s))
 }
 
 func (j *ManagerLivenessJob) dir() string {

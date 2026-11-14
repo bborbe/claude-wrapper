@@ -7,7 +7,9 @@ package pkg
 import (
 	"context"
 	"log"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -85,6 +87,7 @@ func (j *IdleReaperJob) TickAndLog(ctx context.Context) {
 	j.logf(JobLine(IdleReaperJobName, "tick",
 		"closed", strconv.Itoa(len(result.Closed)),
 		"skipped", strconv.Itoa(result.skippedCount()),
+		"reasons", result.skippedBreakdown(),
 	))
 }
 
@@ -170,6 +173,10 @@ func idleReapSkipReason(session Session, floor time.Duration) string {
 	if session.PendingTurns > 0 {
 		return "turn-pending"
 	}
+	// Defensive, and kept deliberately. reap() sets State and ExitCode together, so
+	// today this is unreachable — but it is the guard that stops a future path
+	// setting an exit code without the state from making a dead child look
+	// reapable, and Stop on a live-looking session is the expensive mistake.
 	if session.ExitCode != nil {
 		return "exited"
 	}
@@ -209,6 +216,27 @@ func (j *IdleReaperJob) logf(line string) {
 		return
 	}
 	log.Printf("%s", line)
+}
+
+// skippedBreakdown renders the per-reason counts in a stable order.
+//
+// ⚠️ A total alone is not legible: `skipped=7` reads exactly like a tick that was
+// broken, which is the reading this job exists to make impossible. The reasons are
+// sorted so two ticks with the same state produce the same line.
+func (r IdleReaperResult) skippedBreakdown() string {
+	if len(r.Skipped) == 0 {
+		return "none"
+	}
+	reasons := make([]string, 0, len(r.Skipped))
+	for reason := range r.Skipped {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		parts = append(parts, reason+":"+strconv.Itoa(r.Skipped[reason]))
+	}
+	return strings.Join(parts, ",")
 }
 
 // skippedCount is the sessions this tick did NOT close. It deliberately excludes
