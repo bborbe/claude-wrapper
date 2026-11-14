@@ -175,7 +175,7 @@ func newSupervisor(
 	taskResolver pkg.AnchoredTaskResolver,
 ) (pkg.Supervisor, pkg.LedgerReader) {
 	ledger := pkg.NewLedgerClient(attentionURL, nil, now)
-	return pkg.NewSupervisorWithPolicy(
+	supervisor := pkg.NewSupervisorWithPolicy(
 		ctx,
 		claudeBin,
 		now,
@@ -187,7 +187,12 @@ func newSupervisor(
 			Ledger:            ledger,
 			TaskResolver:      taskResolver,
 		},
-	), ledger
+	)
+	// Installed HERE, before any child can be spawned or adopted: the recorder is
+	// copied into each child at construction, so installing it later would leave
+	// every already-constructed child writing no exit record for its whole life.
+	installSessionExitRecorder(supervisor, now)
+	return supervisor, ledger
 }
 
 const closeOnTerminalTaskDirsUsage = "comma-separated absolute task dirs; at turn end a child whose task " +
@@ -236,6 +241,30 @@ func startStartupSweeper(
 	}
 }
 
+// installSessionExitRecorder gives the supervisor its exit store.
+//
+// It is a setter rather than a constructor parameter because the supervisor's
+// constructor has call sites that do not care about the store, and a nil
+// recorder is a no-op. The type assertion is how this reaches a concrete
+// supervisor without widening the Supervisor interface every fake must satisfy.
+//
+// ⚠️ Call it BEFORE Adopt: the field is copied into each child at construction,
+// so a recorder installed after adoption leaves every re-adopted child writing
+// no exit record for the rest of its life.
+func installSessionExitRecorder(
+	supervisor pkg.Supervisor,
+	now libtime.CurrentDateTimeGetter,
+) {
+	setter, ok := supervisor.(interface {
+		SetSessionExitRecorder(pkg.SessionExitRecorder)
+	})
+	if !ok {
+		log.Printf("WARNING: supervisor has no exit recorder setter — session exits will not be recorded")
+		return
+	}
+	setter.SetSessionExitRecorder(&pkg.SessionExitFileRecorder{Now: now})
+}
+
 // startLifecycleJobs runs the ticks that used to be launchd jobs, now that the
 // service holds the state they poll.
 //
@@ -247,15 +276,6 @@ func startLifecycleJobs(
 	supervisor pkg.Supervisor,
 	now libtime.CurrentDateTimeGetter,
 ) {
-	// The exit store is installed before the jobs start, because the field is
-	// copied into each child at construction — a recorder set after a spawn
-	// would miss that child's exit.
-	if setter, ok := supervisor.(interface {
-		SetSessionExitRecorder(pkg.SessionExitRecorder)
-	}); ok {
-		setter.SetSessionExitRecorder(&pkg.SessionExitFileRecorder{Now: now})
-	}
-
 	jobs := lifecycleJobs(supervisor, now)
 	for _, job := range jobs {
 		go func(j interface {
@@ -289,7 +309,8 @@ func lifecycleJobs(
 	}
 }
 
-// warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised// --drain-bound past the point where launchd would SIGKILL the process mid-drain.
+// warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised
+// --drain-bound past the point where launchd would SIGKILL the process mid-drain.
 //
 // The bound is a flag, so nothing else keeps the drain and the shutdown grace
 // inside launchd's exit timeout — and a silent overrun turns a drain into a kill

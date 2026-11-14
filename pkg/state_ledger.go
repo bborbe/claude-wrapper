@@ -119,57 +119,62 @@ func (j *StateLedgerJob) Tick(ctx context.Context) (int, error) {
 		return 0, errors.Wrap(ctx, err, "list sessions failed")
 	}
 	now := j.now()
-	lines := j.buildLines(sessions, now)
+	lines, next := j.buildLines(sessions, now)
 	if len(lines) == 0 {
+		// Nothing to write, but the map still prunes sessions that are gone.
+		j.seen = next
 		return 0, nil
 	}
 	if writeErr := j.appendLines(ctx, lines, now.Format("2006-01-02")); writeErr != nil {
 		return 0, errors.Wrap(ctx, writeErr, "append events failed")
 	}
+	// Installed only now: a failed append must leave the previous state in place,
+	// or the transition line is lost and the file disagrees with the process.
+	j.seen = next
 	return len(lines), nil
 }
 
-// buildLines decides what to write and records the state it saw, so the next
-// poll can tell a transition from a repeat.
-func (j *StateLedgerJob) buildLines(sessions []Session, now time.Time) []stateLedgerLine {
-	if j.seen == nil {
-		j.seen = map[string]string{}
-	}
+// buildLines decides what to write and returns the state map to install ONCE
+// the write has succeeded.
+//
+// ⚠️ It does not touch `seen` itself. Advancing the map here meant a failed
+// append still recorded the new state, so the transition line was lost for good
+// and the file disagreed with the process from then on — the next poll would see
+// no change and write only a heartbeat. The caller installs the returned map only
+// after the append returns nil.
+func (j *StateLedgerJob) buildLines(
+	sessions []Session, now time.Time,
+) ([]stateLedgerLine, map[string]string) {
+	next := make(map[string]string, len(sessions))
 	lines := make([]stateLedgerLine, 0, 2*len(sessions))
-	live := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
 		// A session with no state yet has not emitted its init event; writing a
 		// transition for it would record a state the child never claimed.
 		if session.State == "" {
 			continue
 		}
-		live[session.ID] = struct{}{}
 		line := stateLedgerLine{
 			SID:        session.ID,
 			State:      string(session.State),
 			Role:       session.Role,
 			RecordedAt: now.UTC().Format(time.RFC3339Nano),
 		}
+		next[session.ID] = line.State
 		if previous, ok := j.seen[session.ID]; !ok || previous != line.State {
 			transition := line
 			transition.Kind = "transition"
 			transition.Since = sinceOf(session, now)
 			lines = append(lines, transition)
-			j.seen[session.ID] = line.State
 		}
 		heartbeat := line
 		heartbeat.Kind = "heartbeat"
 		heartbeat.LastSeen = line.RecordedAt
 		lines = append(lines, heartbeat)
 	}
-	// A session that is gone is forgotten, or the map grows for the life of the
-	// process and a later session reusing an id would never see its transition.
-	for id := range j.seen {
-		if _, ok := live[id]; !ok {
-			delete(j.seen, id)
-		}
-	}
-	return lines
+	// A session that is gone is dropped from `next`, or the map grows for the life
+	// of the process and a later session reusing an id would never see its
+	// transition.
+	return lines, next
 }
 
 // sinceOf is when the session's current state began, from the reported silence.

@@ -84,7 +84,7 @@ func (j *IdleReaperJob) TickAndLog(ctx context.Context) {
 	}
 	j.logf(JobLine(IdleReaperJobName, "tick",
 		"closed", strconv.Itoa(len(result.Closed)),
-		"skipped", strconv.Itoa(result.total()),
+		"skipped", strconv.Itoa(result.skippedCount()),
 	))
 }
 
@@ -106,6 +106,15 @@ func (j *IdleReaperJob) Tick(ctx context.Context) (IdleReaperResult, error) {
 			result.Skipped[reason]++
 			continue
 		}
+		// ⚠️ The list above is a snapshot. Between it and Stop the child can start a
+		// turn, and Stop is unconditional, so re-reading here is what keeps the
+		// window from being the whole tick. It is narrowed, not closed: a turn that
+		// begins between this read and Stop is still cut, because the Supervisor
+		// interface offers no conditional stop.
+		if !j.stillReapable(ctx, session.ID, floor) {
+			result.Skipped["changed-since-list"]++
+			continue
+		}
 		if stopErr := j.Supervisor.Stop(ctx, session.ID); stopErr != nil {
 			j.logf(JobLine(IdleReaperJobName, "stop-failed",
 				"sid", session.ID, "error", stopErr.Error()))
@@ -120,6 +129,20 @@ func (j *IdleReaperJob) Tick(ctx context.Context) (IdleReaperResult, error) {
 		result.Closed = append(result.Closed, session.ID)
 	}
 	return result, nil
+}
+
+// stillReapable re-reads one session and re-applies the floor.
+//
+// An error reads as "not reapable": failing to read a session is not evidence
+// that closing it is safe.
+func (j *IdleReaperJob) stillReapable(
+	ctx context.Context, id string, floor time.Duration,
+) bool {
+	session, err := j.Supervisor.Get(ctx, id)
+	if err != nil || session == nil {
+		return false
+	}
+	return idleReapSkipReason(*session, floor) == ""
 }
 
 // idleReapSkipReason names why a session is not this job's population, or ""
@@ -188,8 +211,11 @@ func (j *IdleReaperJob) logf(line string) {
 	log.Printf("%s", line)
 }
 
-func (r IdleReaperResult) total() int {
-	total := len(r.Closed)
+// skippedCount is the sessions this tick did NOT close. It deliberately excludes
+// Closed: a summary that counted closed sessions as skipped read as though the
+// tick had ignored work it had actually done.
+func (r IdleReaperResult) skippedCount() int {
+	total := 0
 	for _, n := range r.Skipped {
 		total += n
 	}

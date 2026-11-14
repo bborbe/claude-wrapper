@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"strings"
 
 	"github.com/bborbe/errors"
 )
@@ -89,16 +90,25 @@ func NewFleetCheck(script string) FleetCheck {
 	}
 }
 
-// runScript runs one command and returns its combined output and exit code.
+// runScript runs one command and returns its STDOUT and exit code.
 //
-// A non-zero exit is returned as a code, not an error: both checkers use the
-// code as their verdict (10 = owed), and folding it into an error would erase
-// the distinction between "a lapse is owed" and "the checker could not run".
+// ⚠️ stderr is kept out of the returned output. Both checkers print their verdict
+// on stdout and their diagnostics on stderr, and merging the two meant a crash
+// message landed inside the parsed verdict — where a slug is read from the second
+// field of a line. stderr is carried into the error instead, so a failure names
+// the fault and a success parses only what the checker meant to say.
+//
+// A non-zero exit is returned as a code, not an error: both checkers use the code
+// as their verdict (10 = owed), and folding it into an error would erase the
+// distinction between "a lapse is owed" and "the checker could not run". The
+// CALLER decides which codes are legitimate — see ManagerLivenessJob.Tick and
+// FleetKeeperJob.Tick.
 func runScript(ctx context.Context, name string, args ...string) (string, int, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stderr = &errOut
 	err := cmd.Run()
 	if err == nil {
 		return out.String(), 0, nil
@@ -107,5 +117,6 @@ func runScript(ctx context.Context, name string, args ...string) (string, int, e
 	if errors.As(err, &exitErr) {
 		return out.String(), exitErr.ExitCode(), nil
 	}
-	return out.String(), -1, errors.Wrapf(ctx, err, "run %s failed", name)
+	return out.String(), -1, errors.Wrapf(ctx, err, "run %s failed: %s",
+		name, strings.TrimSpace(errOut.String()))
 }

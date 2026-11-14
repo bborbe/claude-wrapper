@@ -41,6 +41,11 @@ const (
 	ManagerLivenessJobName = "manager-liveness-notify"
 	// lapseOwedExitCode is what the checker returns when a lapse is owed a report.
 	lapseOwedExitCode = 10
+	// maxVerdictRunes bounds the verdict column of one ledger row.
+	maxVerdictRunes = 300
+	// maxPublishRunes bounds the escalation message, so one bad poll cannot
+	// produce an unbounded payload.
+	maxPublishRunes = 1000
 )
 
 // LapseCheck runs the checker and reports its output and exit code.
@@ -106,6 +111,16 @@ func (j *ManagerLivenessJob) Tick(ctx context.Context) ([]string, string, error)
 	}
 	slugs := lapsedSlugs(output)
 	notified := "-"
+	// 0 is "nothing owed", 10 is "a lapse is owed". Any other code is the checker
+	// failing, and recording it as a quiet row would make a crashed checker look
+	// like a healthy loop.
+	if code != 0 && code != lapseOwedExitCode {
+		notified = "check-failed"
+		if recordErr := j.record(ctx, code, output, notified); recordErr != nil {
+			return slugs, notified, errors.Wrap(ctx, recordErr, "record liveness row failed")
+		}
+		return slugs, notified, errors.Errorf(ctx, "liveness check exited %d", code)
+	}
 	if code == lapseOwedExitCode && len(slugs) > 0 {
 		notified = j.deliver(ctx, slugs, output)
 	}
@@ -123,7 +138,7 @@ func (j *ManagerLivenessJob) Tick(ctx context.Context) ([]string, string, error)
 func (j *ManagerLivenessJob) deliver(
 	ctx context.Context, slugs []string, output string,
 ) string {
-	message := "Manager loop lapsed: " + strings.Join(lapsedLines(output), ";")
+	message := capRunes("Manager loop lapsed: "+strings.Join(lapsedLines(output), ";"), maxPublishRunes)
 	if err := j.Publish(ctx, message); err != nil {
 		j.logf(JobLine(ManagerLivenessJobName, "send-failed",
 			"slugs", strings.Join(slugs, ","), "error", err.Error()))
@@ -189,10 +204,7 @@ func (j *ManagerLivenessJob) record(
 	}
 	now := j.now()
 	stamp := now.UTC().Format("2006-01-02T15:04:05Z")
-	verdict := strings.ReplaceAll(strings.TrimSpace(output), "\n", ";")
-	if len(verdict) > 300 {
-		verdict = verdict[:300]
-	}
+	verdict := verdictField(output)
 	row := strings.Join([]string{stamp, strconv.Itoa(code), verdict, notified, "wrapper"}, "\t")
 	if err := appendLine(ctx, filepath.Join(dir, "ledger.txt"), row); err != nil {
 		return err
@@ -213,11 +225,36 @@ func appendLine(ctx context.Context, path string, line string) error {
 	return nil
 }
 
+// capRunes truncates on a rune boundary, so a multi-byte character is never cut
+// in half.
+func capRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit])
+}
+
 func (j *ManagerLivenessJob) check(ctx context.Context) (string, int, error) {
 	if j.Check == nil {
 		return "", 0, errors.New(ctx, "liveness check is not configured")
 	}
 	return j.Check(ctx)
+}
+
+// verdictField flattens the checker's output into ONE tab-separated column.
+//
+// ⚠️ Tabs and newlines are replaced, not just newlines: the row is split on tabs,
+// so a tab inside the verdict would shift every later column and make `notified`
+// read as part of the verdict. The cut is on a rune boundary — slicing bytes at
+// 300 can split a multi-byte character and leave the line invalid UTF-8.
+func verdictField(output string) string {
+	flat := strings.NewReplacer("\n", ";", "\t", " ", "\r", "").Replace(strings.TrimSpace(output))
+	runes := []rune(flat)
+	if len(runes) > maxVerdictRunes {
+		runes = runes[:maxVerdictRunes]
+	}
+	return string(runes)
 }
 
 func (j *ManagerLivenessJob) dir() string {

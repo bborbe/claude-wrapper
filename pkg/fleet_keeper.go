@@ -8,6 +8,7 @@ import (
 	"context"
 	"log"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -90,7 +91,13 @@ func (j *FleetKeeperJob) Tick(ctx context.Context) (string, error) {
 	if checkErr != nil {
 		return "", errors.Wrap(ctx, checkErr, "fleet keepalive failed")
 	}
-	if code != fleetLapseOwedExitCode {
+	// 0 is healthy, 10 is a lapse owed. ANY other code is the checker failing —
+	// reporting it as a quiet tick would make a crashed keeper look like a healthy
+	// fleet, which is the one reading this job must never produce.
+	if code != 0 && code != fleetLapseOwedExitCode {
+		return "", errors.Errorf(ctx, "fleet keepalive exited %d: %s", code, firstLine(output))
+	}
+	if code == 0 {
 		return "", nil
 	}
 	cardID := fleetCardID(output)
@@ -115,6 +122,19 @@ func fleetCardID(output string) string {
 
 // cardIDPattern is the keeper's own attribution suffix.
 var cardIDPattern = regexp.MustCompile(`\(card ([^)]+)\)`)
+
+// firstLine is the checker's first output line, for an error that names the
+// fault rather than dumping the whole output into a log line.
+func firstLine(output string) string {
+	trimmed := strings.TrimSpace(output)
+	if idx := strings.IndexByte(trimmed, '\n'); idx >= 0 {
+		trimmed = trimmed[:idx]
+	}
+	if len(trimmed) > 200 {
+		trimmed = trimmed[:200]
+	}
+	return trimmed
+}
 
 func (j *FleetKeeperJob) check(ctx context.Context) (string, int, error) {
 	if j.Check == nil {
