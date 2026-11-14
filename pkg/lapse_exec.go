@@ -115,6 +115,14 @@ func runScript(ctx context.Context, name string, args ...string) (string, int, e
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		// A cancelled context SIGKILLs the child, and ExitCode() reports -1 for a
+		// signal-terminated process. Every caller reads -1 as a genuine non-0/10
+		// verdict, so returning it here would record a false `check-failed` row on
+		// daemon shutdown. Surface the cancellation instead, which the callers
+		// treat as an error rather than as the checker's answer.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return out.String(), -1, errors.Wrapf(ctx, ctxErr, "run %s cancelled", name)
+		}
 		return out.String(), exitErr.ExitCode(), nil
 	}
 	return out.String(), -1, errors.Wrapf(ctx, err, "run %s failed: %s",
