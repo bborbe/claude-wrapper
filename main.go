@@ -234,7 +234,7 @@ func newSupervisor(
 	taskResolver pkg.AnchoredTaskResolver,
 ) (pkg.Supervisor, pkg.LedgerReader) {
 	ledger := pkg.NewLedgerClient(attentionURL, nil, now)
-	return pkg.NewSupervisorWithPolicy(
+	supervisor := pkg.NewSupervisorWithPolicy(
 		ctx,
 		claudeBin,
 		now,
@@ -246,7 +246,12 @@ func newSupervisor(
 			Ledger:            ledger,
 			TaskResolver:      taskResolver,
 		},
-	), ledger
+	)
+	// Installed HERE, before any child can be spawned or adopted: the recorder is
+	// copied into each child at construction, so installing it later would leave
+	// every already-constructed child writing no exit record for its whole life.
+	installSessionExitRecorder(supervisor, now)
+	return supervisor, ledger
 }
 
 const closeOnTerminalTaskDirsUsage = "comma-separated absolute task dirs; at turn end a child whose task " +
@@ -292,6 +297,74 @@ func startStartupSweeper(
 				log.Printf("startup deadline: terminated %d session(s) stuck in starting", stopped)
 			}
 		}
+	}
+}
+
+// installSessionExitRecorder gives the supervisor its exit store.
+//
+// It is a setter rather than a constructor parameter because the supervisor's
+// constructor has call sites that do not care about the store, and a nil
+// recorder is a no-op. The type assertion is how this reaches a concrete
+// supervisor without widening the Supervisor interface every fake must satisfy.
+//
+// ⚠️ Call it BEFORE Adopt: the field is copied into each child at construction,
+// so a recorder installed after adoption leaves every re-adopted child writing
+// no exit record for the rest of its life.
+func installSessionExitRecorder(
+	supervisor pkg.Supervisor,
+	now libtime.CurrentDateTimeGetter,
+) {
+	setter, ok := supervisor.(interface {
+		SetSessionExitRecorder(pkg.SessionExitRecorder)
+	})
+	if !ok {
+		log.Printf("WARNING: supervisor has no exit recorder setter — session exits will not be recorded")
+		return
+	}
+	setter.SetSessionExitRecorder(&pkg.SessionExitFileRecorder{Now: now})
+}
+
+// startLifecycleJobs runs the ticks that used to be launchd jobs, now that the
+// service holds the state they poll.
+//
+// Each is started in its own goroutine and each names its own failure: a job
+// that dies must not take the others with it, and a silent one is exactly the
+// failure the measured 8-25 minute lag came from.
+func startLifecycleJobs(
+	ctx context.Context,
+	supervisor pkg.Supervisor,
+	now libtime.CurrentDateTimeGetter,
+) {
+	jobs := lifecycleJobs(supervisor, now)
+	for _, job := range jobs {
+		go func(j interface {
+			Run(context.Context) error
+		}) {
+			if err := j.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("WARNING: lifecycle job stopped: %v", err)
+			}
+		}(job)
+	}
+}
+
+// lifecycleJobs is the list itself, kept out of the start loop so adding a port
+// does not push the caller past its funlen ceiling.
+func lifecycleJobs(
+	supervisor pkg.Supervisor,
+	now libtime.CurrentDateTimeGetter,
+) []interface{ Run(context.Context) error } {
+	return []interface{ Run(context.Context) error }{
+		&pkg.IdleReaperJob{Supervisor: supervisor},
+		&pkg.StateLedgerJob{Supervisor: supervisor, Now: now},
+		&pkg.ManagerLivenessJob{
+			Check:         pkg.NewLapseCheck(pkg.ManagerLivenessCheckScript),
+			Publish:       pkg.NewLapsePublisher(pkg.NotificationPublishScript, pkg.NotificationPublishEndpoint),
+			MarkDelivered: pkg.NewLapseDelivered(pkg.ManagerLivenessCheckScript),
+			Now:           now,
+		},
+		&pkg.FleetKeeperJob{
+			Check: pkg.NewFleetCheck(pkg.FleetKeeperCheckScript),
+		},
 	}
 }
 
@@ -502,6 +575,10 @@ func startFleetFaces(
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
+
+	// The jobs that used to run as launchd ticks. They read state this process
+	// already holds, so they live here rather than outside it.
+	startLifecycleJobs(ctx, supervisor, now)
 
 	startFleetPusherJobs(
 		ctx, registry, attentionURL, fleetPusherHeartbeat,
