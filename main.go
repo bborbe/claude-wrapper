@@ -256,12 +256,7 @@ func startLifecycleJobs(
 		setter.SetSessionExitRecorder(&pkg.SessionExitFileRecorder{Now: now})
 	}
 
-	jobs := []interface {
-		Run(context.Context) error
-	}{
-		&pkg.IdleReaperJob{Supervisor: supervisor},
-		&pkg.StateLedgerJob{Supervisor: supervisor, Now: now},
-	}
+	jobs := lifecycleJobs(supervisor, now)
 	for _, job := range jobs {
 		go func(j interface {
 			Run(context.Context) error
@@ -270,6 +265,27 @@ func startLifecycleJobs(
 				log.Printf("WARNING: lifecycle job stopped: %v", err)
 			}
 		}(job)
+	}
+}
+
+// lifecycleJobs is the list itself, kept out of the start loop so adding a port
+// does not push the caller past its funlen ceiling.
+func lifecycleJobs(
+	supervisor pkg.Supervisor,
+	now libtime.CurrentDateTimeGetter,
+) []interface{ Run(context.Context) error } {
+	return []interface{ Run(context.Context) error }{
+		&pkg.IdleReaperJob{Supervisor: supervisor},
+		&pkg.StateLedgerJob{Supervisor: supervisor, Now: now},
+		&pkg.ManagerLivenessJob{
+			Check:         pkg.ExecLapseCheck(pkg.ManagerLivenessCheckScript),
+			Publish:       pkg.ExecLapsePublisher(pkg.NotificationPublishScript, pkg.NotificationPublishEndpoint),
+			MarkDelivered: pkg.ExecLapseDelivered(pkg.ManagerLivenessCheckScript),
+			Now:           now,
+		},
+		&pkg.FleetKeeperJob{
+			Check: pkg.ExecFleetCheck(pkg.FleetKeeperCheckScript),
+		},
 	}
 }
 
