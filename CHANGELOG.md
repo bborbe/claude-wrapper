@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.26.1
 
 - test: **the non-recursive task glob is pinned by its own test.** `NewDirAnchoredTaskResolver` globs `*.md` per configured dir and does not descend, so a task file in a subdirectory is invisible to close-at-turn-end — `private-personal/25 Tasks/.sun` holds 12 such files today. That assertion existed only as half of a combined "ignores non-md files and subdirectories" case, where editing the non-md half could weaken it without anything noticing. It is now its own case, named for the boundary, so a later change to a recursive glob fails a test whose name says what it broke.
 
