@@ -322,6 +322,22 @@ func SubmissionConfirmed(text string, message string) bool {
 	return false
 }
 
+// WakeConfirmed is the fleet wake path's positive evidence: a spinner over an
+// empty composer.
+//
+// It mirrors `pane-wake.py`'s send() and is the escape-safe alternative to
+// SubmissionConfirmed for this path. SubmissionConfirmed looks for the echoed
+// message text on the raw escaped screen; with `--escapes` the SGR sequences
+// interleave that text, so a send that DID land reads as unconfirmed — measured
+// live on 2026-11-14, where three woken sessions carried the message in their
+// transcripts while the log reported `failed:`.
+func WakeConfirmed(screen, _ string) bool {
+	if !PaneIsReady(screen) {
+		return false
+	}
+	return PaneGuardVerdict(&screen, false, "") == VerdictSkipSpinner
+}
+
 // composerDeadline bounds the wait for a fresh pane's composer to appear.
 //
 // The launcher starts a shell, runs the `cc-*` script and boots the TUI, so the
@@ -350,17 +366,20 @@ func SendWhenReady(
 	text string,
 	now libtime.CurrentDateTimeGetter,
 ) error {
-	return SendWhenReadyWith(ctx, tabs, paneID, text, now, ComposerReady)
+	return SendWhenReadyWith(ctx, tabs, paneID, text, now, ComposerReady, SubmissionConfirmed)
 }
 
-// SendWhenReadyWith is SendWhenReady with the composer-readiness rule injected.
+// SendWhenReadyWith is SendWhenReady with the readiness and confirmation rules
+// injected.
 //
 // The spawn path must refuse a drawn-but-placeholder composer (a submit while the
-// TUI is still painting is swallowed), so its readiness rule is ComposerReady. The
-// fleet wake path is the opposite case: it reaches LONG-IDLE panes, where the dim
-// next-prompt suggestion is always present and a send into it lands — so it passes
-// PaneIsReady. Without this seam the guard can declare such a pane wakeable and the
-// send path then waits out its deadline and reports a failure.
+// TUI is still painting is swallowed), so its readiness rule is ComposerReady and
+// its confirmation is the echoed-message check. The fleet wake path is the
+// opposite case on both counts: it reaches LONG-IDLE panes, where the dim
+// next-prompt suggestion is always present and a send into it lands (PaneIsReady),
+// and its positive evidence is a spinner over an empty composer (WakeConfirmed) —
+// the echoed-message check reads the raw escaped screen, where SGR sequences
+// interleave the text and make the substring match fail on a send that DID land.
 func SendWhenReadyWith(
 	ctx context.Context,
 	tabs TabClient,
@@ -368,6 +387,7 @@ func SendWhenReadyWith(
 	text string,
 	now libtime.CurrentDateTimeGetter,
 	ready func(string) bool,
+	confirmed func(screen, message string) bool,
 ) error {
 	if err := waitComposerWith(ctx, tabs, paneID, composerDeadline, now, ready); err != nil {
 		return err
@@ -375,7 +395,7 @@ func SendWhenReadyWith(
 	if err := tabs.SendText(ctx, paneID, text); err != nil {
 		return err
 	}
-	if confirmSubmission(ctx, tabs, paneID, text, now) {
+	if confirmSubmissionWith(ctx, tabs, paneID, text, now, confirmed) {
 		return nil
 	}
 	// The Enter was swallowed. An extra Enter on an empty composer is harmless,
@@ -383,7 +403,7 @@ func SendWhenReadyWith(
 	if err := tabs.SendText(ctx, paneID, ""); err != nil {
 		return err
 	}
-	if confirmSubmission(ctx, tabs, paneID, text, now) {
+	if confirmSubmissionWith(ctx, tabs, paneID, text, now, confirmed) {
 		return nil
 	}
 	return errors.Errorf(
@@ -433,18 +453,18 @@ func waitComposerWith(
 	}
 }
 
-// confirmSubmission polls a pane for a fresh prompt below the message.
-func confirmSubmission(
+// confirmSubmissionWith polls a pane until the injected predicate confirms the submit.
+func confirmSubmissionWith(
 	ctx context.Context,
 	tabs TabClient,
 	paneID string,
 	text string,
 	now libtime.CurrentDateTimeGetter,
+	confirmed func(screen, message string) bool,
 ) bool {
 	deadline := now.Now().Time().Add(confirmDeadline)
 	for {
-		if output, err := tabs.Text(ctx, paneID); err == nil &&
-			SubmissionConfirmed(output, text) {
+		if output, err := tabs.Text(ctx, paneID); err == nil && confirmed(output, text) {
 			return true
 		}
 		if now.Now().Time().After(deadline) {
