@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.25.0
 
 - feat: **all five ported jobs now start with the daemon.** `startLifecycleJobs` starts `idle-reaper`, `state-ledger`, `manager-liveness-notify` and `fleet-keeper`; `session-exit-daily` is live through the exit recorder. The last two are bound to the Python predicates they still depend on — exec'd, not re-derived, because `manager-liveness.py` carries the liveness rule and `fleet-keeper.py` carries the 18/38/51-minute settle measurement the 2026-11-01 ruling was made against. Two definitions of one judgement would disagree.
   A checker's non-zero exit is returned as a code, not an error: both use the code as their verdict (10 = owed), and folding it into an error would erase the difference between "a lapse is owed" and "the checker could not run". The publish path stays the vault's own write script, which is the credential holder — this process never sees the token.
