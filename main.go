@@ -56,6 +56,40 @@ func registerFlaggedTickFlags() flaggedTickFlags {
 	}
 }
 
+// fleetPusherFlags are the wake tick's and watchdog's flags, registered together
+// so main stays inside its length budget.
+type fleetPusherFlags struct {
+	interval      *time.Duration
+	heartbeat     *string
+	watchInterval *time.Duration
+	watchMaxAge   *time.Duration
+	once          *bool
+	send          *bool
+	sessions      *string
+}
+
+func registerFleetPusherFlags() fleetPusherFlags {
+	return fleetPusherFlags{
+		interval: flag.Duration("fleet-pusher-interval", pkg.DefaultFleetPusherInterval,
+			"how often to wake idle tab sessions; 0 disables the tick"),
+		heartbeat: flag.String("fleet-pusher-heartbeat",
+			"~/.claude/state/fleet-pusher/heartbeat",
+			"heartbeat file the wake tick stamps and the watchdog reads"),
+		watchInterval: flag.Duration("fleet-pusher-watch-interval",
+			pkg.DefaultFleetPusherWatchInterval,
+			"how often the wake tick's heartbeat is checked; 0 disables the watchdog"),
+		watchMaxAge: flag.Duration("fleet-pusher-watch-max-age",
+			pkg.DefaultFleetPusherMaxAge,
+			"heartbeat age past which the wake cadence is declared dead"),
+		once: flag.Bool("fleet-pusher-once", false,
+			"run one wake tick and exit, for a scoped probe; never binds the listener"),
+		send: flag.Bool("send", false,
+			"type into idle sessions in a --fleet-pusher-once probe; the daemon's own tick always sends"),
+		sessions: flag.String("sessions", "",
+			"comma-separated session ids to scope a --fleet-pusher-once probe to; the daemon's tick covers every live session"),
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -76,6 +110,7 @@ func main() {
 	heartbeatInterval := flag.Duration("heartbeat-interval", pkg.DefaultHeartbeatInterval,
 		"how often to stamp a heartbeat for every live session")
 	flagged := registerFlaggedTickFlags()
+	fleetPusher := registerFleetPusherFlags()
 	stateDir := flag.String("state-dir", "",
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
 	drainBound := flag.Duration("drain-bound", 4*time.Second,
@@ -99,6 +134,15 @@ func main() {
 	// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The scoped probe: one wake tick, then exit. It runs before the supervisor is
+	// built, so it never binds the listener and can be invoked beside the live
+	// daemon. It also never writes the heartbeat — a probe must not make the
+	// watchdog believe the production cadence is alive.
+	if *fleetPusher.once {
+		runFleetPusherOnce(ctx, *attentionURL, *fleetPusher.sessions, *fleetPusher.send)
+		return
+	}
 
 	now := libtime.NewCurrentDateTime()
 	// One decider, shared: the policy path and the board path must write their
@@ -129,30 +173,45 @@ func main() {
 	startFleetFaces(
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
 		*flagged.interval, *flagged.script,
+		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
+		*fleetPusher.heartbeat,
 	)
 
 	// The startup deadline is the only verb that can clear a child stuck in
 	// `starting`: it never emits an init event, so nothing else reaches it.
 	go startStartupSweeper(ctx, supervisor, pkg.StartupSweepInterval)
 
+	serveUntilStopped(ctx, mux, *listen, supervisor, *drainBound, stop)
+}
+
+// serveUntilStopped runs the HTTP server and drains it once the signal arrives.
+//
+// Extracted so main reads as a flag block plus wiring; the ordering inside is the
+// shutdown contract and lives in drainAndStop.
+func serveUntilStopped(
+	ctx context.Context,
+	mux *http.ServeMux,
+	listen string,
+	supervisor pkg.Supervisor,
+	drainBound time.Duration,
+	stop func(),
+) {
 	server := &http.Server{
-		Addr:              *listen,
+		Addr:              listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-
 	go func() {
-		log.Printf("claude-wrapper listening on %s", *listen)
+		log.Printf("claude-wrapper listening on %s", listen)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen failed: %v", err)
 		}
 	}()
-
 	<-ctx.Done()
-	drainAndStop(supervisor, server, *drainBound, stop)
+	drainAndStop(supervisor, server, drainBound, stop)
 }
 
 // newSupervisor builds the supervisor together with the one ledger client its
@@ -363,6 +422,10 @@ func startFleetFaces(
 	heartbeatInterval time.Duration,
 	flaggedTickInterval time.Duration,
 	flaggedRowsScript string,
+	fleetPusherInterval time.Duration,
+	fleetPusherWatchInterval time.Duration,
+	fleetPusherWatchMaxAge time.Duration,
+	fleetPusherHeartbeat string,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
@@ -370,25 +433,7 @@ func startFleetFaces(
 
 	startBoardDelivery(supervisor, decider, attentionURL)
 
-	// The A2A spawn targets: docker and k8s workers, created on ann
-	// a2a-worker-controller. A configuration that cannot be read disables the
-	// tools rather than failing the daemon — a daemon with no controller is a
-	// daemon whose local work still runs.
-	a2aConfig, a2aErr := a2a.LoadConfig(context.Background(), "")
-	if a2aErr != nil {
-		log.Printf("WARNING: A2A spawn targets disabled: %v", a2aErr)
-		a2aConfig = a2a.Config{}
-	}
-	pushRegistry := a2a.NewPushRegistry("host.docker.internal")
-	a2aManager := a2a.NewManager(a2a.NewClient(a2a.NewID), pushRegistry, a2aConfig)
-	// ⚠️ THE MAC CANNOT ACCEPT AN INBOUND CONNECTION FROM THE CLUSTER, so a
-	// cluster worker's push is pulled from an in-cluster relay instead. No relay
-	// configured means no cluster status channel, and the spawn still works.
-	if tunnel, tunnelErr := a2a.NewTunnel(
-		a2aConfig.RelayURL, a2aConfig.RelaySecret, pushRegistry,
-	); tunnelErr == nil {
-		go tunnel.Run(ctx)
-	}
+	a2aManager := newA2AManager(ctx)
 
 	// The fleet-facing MCP face: a Claude session reading and steering the
 	// roster. A third face beside /mcp and --mcp-stdio, and separate from both on
@@ -457,6 +502,140 @@ func startFleetFaces(
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
+
+	startFleetPusherJobs(
+		ctx, registry, attentionURL, fleetPusherHeartbeat,
+		fleetPusherInterval, fleetPusherWatchInterval, fleetPusherWatchMaxAge, now,
+	)
+}
+
+// newA2AManager builds the A2A spawn targets: docker and k8s workers, created on
+// an a2a-worker-controller.
+//
+// A configuration that cannot be read disables the tools rather than failing the
+// daemon — a daemon with no controller is a daemon whose local work still runs.
+func newA2AManager(ctx context.Context) *a2a.Manager {
+	a2aConfig, err := a2a.LoadConfig(context.Background(), "")
+	if err != nil {
+		log.Printf("WARNING: A2A spawn targets disabled: %v", err)
+		a2aConfig = a2a.Config{}
+	}
+	pushRegistry := a2a.NewPushRegistry("host.docker.internal")
+	manager := a2a.NewManager(a2a.NewClient(a2a.NewID), pushRegistry, a2aConfig)
+	// ⚠️ THE MAC CANNOT ACCEPT AN INBOUND CONNECTION FROM THE CLUSTER, so a
+	// cluster worker's push is pulled from an in-cluster relay instead. No relay
+	// configured means no cluster status channel, and the spawn still works.
+	if tunnel, tunnelErr := a2a.NewTunnel(
+		a2aConfig.RelayURL, a2aConfig.RelaySecret, pushRegistry,
+	); tunnelErr == nil {
+		go tunnel.Run(ctx)
+	}
+	return manager
+}
+
+// startFleetPusherJobs runs the wake tick and its watchdog in-process.
+//
+// Both are interval jobs over the same heartbeat file: the tick stamps it before
+// any work, the watchdog reports when it ages. Neither runs a model turn — this is
+// the cheap layer, and `/supervisor:fleet-triage` (a model round) is deliberately
+// not on it.
+func startFleetPusherJobs(
+	ctx context.Context,
+	registry pkg.SessionRegistry,
+	attentionURL string,
+	heartbeatPath string,
+	tickInterval time.Duration,
+	watchInterval time.Duration,
+	watchMaxAge time.Duration,
+	now libtime.CurrentDateTimeGetter,
+) {
+	tabs := pkg.NewTabClient("")
+	store := pkg.NewBoardStore(attentionURL, nil)
+
+	if tickInterval > 0 {
+		pusher := newFleetPusher(registry, tabs, store, now)
+		pusher.HeartbeatPath = heartbeatPath
+		pusher.Interval = tickInterval
+		// ⚠️ The long-running job's whole purpose is to TYPE. `Send` defaults to
+		// false so the one-shot probe is a dry run unless `--send`, but without
+		// this line the daemon's tick would inherit that default and never deliver
+		// anything — a permanent dry run with a healthy-looking log line.
+		pusher.Send = true
+		go func() {
+			if err := pusher.Run(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("fleet pusher stopped: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("fleet pusher disabled (--fleet-pusher-interval=%s)", tickInterval)
+	}
+
+	if watchInterval > 0 {
+		watch := &pkg.FleetPusherWatch{
+			HeartbeatPath: heartbeatPath,
+			Now:           now,
+			MaxAge:        watchMaxAge,
+			Poster:        pkg.NewAttentionPoster(attentionURL, nil),
+			Cards:         pkg.NewBoardCardLookup(store),
+			Interval:      watchInterval,
+		}
+		go func() {
+			if err := watch.Run(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("fleet pusher watch stopped: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("fleet pusher watch disabled (--fleet-pusher-watch-interval=%s)", watchInterval)
+	}
+}
+
+// newFleetPusher builds the wake tick with the live fleet's collaborators.
+func newFleetPusher(
+	registry pkg.SessionRegistry,
+	tabs pkg.TabClient,
+	store pkg.BoardStore,
+	now libtime.CurrentDateTimeGetter,
+) *pkg.FleetPusher {
+	return &pkg.FleetPusher{
+		Registry:    registry,
+		Joiner:      pkg.NewWeztermPaneJoiner(""),
+		Tabs:        tabs,
+		Cards:       pkg.NewBoardOpenCards(store),
+		Subject:     pkg.NewSubjectStateReader("", "", now),
+		Now:         now,
+		SelfSession: os.Getenv("CLAUDE_CODE_SESSION_ID"),
+		SelfPane:    os.Getenv("WEZTERM_PANE"),
+	}
+}
+
+// runFleetPusherOnce runs one scoped wake tick and exits.
+//
+// It is the probe entry point: `--sessions A,B --send` types only into A and B, so
+// the operator's live sessions are untouched, and the default without `--send` is
+// a dry run that types nothing at all.
+func runFleetPusherOnce(
+	ctx context.Context,
+	attentionURL string,
+	sessions string,
+	send bool,
+) {
+	now := libtime.NewCurrentDateTime()
+	store := pkg.NewBoardStore(attentionURL, nil)
+	pusher := newFleetPusher(pkg.NewSessionRegistry(""), pkg.NewTabClient(""), store, now)
+	pusher.Sessions = splitSessions(sessions)
+	pusher.Send = send
+	pusher.TickOnce(ctx)
+}
+
+// splitSessions parses the `--sessions` comma list, dropping empties.
+func splitSessions(value string) []string {
+	ids := make([]string, 0, 2)
+	for _, id := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	return ids
 }
 
 // startBoardDelivery runs the board arms: one process reads the store for every

@@ -34,15 +34,19 @@ const FreshnessSkew = 5 * time.Second
 
 // BoardItem is one attention-store item, in the shape the delivery arms read.
 type BoardItem struct {
-	ItemID          string        `json:"item_id"`
-	State           string        `json:"state"`
-	AnswerMechanism string        `json:"answer_mechanism"`
-	ProducerID      string        `json:"producer_id"`
-	Decision        string        `json:"decision"`
-	Answers         []BoardAnswer `json:"answers"`
-	Answer          *BoardAnswer  `json:"answer"`
-	ResolvedBy      string        `json:"resolved_by"`
-	CreatedAt       string        `json:"created_at"`
+	ItemID          string `json:"item_id"`
+	State           string `json:"state"`
+	AnswerMechanism string `json:"answer_mechanism"`
+	ProducerID      string `json:"producer_id"`
+	// DedupKey is the caller's fixed slug for a condition card. It is how a
+	// producer recognises its OWN card already on the board, so a repeated cycle
+	// posts nothing rather than relying on the store's own suppression alone.
+	DedupKey   string        `json:"dedup_key"`
+	Decision   string        `json:"decision"`
+	Answers    []BoardAnswer `json:"answers"`
+	Answer     *BoardAnswer  `json:"answer"`
+	ResolvedBy string        `json:"resolved_by"`
+	CreatedAt  string        `json:"created_at"`
 }
 
 // BoardAnswer is one answer unit inside an item.
