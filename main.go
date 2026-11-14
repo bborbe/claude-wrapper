@@ -278,13 +278,13 @@ func lifecycleJobs(
 		&pkg.IdleReaperJob{Supervisor: supervisor},
 		&pkg.StateLedgerJob{Supervisor: supervisor, Now: now},
 		&pkg.ManagerLivenessJob{
-			Check:         pkg.ExecLapseCheck(pkg.ManagerLivenessCheckScript),
-			Publish:       pkg.ExecLapsePublisher(pkg.NotificationPublishScript, pkg.NotificationPublishEndpoint),
-			MarkDelivered: pkg.ExecLapseDelivered(pkg.ManagerLivenessCheckScript),
+			Check:         pkg.NewLapseCheck(pkg.ManagerLivenessCheckScript),
+			Publish:       pkg.NewLapsePublisher(pkg.NotificationPublishScript, pkg.NotificationPublishEndpoint),
+			MarkDelivered: pkg.NewLapseDelivered(pkg.ManagerLivenessCheckScript),
 			Now:           now,
 		},
 		&pkg.FleetKeeperJob{
-			Check: pkg.ExecFleetCheck(pkg.FleetKeeperCheckScript),
+			Check: pkg.NewFleetCheck(pkg.FleetKeeperCheckScript),
 		},
 	}
 }

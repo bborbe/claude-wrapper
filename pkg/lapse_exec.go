@@ -36,16 +36,16 @@ const (
 	NotificationPublishEndpoint = "/api/1.0/command/core-notification-v1/notification-publish?sync=true"
 )
 
-// ExecLapseCheck runs the liveness checker.
-func ExecLapseCheck(script string) LapseCheck {
+// NewLapseCheck runs the liveness checker.
+func NewLapseCheck(script string) LapseCheck {
 	return func(ctx context.Context) (string, int, error) {
 		return runScript(ctx, PythonBin, expandedDir(script), "--check")
 	}
 }
 
-// ExecLapseDelivered marks one slug delivered, which is the only thing that
+// NewLapseDelivered marks one slug delivered, which is the only thing that
 // stops the checker re-emitting it.
-func ExecLapseDelivered(script string) LapseDelivered {
+func NewLapseDelivered(script string) LapseDelivered {
 	return func(ctx context.Context, slug string) error {
 		_, code, err := runScript(ctx, PythonBin, expandedDir(script), "--delivered", slug)
 		if err != nil {
@@ -58,11 +58,11 @@ func ExecLapseDelivered(script string) LapseDelivered {
 	}
 }
 
-// ExecLapsePublisher publishes one escalation through the vault's write script.
+// NewLapsePublisher publishes one escalation through the vault's write script.
 //
 // ⚠️ The script is the credential holder; this process never sees the token. A
 // non-zero exit is a FAILED send and the lapse stays owed.
-func ExecLapsePublisher(script string, endpoint string) LapsePublisher {
+func NewLapsePublisher(script string, endpoint string) LapsePublisher {
 	return func(ctx context.Context, message string) error {
 		body, err := json.Marshal(map[string]string{
 			"type":    "agent-escalation",
@@ -82,8 +82,8 @@ func ExecLapsePublisher(script string, endpoint string) LapsePublisher {
 	}
 }
 
-// ExecFleetCheck runs the fleet keeper, which posts its own card.
-func ExecFleetCheck(script string) FleetCheck {
+// NewFleetCheck runs the fleet keeper, which posts its own card.
+func NewFleetCheck(script string) FleetCheck {
 	return func(ctx context.Context) (string, int, error) {
 		return runScript(ctx, PythonBin, expandedDir(script))
 	}
