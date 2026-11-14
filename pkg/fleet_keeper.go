@@ -7,7 +7,7 @@ package pkg
 import (
 	"context"
 	"log"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -46,17 +46,13 @@ const (
 // made against.
 type FleetCheck func(ctx context.Context) (output string, exitCode int, err error)
 
-// CardRaiser raises one attention card and returns its id.
-//
-// The id is what the job logs: a card that was raised but whose id was not
-// recorded cannot be joined to the tick that raised it, which is exactly the
-// evidence a 24 h observation needs.
-type CardRaiser func(ctx context.Context, message string) (cardID string, err error)
-
 // FleetKeeperJob runs the fleet keeper inside the daemon.
 type FleetKeeperJob struct {
+	// Check execs the keeper. ⚠️ The SCRIPT raises the card, not this job: it
+	// holds the one-card-per-episode record (`lapse.json`) that stops a repeat
+	// tick re-posting, and re-raising here would need a second copy of that
+	// state. The id comes back in the script's own output as `(card <id>)`.
 	Check FleetCheck
-	Raise CardRaiser
 	// Interval is how often the keepalive runs. Zero means
 	// DefaultFleetKeeperInterval.
 	Interval time.Duration
@@ -87,7 +83,7 @@ func (j *FleetKeeperJob) TickAndLog(ctx context.Context) {
 	j.logf(JobLine(FleetKeeperJobName, "card-raised", "card", cardID))
 }
 
-// Tick runs one poll and returns the card id it raised, or "" when nothing was
+// Tick runs one poll and returns the card id it saw, or "" when nothing was
 // owed.
 func (j *FleetKeeperJob) Tick(ctx context.Context) (string, error) {
 	output, code, checkErr := j.check(ctx)
@@ -97,33 +93,28 @@ func (j *FleetKeeperJob) Tick(ctx context.Context) (string, error) {
 	if code != fleetLapseOwedExitCode {
 		return "", nil
 	}
-	if j.Raise == nil {
-		return "", errors.New(ctx, "card raiser is not configured")
-	}
-	cardID, raiseErr := j.Raise(ctx, fleetLapseMessage(output))
-	if raiseErr != nil {
-		return "", errors.Wrap(ctx, raiseErr, "raise fleet lapse card failed")
-	}
+	cardID := fleetCardID(output)
 	if cardID == "" {
-		// A card with no id is a card nobody can poll; refusing to log success is
-		// the only way this stays checkable.
-		return "", errors.New(ctx, "card raiser returned no id")
+		// A lapse the keeper judged owed but could not attribute is a card nobody
+		// can poll; refusing to log a bare success is the only way this stays
+		// checkable.
+		return "", errors.New(ctx, "lapse owed but no card id in the keeper output")
 	}
 	return cardID, nil
 }
 
-// fleetLapseMessage names the lapsed rounds, capped so one bad poll cannot
-// produce an unbounded payload.
-func fleetLapseMessage(output string) string {
-	trimmed := strings.TrimSpace(output)
-	if len(trimmed) > 500 {
-		trimmed = trimmed[:500]
+// fleetCardID pulls the item id out of the keeper's sentence, which ends with
+// `(card <id>)` when a card was posted.
+func fleetCardID(output string) string {
+	match := cardIDPattern.FindStringSubmatch(output)
+	if len(match) < 2 {
+		return ""
 	}
-	if trimmed == "" {
-		return "Fleet round lapsed: keepalive reported stale with no detail"
-	}
-	return "Fleet round lapsed: " + trimmed
+	return match[1]
 }
+
+// cardIDPattern is the keeper's own attribution suffix.
+var cardIDPattern = regexp.MustCompile(`\(card ([^)]+)\)`)
 
 func (j *FleetKeeperJob) check(ctx context.Context) (string, int, error) {
 	if j.Check == nil {
