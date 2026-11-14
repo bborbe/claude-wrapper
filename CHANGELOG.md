@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the wake tick's delivery confirmation is escape-safe.** `SendWhenReadyWith` now takes the confirmation rule as well as the readiness rule. The spawn path keeps the echoed-message check; the wake path uses a spinner over an empty composer — the same positive evidence `pane-wake.py` used. The echoed-message check reads the raw `--escapes` screen, where SGR sequences interleave the message text, so a send that DID land read as unconfirmed: measured live on 2026-11-14, three woken sessions carried the wake message in their transcripts while the log reported `failed:`.
+
 ## v0.24.0
 
 - feat: **the fleet-pusher launchd jobs move in-process.** The 900 s wake tick and its 300 s watchdog were a bash script shelling out to four Python entry points (~2,163 lines) and resolving the newest installed cache version on every tick. Both are now interval jobs inside the daemon: the live-session read is the wrapper's own registry, the send half is the existing `SendWhenReady`, and the one piece the service did not have — the pid → tty → pane join — is ported from `plugin-version-census.py`. The guard's verdict vocabulary (13 screen verdicts plus the fail-closed `skip:state-unreadable`) is ported from `pane-wake-guard.py`, each verdict pinned by a spec over a screen captured with `wezterm cli get-text --escapes`. The tick is dry-run by default and takes `--sessions` / `--send` / `--fleet-pusher-once`, so it can be probed against two disposable sessions without waking the live fleet. Both jobs emit their line unconditionally, zeros included — the retired script printed its counter line only when non-empty, so a healthy idle tick and a dead one looked identical.

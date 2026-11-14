@@ -219,7 +219,7 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 		})
 
 		ginkgo.It("is a dry run by default, typing nothing", func() {
-			tabs := &fakeTabs{before: "❯ \n", after: "❯ wake now\n❯ \n"}
+			tabs := &fakeTabs{before: "❯ \n", after: "✻ Thinking… (3s\n❯ \n"}
 			pusher := pusherFor(
 				&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
 				&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
@@ -232,7 +232,7 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 		})
 
 		ginkgo.It("delivers when --send is set and the submit is confirmed", func() {
-			tabs := &fakeTabs{before: "❯ \n", after: "❯ wake now\n❯ \n"}
+			tabs := &fakeTabs{before: "❯ \n", after: "✻ Thinking… (3s\n❯ \n"}
 			pusher := pusherFor(
 				&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
 				&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
@@ -251,7 +251,7 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 		// every suggestion-verdict wake times out. This pins the readiness seam.
 		ginkgo.It("delivers into a dim-placeholder composer the spawn path refuses", func() {
 			placeholder := "❯ \x1b[0;2mTry \"how does this work?\"\x1b[0m\n"
-			tabs := &fakeTabs{before: placeholder, after: "❯ wake now\n❯ \n"}
+			tabs := &fakeTabs{before: placeholder, after: "✻ Thinking… (3s\n❯ \n"}
 			pusher := pusherFor(
 				&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
 				&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
