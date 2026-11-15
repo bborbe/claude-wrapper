@@ -223,6 +223,14 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	// stall every event on the child. An open card means the worker is waiting on
 	// the operator; stopping it would orphan exactly that card. A store that
 	// cannot be read fails closed for the same reason.
+	//
+	// ⚠️ **Accepted TOCTOU, and it is the store's own latency wide.** A card that
+	// opens between this read and the kill is not seen. Closing it would mean
+	// holding c.mutex across the store round trip, which trades a rare orphaned
+	// card for a stall on every event of every child; the node server's
+	// `endWorkerIfIdle` accepts the same window. The read is deliberately placed
+	// as late as it can be — after the cheap in-process checks would have kept the
+	// child anyway — so the window is only ever as long as one store call.
 	if c.openCards != nil {
 		cards, err := c.openCards.OpenSessionIDs(ctx)
 		if err != nil {

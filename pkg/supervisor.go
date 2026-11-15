@@ -942,6 +942,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		exitRecorder: s.exitRecorder,
 		ctx:          s.ctx,
 		taskResolver: s.policy.TaskResolver,
+		openCards:    s.policy.OpenCards,
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
