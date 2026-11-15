@@ -181,6 +181,12 @@ type SupervisorPolicy struct {
 	// TaskResolver, when set, is consulted at every turn end: a child whose
 	// anchored task is completed or aborted is closed once idle. Nil disables it.
 	TaskResolver AnchoredTaskResolver
+	// OpenCards, when set, is read before a headless worker is stopped: a
+	// session with an open attention card is waiting on the operator and is kept.
+	// A read error also keeps it — failing closed, because a store that cannot be
+	// read may hold a card for any session. Nil means no store is configured and
+	// is treated as "no cards", not as a read failure.
+	OpenCards OpenCardReader
 }
 
 // NewSupervisorWithPolicy creates a Supervisor with an approval policy.
@@ -423,6 +429,7 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			exitRecorder: s.exitRecorder,
 			ctx:          s.ctx,
 			taskResolver: s.policy.TaskResolver,
+			openCards:    s.policy.OpenCards,
 			session: Session{
 				ID:       record.ID,
 				State:    StateStarting,
@@ -935,6 +942,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		exitRecorder: s.exitRecorder,
 		ctx:          s.ctx,
 		taskResolver: s.policy.TaskResolver,
+		openCards:    s.policy.OpenCards,
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
@@ -1283,6 +1291,16 @@ type child struct {
 	// taskResolver finds this session's anchored task at turn end; nil disables
 	// close-on-terminal-task.
 	taskResolver AnchoredTaskResolver
+	// openCards is the attention store, consulted before a headless worker is
+	// stopped: an open card means the worker is waiting on the operator, and
+	// stopping it would orphan exactly that card. Nil means no store is
+	// configured, which is "no cards" — not an unreadable one.
+	openCards OpenCardReader
+	// ending is set under c.mutex at the moment a headless stop commits to
+	// killing the child, so `send` refuses a turn that would otherwise be
+	// accepted and then lost by the kill. It is never cleared on the stop path:
+	// the child is gone. A failed kill clears it.
+	ending bool
 	// exitRecorder is the daemon's exit store; nil means the record is disabled.
 	exitRecorder SessionExitRecorder
 }
@@ -1374,6 +1392,16 @@ func (c *child) send(ctx context.Context, text string) error {
 	// refusing every subsequent run on a child that is actually idle. Counting
 	// first makes the window impossible; a failed write rolls it back.
 	c.mutex.Lock()
+	// ⚠️ The `ending` check is INSIDE this lock, not beside the state read above.
+	// `ending` is set under the same mutex by the headless stop path, so this
+	// either increments first (the stop then sees a pending turn and keeps the
+	// child) or is refused — there is no window where a turn is counted and then
+	// killed. A refused send is an error the caller can retry against a new
+	// session; an accepted-then-lost turn is invisible.
+	if c.ending {
+		c.mutex.Unlock()
+		return errors.Wrapf(ctx, ErrSessionExited, "session %q is ending", c.id)
+	}
 	c.pendingTurns++
 	// The turn's own sequence, taken here so it precedes any result that can close
 	// it: the row's writes are ordered by this number, and a turn that has not been

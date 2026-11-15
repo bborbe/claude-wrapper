@@ -210,6 +210,25 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 		}, "5s").Should(gomega.Equal(StateIdle))
 	})
 
+	// ⚠️ The spawn path and the adopt path each build a `child` by hand, and a
+	// field missed at ONE of them is invisible from the other: the open-card keep
+	// silently stops working for every freshly spawned worker while the adopt path
+	// keeps working. That is exactly what shipped in 14146b4 and was caught in
+	// review, so the wiring is pinned here rather than assumed.
+	ginkgo.It("wires the attention store onto a spawned child", func() {
+		cards := &fakeOpenCards{}
+		sup := newSupervisor(answeringChild(`{"type":"result","subtype":"success","is_error":false}`), nil)
+		sup.policy.OpenCards = cards
+		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
+		sup.mutex.RLock()
+		spawned := sup.sessions[session.ID]
+		sup.mutex.RUnlock()
+		gomega.Expect(spawned).NotTo(gomega.BeNil())
+		gomega.Expect(spawned.openCards).To(gomega.Equal(cards))
+	})
+
 	// ⚠️ The adopt path is the one that can write a FALSE verdict: a successor
 	// re-reads the whole event file, so every historical result passes through the
 	// same apply() that files one. Without the replay flag, a restart would stamp a
@@ -221,7 +240,12 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 			answeringChild(`{"type":"result","subtype":"success","is_error":false}`),
 			ledger,
 		)
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
+		// ⚠️ INTERACTIVE on purpose. This spec is about the replay path, and it
+		// needs a child that OUTLIVES its turn so a successor can adopt it. A
+		// headless worker no longer does: `checkTerminalTask` stops it at turn end
+		// (`closeHeadlessTurnEnd`), so the successor would find nothing to adopt and
+		// the assertion would fail for a reason unrelated to the verdict.
+		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir, Mode: SpawnModeInteractive})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
 		defer func() { _ = sup.Stop(context.Background(), session.ID) }()

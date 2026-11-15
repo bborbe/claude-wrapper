@@ -245,6 +245,7 @@ func newSupervisor(
 			PermissionTimeout: permissionTimeout,
 			Ledger:            ledger,
 			TaskResolver:      taskResolver,
+			OpenCards:         openCardsFromURL(attentionURL),
 		},
 	)
 	// Installed HERE, before any child can be spawned or adopted: the recorder is
@@ -256,6 +257,20 @@ func newSupervisor(
 
 const closeOnTerminalTaskDirsUsage = "comma-separated absolute task dirs; at turn end a child whose task " +
 	"(claude_session_id) is completed or aborted is closed. Empty disables"
+
+// openCardsFromURL builds the attention-store reader the headless stop path
+// consults before killing a worker. An open card means the worker is waiting on
+// the operator and must be kept, so stopping it would orphan that card.
+//
+// An empty URL returns nil, which the stop path treats as "no cards" — not as
+// an unreadable store. A store that is configured but failing still fails
+// closed, which is the distinction that keeps a real card safe.
+func openCardsFromURL(attentionURL string) pkg.OpenCardReader {
+	if strings.TrimSpace(attentionURL) == "" {
+		return nil
+	}
+	return pkg.NewBoardOpenCards(pkg.NewBoardStore(attentionURL, nil))
+}
 
 // taskResolverFromFlag builds the close-on-terminal-task resolver; an empty
 // flag returns nil, which leaves the feature off.
