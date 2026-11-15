@@ -304,7 +304,10 @@ func newTick(source FlaggedRowSource, reopener FlaggedReopener, caps SpawnCaps) 
 var _ = ginkgo.Describe("flagged reopen tick", func() {
 	ginkgo.Describe("decides whether a flagged row is reopened", func() {
 		now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-		recent := map[string]time.Time{"recent": now.Add(-5 * time.Minute)}
+		recent := map[string]time.Time{
+			"recent":                    now.Add(-5 * time.Minute),
+			labelKey("opened-just-now"): now.Add(-5 * time.Minute),
+		}
 
 		ginkgo.DescribeTable("each guard",
 			func(row FlaggedRow, wantOpened bool, wantReason string) {
@@ -329,9 +332,22 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			ginkgo.Entry("live", FlaggedRow{
 				Name: "live", Liveness: "LIVE",
 			}, false, reasonNotAbsent),
-			ginkgo.Entry("none", FlaggedRow{
+			ginkgo.Entry("none without a branch", FlaggedRow{
 				Name: "none", Liveness: "none",
 			}, false, reasonNotAbsent),
+			ginkgo.Entry("never opened — create", FlaggedRow{
+				Name: "never-opened-create", Liveness: "none", Branch: "create",
+			}, true, ""),
+			ginkgo.Entry("never opened — direct", FlaggedRow{
+				Name: "never-opened-direct", Liveness: "none", Branch: "direct",
+			}, true, ""),
+			ginkgo.Entry("none WITH a session id (--no-liveness shape) is never opened fresh",
+				FlaggedRow{
+					Name: "none-with-id", SessionID: "abc", Liveness: "none", Branch: "create",
+				}, false, reasonNotAbsent),
+			ginkgo.Entry("never opened, but opened by label inside the window", FlaggedRow{
+				Name: "opened-just-now", Liveness: "none", Branch: "create",
+			}, false, reasonRecentlySpawned),
 			ginkgo.Entry("unknown", FlaggedRow{
 				Name: "unknown", Liveness: "UNKNOWN",
 			}, false, reasonNotAbsent),
@@ -599,5 +615,36 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			gomega.Expect(result.Opened).To(gomega.BeEmpty())
 			gomega.Expect(result.Skipped).To(gomega.HaveLen(1))
 		})
+	})
+})
+
+// fakeLedgerRows serves a fixed ledger row set to the recently-spawned guard.
+type fakeLedgerRows struct{ rows []LedgerRow }
+
+func (f fakeLedgerRows) Rows(context.Context) ([]LedgerRow, error) { return f.rows, nil }
+
+func (fakeLedgerRows) Post(context.Context, string, LedgerRow) error { return nil }
+
+func (fakeLedgerRows) Patch(context.Context, string, LedgerPatch) error { return nil }
+
+var _ = ginkgo.Describe("flagged tick recently-spawned guard by label", func() {
+	ginkgo.It("skips a never-opened row the ledger already spawned under its name", func() {
+		now := time.Now().UTC()
+		tick := newTick(
+			staticSource{rows: []FlaggedRow{{
+				Name: "fresh", Liveness: "none", Branch: "create", Role: "agent", Mode: "headless",
+			}}},
+			&recordingReopener{},
+			&recordingCaps{},
+		)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "new-session", Label: "fresh",
+			SpawnedAt: now.Add(-2 * time.Minute).Format(time.RFC3339),
+		}}}
+		recent := tick.recentlySpawned(context.Background())
+		gomega.Expect(recent).To(gomega.HaveKey(labelKey("fresh")))
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(result.Opened).To(gomega.BeEmpty())
 	})
 })

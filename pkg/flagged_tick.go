@@ -337,8 +337,40 @@ func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time 
 			continue
 		}
 		out[row.SessionID] = at
+		// A never-opened row has no session id to look up, so its spawn is also
+		// filed under its label — the task name both spawn paths record. Without
+		// this the next tick, which can come before the worker writes its
+		// `claude_session_id`, would open the same row a second time.
+		if row.Label != "" {
+			key := labelKey(row.Label)
+			if prev, ok := out[key]; !ok || at.After(prev) {
+				out[key] = at
+			}
+		}
 	}
 	return out
+}
+
+// labelKey is the recently-spawned map's key for a spawn found by label.
+//
+// The prefix keeps a label from ever colliding with a session id.
+func labelKey(label string) string {
+	return "label:" + label
+}
+
+// neverOpened reports whether the row is a flagged row that has never had a
+// session: the predicate read its liveness as `none` because there was no id to
+// probe, and routed it to a fresh open (`create`) or the operator's own
+// workspace (`direct`).
+//
+// ⚠️ The empty session id is load-bearing. Under `--no-liveness` the predicate
+// reports `none` for EVERY row, including ones that do have a session — and
+// opening those fresh would start a second conversation beside a live one.
+func neverOpened(row FlaggedRow) bool {
+	if row.Liveness != "none" || row.SessionID != "" {
+		return false
+	}
+	return row.Branch == "create" || row.Branch == "direct"
 }
 
 func (t *FlaggedTick) now() time.Time {
@@ -365,7 +397,11 @@ func decision(
 	if len(row.BlockedBy) > 0 {
 		return reasonBlocked, false, true
 	}
-	// Only ABSENT is eligible.
+	// Eligible: ABSENT (a session that died — resume it) or never opened (no
+	// session at all — open it fresh, see neverOpened). Operator ruling
+	// 2026-11-15: flagged rows open automatically; before this, a flagged row that
+	// had never had a session was skipped on every tick, because only ABSENT was
+	// admitted and such a row reads `none`.
 	//
 	// ⚠️ This used to skip only LIVE, which made `none` and `UNKNOWN` eligible
 	// too — a row the predicate could not classify would have been opened, and a
@@ -373,13 +409,18 @@ func decision(
 	// "for each ABSENT row"; anything the predicate could not prove absent is
 	// left alone. `none` is what `--no-liveness` reports for every row, so the
 	// permissive form would have reopened the entire fleet.
-	if row.Liveness != "ABSENT" {
+	fresh := neverOpened(row)
+	if row.Liveness != "ABSENT" && !fresh {
 		return reasonNotAbsent, false, true
 	}
 	if row.Branch == "jump" {
 		return reasonAlreadyLive, false, true
 	}
-	if at, ok := recent[row.SessionID]; ok && now.Sub(at) < recentlySpawnedWindow {
+	key := row.SessionID
+	if fresh {
+		key = labelKey(row.Name)
+	}
+	if at, ok := recent[key]; ok && now.Sub(at) < recentlySpawnedWindow {
 		return reasonRecentlySpawned, false, true
 	}
 	return "", false, false
