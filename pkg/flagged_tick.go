@@ -52,6 +52,7 @@ const (
 	// 2 × predicateTimeout + one interval old (a read that started just before a
 	// spawn, then a full read and an interval after it) — 65 minutes today. A
 	// window shorter than that lets a stale `none` row be opened a second time.
+	// The cost: an ABSENT row is resumed up to 30 minutes later than before.
 	recentlySpawnedWindow = 90 * time.Minute
 
 	// predicateTimeout bounds one predicate read.
@@ -162,7 +163,9 @@ type FlaggedTick struct {
 	// by labelKey(row name). ⚠️ The ledger is not enough on its own: a tab spawn
 	// files its ledger row only once the session registers (an 8 s deadline), and
 	// a ledger outage files nothing — either way the next tick would find no
-	// record and open the same row again.
+	// record and open the same row again. Bounded by the number of distinct task
+	// names this daemon ever opened fresh; expired entries are ignored by the
+	// window check, not pruned.
 	opened map[string]time.Time
 }
 
@@ -355,7 +358,8 @@ func (t *FlaggedTick) readRows(ctx context.Context) ([]FlaggedRow, error) {
 	return rows, nil
 }
 
-// recentlySpawned maps session id to its ledger spawn time.
+// recentlySpawned maps session id — and, for a never-opened row, labelKey(task
+// name) — to its ledger spawn time.
 //
 // A ledger read that fails is an empty map, not an error: the guard is a safety
 // margin, and refusing every row because the store was down would turn a store
