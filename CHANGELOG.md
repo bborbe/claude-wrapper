@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.26.2
 
 - fix: **`flagged-tick` opens a flagged row that has never had a session.** It admitted only liveness `ABSENT`, so a never-opened row — liveness `none`, no session id, branch `create` or `direct` — was skipped every tick (2026-11-15: 14 of 33 flagged rows). Such a row is now opened fresh; a `none` row that carries a session id (the `--no-liveness` shape) stays skipped. Fresh opens are tasks only — a goal/topic `create` row can sit beside a live manager. The recently-spawned guard also keys a spawn by its ledger label plus an in-process record of the daemon's own opens, and its window is 90 min (longer than the 65-min worst-case cache age), so the next tick cannot open the same row twice before the worker records its `claude_session_id`.
 
