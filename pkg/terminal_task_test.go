@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,17 @@ type fakeAnchoredTaskResolver struct {
 	result AnchoredTask
 	err    error
 	calls  int
+}
+
+// fakeOpenCards stands in for the attention store: ids is the open-card set and
+// err is a store that cannot be read.
+type fakeOpenCards struct {
+	ids map[string]struct{}
+	err error
+}
+
+func (f *fakeOpenCards) OpenSessionIDs(_ context.Context) (map[string]struct{}, error) {
+	return f.ids, f.err
 }
 
 func (f *fakeAnchoredTaskResolver) Resolve(
@@ -325,6 +337,34 @@ var _ = ginkgo.Describe("headless turn end", func() {
 	})
 	ginkgo.It("keeps a headless agent while a question is pending", func() {
 		c.session.Question = &Question{RequestID: "r1"}
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("keeps a headless agent that has an open attention card", func() {
+		c.openCards = &fakeOpenCards{ids: map[string]struct{}{"sid": {}}}
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("keeps a headless agent when the attention store cannot be read", func() {
+		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("stops when the attention store holds no card for it", func() {
+		c.openCards = &fakeOpenCards{ids: map[string]struct{}{"other": {}}}
+		checkTurnEnd()
+		expectKilled()
+	})
+	ginkgo.It("refuses a turn once the headless stop has committed", func() {
+		c.mutex.Lock()
+		c.ending = true
+		c.mutex.Unlock()
+		err := c.send(ctx, "hello")
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("is ending"))
+	})
+	ginkgo.It("trims the role before exempting a manager", func() {
+		c.session.Role = " manager "
 		checkTurnEnd()
 		expectAlive()
 	})

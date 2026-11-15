@@ -174,29 +174,89 @@ func (c *child) endsAtTurnEnd() bool {
 	if c.session.Mode != SpawnModeHeadless {
 		return false
 	}
-	switch c.session.Role {
+	// ⚠️ Trimmed: the spawn path stores the role verbatim, and the repo's own
+	// manager gates compare `strings.TrimSpace(role)` (`roster_mcp.go`). Comparing
+	// untrimmed would exempt `" manager"` at the gate and stop it here — a manager
+	// killed by a whitespace typo.
+	switch strings.TrimSpace(c.session.Role) {
 	case RoleManager, RoleHuman:
 		return false
 	}
 	return true
 }
 
+// The three reasons a child must not be stopped. They are constants, not
+// literals, because they are the evidence a keep is logged against: the
+// headless turn-end path and `stopIfIdleAndUnparked` both read them from
+// `keepReasonLocked`, so the logged reason can never drift from the decision.
+const (
+	reasonAlreadyExited   = "already exited"
+	reasonTurnOpen        = "a turn is open"
+	reasonQuestionPending = "a question is pending"
+)
+
+// keepReasonLocked reports why the child must not be stopped, or ok=false when
+// it is idle and unparked. The caller must hold c.mutex.
+func (c *child) keepReasonLocked() (string, bool) {
+	switch {
+	case c.session.State == StateExited:
+		return reasonAlreadyExited, true
+	case c.pendingTurns > 0 || c.session.State == StateGenerating:
+		return reasonTurnOpen, true
+	case c.session.Question != nil:
+		return reasonQuestionPending, true
+	}
+	return "", false
+}
+
 // closeHeadlessTurnEnd stops a headless worker whose turn has closed with
 // nothing pending — the Go daemon's end of life for the headless spawn path.
-// The node server's `endWorkerIfIdle` performs the same decision on the tab
-// path; this is its daemon-side counterpart.
+// It is the daemon-side counterpart of the node server's `endWorkerIfIdle`,
+// which makes the same stop decision for the spawn path it drives. The daemon
+// adds the open-card keep and has no zero-turn grace.
 //
 // ⚠️ EVERY keep arm is logged. A silent keep would make a stop line
-// indistinguishable from a keep, so each of the three reasons
-// `stopIfIdleAndUnparked` can return is reported.
+// indistinguishable from a keep.
 func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
-	stopped, reason, err := c.stopIfIdleAndUnparked(ctx)
-	if err != nil {
-		log.Printf("WARNING: could not stop %s after its turn closed: %v", c.id, err)
+	// The card check runs BEFORE the decision is committed, and before the lock
+	// is taken: it is I/O, and holding c.mutex across a store round trip would
+	// stall every event on the child. An open card means the worker is waiting on
+	// the operator; stopping it would orphan exactly that card. A store that
+	// cannot be read fails closed for the same reason.
+	if c.openCards != nil {
+		cards, err := c.openCards.OpenSessionIDs(ctx)
+		if err != nil {
+			log.Printf("WARNING: could not read the attention store for %s; keeping the session: %v", c.id, err)
+			return
+		}
+		if _, open := cards[c.id]; open {
+			log.Printf("agent %s: keeping worker — open-card", c.id)
+			return
+		}
+	}
+
+	c.mutex.Lock()
+	// Re-read under the lock: a turn may have been written while the card check
+	// ran, and that turn must not be cut off.
+	if reason, keep := c.keepReasonLocked(); keep {
+		c.mutex.Unlock()
+		if reason == reasonAlreadyExited {
+			log.Printf("agent %s: turn closed — session already exited", c.id)
+			return
+		}
+		log.Printf("agent %s: keeping worker — %s", c.id, reason)
 		return
 	}
-	if !stopped {
-		log.Printf("agent %s: keeping worker — %s", c.id, reason)
+	// Commit: from here `send` refuses a new turn, so the kill cannot lose one.
+	c.ending = true
+	killErr := syscall.Kill(c.pid, syscall.SIGKILL)
+	if killErr != nil {
+		c.ending = false
+	}
+	c.mutex.Unlock()
+
+	if killErr != nil {
+		log.Printf("WARNING: could not stop %s after its turn closed: %v", c.id, killErr)
 		return
 	}
 	log.Printf("agent %s: turn closed with nothing pending — stopping the session", c.id)
@@ -238,13 +298,8 @@ func (c *child) closeIfTaskTerminal(ctx context.Context) bool {
 func (c *child) stopIfIdleAndUnparked(ctx context.Context) (bool, string, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	switch {
-	case c.session.State == StateExited:
-		return false, "already exited", nil
-	case c.pendingTurns > 0 || c.session.State == StateGenerating:
-		return false, "a turn is open", nil
-	case c.session.Question != nil:
-		return false, "a question is pending", nil
+	if reason, keep := c.keepReasonLocked(); keep {
+		return false, reason, nil
 	}
 	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
 		return false, "", errors.Wrapf(ctx, err, "kill session %q failed", c.id)
