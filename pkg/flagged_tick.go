@@ -47,7 +47,13 @@ const (
 	// `recently-spawned` case to flip to opened, failing the run. It must stay a
 	// package-level constant for that mutation to be a code change rather than
 	// test input.
-	recentlySpawnedWindow = 60 * time.Minute
+	//
+	// 90 minutes, not 60: the row cache a tick decides on can be up to
+	// 2 × predicateTimeout + one interval old (a read that started just before a
+	// spawn, then a full read and an interval after it) — 65 minutes today. A
+	// window shorter than that lets a stale `none` row be opened a second time.
+	// The cost: an ABSENT row is resumed up to 30 minutes later than before.
+	recentlySpawnedWindow = 90 * time.Minute
 
 	// predicateTimeout bounds one predicate read.
 	//
@@ -150,6 +156,38 @@ type FlaggedTick struct {
 	ReadTimeout time.Duration
 	// Logf defaults to log.Printf.
 	Logf func(format string, args ...any)
+
+	// openedMutex guards opened.
+	openedMutex sync.Mutex
+	// opened records, in process, when this tick opened a never-opened row, keyed
+	// by labelKey(row name). ⚠️ The ledger is not enough on its own: a tab spawn
+	// files its ledger row only once the session registers (an 8 s deadline), and
+	// a ledger outage files nothing — either way the next tick would find no
+	// record and open the same row again. Bounded by the number of distinct task
+	// names this daemon ever opened fresh; expired entries are ignored by the
+	// window check, not pruned.
+	opened map[string]time.Time
+}
+
+// rememberOpened records a never-opened row this process just opened.
+func (t *FlaggedTick) rememberOpened(row FlaggedRow, at time.Time) {
+	t.openedMutex.Lock()
+	defer t.openedMutex.Unlock()
+	if t.opened == nil {
+		t.opened = map[string]time.Time{}
+	}
+	t.opened[labelKey(row.Name)] = at
+}
+
+// mergeOpened folds this process's own opens into the ledger-derived map.
+func (t *FlaggedTick) mergeOpened(recent map[string]time.Time) {
+	t.openedMutex.Lock()
+	defer t.openedMutex.Unlock()
+	for key, at := range t.opened {
+		if prev, ok := recent[key]; !ok || at.After(prev) {
+			recent[key] = at
+		}
+	}
 }
 
 // flaggedRowCache holds the most recent predicate read.
@@ -263,6 +301,7 @@ func (t *FlaggedTick) tickFromRows(
 ) FlaggedTickResult {
 	var result FlaggedTickResult
 	recent := t.recentlySpawned(ctx)
+	t.mergeOpened(recent)
 	now := t.now()
 	for _, row := range orderFlaggedRows(rows) {
 		if len(result.Opened) >= maxRowsPerTick {
@@ -293,6 +332,9 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
 			continue
 		}
+		if neverOpened(row) {
+			t.rememberOpened(row, now)
+		}
 		result.Opened = append(result.Opened, row.Key())
 	}
 	return result
@@ -316,7 +358,8 @@ func (t *FlaggedTick) readRows(ctx context.Context) ([]FlaggedRow, error) {
 	return rows, nil
 }
 
-// recentlySpawned maps session id to its ledger spawn time.
+// recentlySpawned maps session id — and, for a never-opened row, labelKey(task
+// name) — to its ledger spawn time.
 //
 // A ledger read that fails is an empty map, not an error: the guard is a safety
 // margin, and refusing every row because the store was down would turn a store
@@ -337,8 +380,48 @@ func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time 
 			continue
 		}
 		out[row.SessionID] = at
+		// A never-opened row has no session id to look up, so its spawn is also
+		// filed under its label — the task name both spawn paths record. Without
+		// this the next tick, which can come before the worker writes its
+		// `claude_session_id`, would open the same row a second time.
+		if row.Label != "" {
+			key := labelKey(row.Label)
+			if prev, ok := out[key]; !ok || at.After(prev) {
+				out[key] = at
+			}
+		}
 	}
 	return out
+}
+
+// labelKey is the recently-spawned map's key for a spawn found by label.
+//
+// The prefix keeps a label from ever colliding with a session id. The key carries
+// no vault — the ledger row does not record one — so two same-named tasks in
+// different vaults suppress each other for one window. That errs toward not
+// opening, never toward a duplicate.
+func labelKey(label string) string {
+	return "label:" + label
+}
+
+// neverOpened reports whether the row is a flagged row that has never had a
+// session: the predicate read its liveness as `none` because there was no id to
+// probe, and routed it to a fresh open (`create`) or the operator's own
+// workspace (`direct`).
+//
+// ⚠️ The empty session id is load-bearing. Under `--no-liveness` the predicate
+// reports `none` for EVERY row, including ones that do have a session — and
+// opening those fresh would start a second conversation beside a live one.
+//
+// ⚠️ Tasks only. For a goal or topic the predicate returns `create` whenever its
+// manager chain is live OR unreadable (it routes to `open-manager` only on a
+// proven-dead chain), so admitting a goal/topic `none`+`create` row would open a
+// duplicate manager beside a live one.
+func neverOpened(row FlaggedRow) bool {
+	if row.Kind != "task" || row.Liveness != "none" || row.SessionID != "" {
+		return false
+	}
+	return row.Branch == "create" || row.Branch == "direct"
 }
 
 func (t *FlaggedTick) now() time.Time {
@@ -365,7 +448,11 @@ func decision(
 	if len(row.BlockedBy) > 0 {
 		return reasonBlocked, false, true
 	}
-	// Only ABSENT is eligible.
+	// Eligible: ABSENT (a session that died — resume it) or never opened (no
+	// session at all — open it fresh, see neverOpened). Operator ruling
+	// 2026-11-15: flagged rows open automatically; before this, a flagged row that
+	// had never had a session was skipped on every tick, because only ABSENT was
+	// admitted and such a row reads `none`.
 	//
 	// ⚠️ This used to skip only LIVE, which made `none` and `UNKNOWN` eligible
 	// too — a row the predicate could not classify would have been opened, and a
@@ -373,13 +460,18 @@ func decision(
 	// "for each ABSENT row"; anything the predicate could not prove absent is
 	// left alone. `none` is what `--no-liveness` reports for every row, so the
 	// permissive form would have reopened the entire fleet.
-	if row.Liveness != "ABSENT" {
+	fresh := neverOpened(row)
+	if row.Liveness != "ABSENT" && !fresh {
 		return reasonNotAbsent, false, true
 	}
 	if row.Branch == "jump" {
 		return reasonAlreadyLive, false, true
 	}
-	if at, ok := recent[row.SessionID]; ok && now.Sub(at) < recentlySpawnedWindow {
+	key := row.SessionID
+	if fresh {
+		key = labelKey(row.Name)
+	}
+	if at, ok := recent[key]; ok && now.Sub(at) < recentlySpawnedWindow {
 		return reasonRecentlySpawned, false, true
 	}
 	return "", false, false
