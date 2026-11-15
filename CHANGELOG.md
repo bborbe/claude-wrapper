@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **a headless worker's turn end is now its end of life.** `checkTerminalTask` consulted only the anchored task, so a headless worker whose task was still `in_progress` stayed alive after its turn closed and was reaped no sooner than the idle reaper's 15-minute floor. A headless `agent`-role child now stops at turn end when nothing is pending — the same decision the node server's `endWorkerIfIdle` makes on the tab path — and logs `agent <id>: turn closed with nothing pending — stopping the session`. Every keep arm is logged (`agent <id>: keeping worker — <reason>`) so a stop can be told from a keep; a silent keep is exactly what makes the stop line unfalsifiable. Managers and human-role sessions are exempt — a headless manager between rounds is waiting for its next wake, not finished — and an empty role takes the default (`agent`), so it stops. The kill path is the existing `stopIfIdleAndUnparked`, so registry, roster and ledger stay consistent.
+
 ## v0.26.2
 
 - fix: **`flagged-tick` opens a flagged row that has never had a session.** It admitted only liveness `ABSENT`, so a never-opened row — liveness `none`, no session id, branch `create` or `direct` — was skipped every tick (2026-11-15: 14 of 33 flagged rows). Such a row is now opened fresh; a `none` row that carries a session id (the `--no-liveness` shape) stays skipped. Fresh opens are tasks only — a goal/topic `create` row can sit beside a live manager. The recently-spawned guard also keys a spawn by its ledger label plus an in-process record of the daemon's own opens, and its window is 90 min (longer than the 65-min worst-case cache age), so the next tick cannot open the same row twice before the worker records its `claude_session_id`.

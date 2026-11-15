@@ -188,3 +188,144 @@ var _ = ginkgo.Describe("close on terminal task", func() {
 		expectKilled()
 	})
 })
+
+// stopIfIdleAndUnparked's reason strings are the evidence a keep is logged
+// against, so each arm is pinned here. A silent or renamed arm would make a
+// stop line indistinguishable from a keep.
+var _ = ginkgo.Describe("stopIfIdleAndUnparked reasons", func() {
+	var (
+		ctx    context.Context
+		cmd    *exec.Cmd
+		c      *child
+		exited chan struct{}
+	)
+	ginkgo.BeforeEach(func() {
+		ctx = context.Background()
+		cmd = exec.Command("sleep", "30")
+		gomega.Expect(cmd.Start()).To(gomega.Succeed())
+		exited = make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(exited)
+		}()
+		c = &child{
+			id:      "sid",
+			pid:     cmd.Process.Pid,
+			ctx:     ctx,
+			session: Session{ID: "sid", State: StateIdle},
+		}
+	})
+	ginkgo.AfterEach(func() {
+		_ = cmd.Process.Kill()
+		<-exited
+	})
+
+	ginkgo.It("reports already exited", func() {
+		c.session.State = StateExited
+		stopped, reason, err := c.stopIfIdleAndUnparked(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(stopped).To(gomega.BeFalse())
+		gomega.Expect(reason).To(gomega.Equal("already exited"))
+	})
+	ginkgo.It("reports a turn is open when a turn is pending", func() {
+		c.pendingTurns = 1
+		stopped, reason, err := c.stopIfIdleAndUnparked(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(stopped).To(gomega.BeFalse())
+		gomega.Expect(reason).To(gomega.Equal("a turn is open"))
+	})
+	ginkgo.It("reports a turn is open when the session is generating", func() {
+		c.session.State = StateGenerating
+		stopped, reason, err := c.stopIfIdleAndUnparked(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(stopped).To(gomega.BeFalse())
+		gomega.Expect(reason).To(gomega.Equal("a turn is open"))
+	})
+	ginkgo.It("reports a question is pending", func() {
+		c.session.Question = &Question{RequestID: "r1"}
+		stopped, reason, err := c.stopIfIdleAndUnparked(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(stopped).To(gomega.BeFalse())
+		gomega.Expect(reason).To(gomega.Equal("a question is pending"))
+	})
+	ginkgo.It("stops with no reason when idle and unparked", func() {
+		stopped, reason, err := c.stopIfIdleAndUnparked(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(stopped).To(gomega.BeTrue())
+		gomega.Expect(reason).To(gomega.BeEmpty())
+		gomega.Eventually(exited, 5*time.Second).Should(gomega.BeClosed())
+	})
+})
+
+// The headless worker's turn end is its end of life. Managers and interactive
+// sessions must never be stopped by it.
+var _ = ginkgo.Describe("headless turn end", func() {
+	var (
+		ctx    context.Context
+		cmd    *exec.Cmd
+		c      *child
+		exited chan struct{}
+	)
+	ginkgo.BeforeEach(func() {
+		ctx = context.Background()
+		cmd = exec.Command("sleep", "30")
+		gomega.Expect(cmd.Start()).To(gomega.Succeed())
+		exited = make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(exited)
+		}()
+		c = &child{
+			id:      "sid",
+			pid:     cmd.Process.Pid,
+			ctx:     ctx,
+			session: Session{ID: "sid", State: StateIdle, Mode: SpawnModeHeadless, Role: RoleAgent},
+		}
+	})
+	ginkgo.AfterEach(func() {
+		_ = cmd.Process.Kill()
+		<-exited
+	})
+	checkTurnEnd := func() {
+		c.mutex.Lock()
+		c.checkTerminalTask()
+		c.mutex.Unlock()
+	}
+	expectKilled := func() { gomega.Eventually(exited, 5*time.Second).Should(gomega.BeClosed()) }
+	expectAlive := func() { gomega.Consistently(exited, 200*time.Millisecond).ShouldNot(gomega.BeClosed()) }
+
+	ginkgo.It("stops a headless agent whose turn closed with nothing pending", func() {
+		checkTurnEnd()
+		expectKilled()
+	})
+	ginkgo.It("stops a headless agent with no role (the default role)", func() {
+		c.session.Role = ""
+		checkTurnEnd()
+		expectKilled()
+	})
+	ginkgo.It("never stops an interactive session", func() {
+		c.session.Mode = SpawnModeInteractive
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("never stops a headless manager", func() {
+		c.session.Role = RoleManager
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("never stops a headless human-role session", func() {
+		c.session.Role = RoleHuman
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("keeps a headless agent while a turn is open", func() {
+		c.pendingTurns = 1
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("keeps a headless agent while a question is pending", func() {
+		c.session.Question = &Question{RequestID: "r1"}
+		checkTurnEnd()
+		expectAlive()
+	})
+})

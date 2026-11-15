@@ -141,13 +141,65 @@ func terminalTaskDecision(status AnchoredTask) (closeChild bool, reason string, 
 	}
 }
 
-// checkTerminalTask is called at turn end under c.mutex; the resolve and the
-// decision run on their own goroutine so the event loop never waits on disk.
+// checkTerminalTask is called at turn end under c.mutex; the decision runs on
+// its own goroutine so the event loop never waits on a syscall or on disk.
+//
+// ⚠️ The HEADLESS WORKER path does not consult the task resolver. A headless
+// worker is one-shot: its turn closing with nothing pending IS its end of life,
+// whatever its anchored task says. That is the case `closeIfTaskTerminal` alone
+// could not express — it fires only when the task is already terminal — and the
+// reason an idle headless worker used to survive until the idle reaper's
+// fifteen-minute floor. Managers and human-role sessions keep the old rule,
+// because a headless manager going idle between rounds is not finished.
 func (c *child) checkTerminalTask() {
-	if c.taskResolver == nil || c.ctx == nil {
+	if c.ctx == nil {
+		return
+	}
+	if c.endsAtTurnEnd() {
+		go c.closeHeadlessTurnEnd(c.ctx)
+		return
+	}
+	if c.taskResolver == nil {
 		return
 	}
 	go c.closeIfTaskTerminal(c.ctx)
+}
+
+// endsAtTurnEnd reports whether this child is a headless worker, whose turn
+// closing with nothing pending is its end of life. Managers and human-role
+// sessions are exempt: a manager between rounds is waiting for its next wake,
+// not finished, and stopping one would take the fleet's loop down with it.
+// An empty role is the default role (`RoleAgent`), so it stops.
+func (c *child) endsAtTurnEnd() bool {
+	if c.session.Mode != SpawnModeHeadless {
+		return false
+	}
+	switch c.session.Role {
+	case RoleManager, RoleHuman:
+		return false
+	}
+	return true
+}
+
+// closeHeadlessTurnEnd stops a headless worker whose turn has closed with
+// nothing pending — the Go daemon's end of life for the headless spawn path.
+// The node server's `endWorkerIfIdle` performs the same decision on the tab
+// path; this is its daemon-side counterpart.
+//
+// ⚠️ EVERY keep arm is logged. A silent keep would make a stop line
+// indistinguishable from a keep, so each of the three reasons
+// `stopIfIdleAndUnparked` can return is reported.
+func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
+	stopped, reason, err := c.stopIfIdleAndUnparked(ctx)
+	if err != nil {
+		log.Printf("WARNING: could not stop %s after its turn closed: %v", c.id, err)
+		return
+	}
+	if !stopped {
+		log.Printf("agent %s: keeping worker — %s", c.id, reason)
+		return
+	}
+	log.Printf("agent %s: turn closed with nothing pending — stopping the session", c.id)
 }
 
 // closeIfTaskTerminal resolves the session's task and stops the child when the

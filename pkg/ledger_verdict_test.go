@@ -221,7 +221,12 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 			answeringChild(`{"type":"result","subtype":"success","is_error":false}`),
 			ledger,
 		)
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
+		// ⚠️ INTERACTIVE on purpose. This spec is about the replay path, and it
+		// needs a child that OUTLIVES its turn so a successor can adopt it. A
+		// headless worker no longer does: `checkTerminalTask` stops it at turn end
+		// (`closeHeadlessTurnEnd`), so the successor would find nothing to adopt and
+		// the assertion would fail for a reason unrelated to the verdict.
+		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir, Mode: SpawnModeInteractive})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
 		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
