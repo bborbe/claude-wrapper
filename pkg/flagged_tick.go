@@ -47,7 +47,12 @@ const (
 	// `recently-spawned` case to flip to opened, failing the run. It must stay a
 	// package-level constant for that mutation to be a code change rather than
 	// test input.
-	recentlySpawnedWindow = 60 * time.Minute
+	//
+	// 90 minutes, not 60: the row cache a tick decides on can be up to
+	// 2 × predicateTimeout + one interval old (a read that started just before a
+	// spawn, then a full read and an interval after it) — 65 minutes today. A
+	// window shorter than that lets a stale `none` row be opened a second time.
+	recentlySpawnedWindow = 90 * time.Minute
 
 	// predicateTimeout bounds one predicate read.
 	//
@@ -150,6 +155,36 @@ type FlaggedTick struct {
 	ReadTimeout time.Duration
 	// Logf defaults to log.Printf.
 	Logf func(format string, args ...any)
+
+	// openedMutex guards opened.
+	openedMutex sync.Mutex
+	// opened records, in process, when this tick opened a never-opened row, keyed
+	// by labelKey(row name). ⚠️ The ledger is not enough on its own: a tab spawn
+	// files its ledger row only once the session registers (an 8 s deadline), and
+	// a ledger outage files nothing — either way the next tick would find no
+	// record and open the same row again.
+	opened map[string]time.Time
+}
+
+// rememberOpened records a never-opened row this process just opened.
+func (t *FlaggedTick) rememberOpened(row FlaggedRow, at time.Time) {
+	t.openedMutex.Lock()
+	defer t.openedMutex.Unlock()
+	if t.opened == nil {
+		t.opened = map[string]time.Time{}
+	}
+	t.opened[labelKey(row.Name)] = at
+}
+
+// mergeOpened folds this process's own opens into the ledger-derived map.
+func (t *FlaggedTick) mergeOpened(recent map[string]time.Time) {
+	t.openedMutex.Lock()
+	defer t.openedMutex.Unlock()
+	for key, at := range t.opened {
+		if prev, ok := recent[key]; !ok || at.After(prev) {
+			recent[key] = at
+		}
+	}
 }
 
 // flaggedRowCache holds the most recent predicate read.
@@ -263,6 +298,7 @@ func (t *FlaggedTick) tickFromRows(
 ) FlaggedTickResult {
 	var result FlaggedTickResult
 	recent := t.recentlySpawned(ctx)
+	t.mergeOpened(recent)
 	now := t.now()
 	for _, row := range orderFlaggedRows(rows) {
 		if len(result.Opened) >= maxRowsPerTick {
@@ -292,6 +328,9 @@ func (t *FlaggedTick) tickFromRows(
 		if err := t.Reopener.Reopen(ctx, row); err != nil {
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
 			continue
+		}
+		if neverOpened(row) {
+			t.rememberOpened(row, now)
 		}
 		result.Opened = append(result.Opened, row.Key())
 	}
@@ -353,7 +392,10 @@ func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time 
 
 // labelKey is the recently-spawned map's key for a spawn found by label.
 //
-// The prefix keeps a label from ever colliding with a session id.
+// The prefix keeps a label from ever colliding with a session id. The key carries
+// no vault — the ledger row does not record one — so two same-named tasks in
+// different vaults suppress each other for one window. That errs toward not
+// opening, never toward a duplicate.
 func labelKey(label string) string {
 	return "label:" + label
 }
@@ -366,8 +408,13 @@ func labelKey(label string) string {
 // ⚠️ The empty session id is load-bearing. Under `--no-liveness` the predicate
 // reports `none` for EVERY row, including ones that do have a session — and
 // opening those fresh would start a second conversation beside a live one.
+//
+// ⚠️ Tasks only. For a goal or topic the predicate returns `create` whenever its
+// manager chain is live OR unreadable (it routes to `open-manager` only on a
+// proven-dead chain), so admitting a goal/topic `none`+`create` row would open a
+// duplicate manager beside a live one.
 func neverOpened(row FlaggedRow) bool {
-	if row.Liveness != "none" || row.SessionID != "" {
+	if row.Kind != "task" || row.Liveness != "none" || row.SessionID != "" {
 		return false
 	}
 	return row.Branch == "create" || row.Branch == "direct"

@@ -29,14 +29,14 @@ tick decodes; everything else in a row is ignored.
 
 | Field | Meaning | How the tick uses it |
 |---|---|---|
-| `kind` | `task`, `goal` or `topic` | Only for the row's identity in the log line |
+| `kind` | `task`, `goal` or `topic` | The row's identity in the log line, and the never-opened gate: only a `task` is opened fresh |
 | `vault` | The Obsidian vault the row lives in | Passed to the spawner, which resolves the launcher from it |
 | `name` | The row's title | Passed to the spawner as the tab label |
 | `role` | `agent`, `manager` or `human` | `human` rows are ordered first; the role's window is named `Direct` |
 | `mode` | `headless` or `interactive` | Passed verbatim to `CheckWorker` — **never defaulted**, because an empty mode takes no mode sub-cap at all |
 | `session_id` | The row's recorded session, or null | Resume target, and the key for the ledger join and the log line |
-| `liveness` | `LIVE`, `ABSENT` or `none` | `LIVE` rows are skipped |
-| `branch` | `jump`, `resume` or `create` | `jump` rows are skipped (already reachable) |
+| `liveness` | `LIVE`, `ABSENT`, `UNKNOWN` or `none` | `ABSENT` is resumed; `none` with an **empty** `session_id` on a `task` is opened fresh (never-opened, since 2026-11-15); every other value is skipped |
+| `branch` | `jump`, `resume`, `create`, `direct`, `open-manager` or `skip` | `jump` rows are skipped (already reachable); a never-opened task must read `create` or `direct` |
 | `blocked_by` | Unresolved blockers, as a list | A non-empty list skips the row |
 | `refused` | The predicate's own provenance verdicts | A non-empty list refuses the row |
 
@@ -88,3 +88,13 @@ The tick's `recently-spawned` guard limits the first case to a 60-minute window;
 the other two have no backstop. When the predicate changes, change this page and
 the Go struct in the same pass, and check that the tick's fixture still decodes
 non-zero for every field above.
+
+## Never-opened rows
+
+A flagged **task** that has never had a session reads `liveness: none`, an empty `session_id` and `branch: create` (or `direct` for `role: human`). It is opened fresh. Until 2026-11-15 only `ABSENT` was admitted, so such a row was skipped on every tick. Two limits keep this safe:
+
+- **An empty `session_id` is required.** Under `--no-liveness` the predicate reports `none` for every row, including rows that do have a session; opening those fresh would start a second conversation beside a live one.
+- **Tasks only.** For a goal or topic the predicate returns `create` whenever the manager chain is live *or unreadable*, so a goal `none`+`create` row is not proof that no manager exists.
+
+The recently-spawned guard covers a fresh open by **label** (the task name the ledger records), plus an in-process record of this daemon's own opens. Without the in-process record, a tab spawn that registers after its 8-second deadline, or a ledger outage, would leave nothing to find, and the next tick would open the row again.
+
