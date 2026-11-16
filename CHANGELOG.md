@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- docs: **the 90-minute window's justification now states both classes of row.** v0.27.3 made a terminal ledger status an exemption from `recentlySpawnedWindow`, but the constant's comment still justified 90 minutes with the *starting* case alone, so a reader could not tell what the exemption does to the bound. It now gives both figures and the derivation: a **starting** row (ledger status non-terminal or absent) can be decided on a cache up to 2 × predicateTimeout + one interval old — 2 × 25 + 15 = **65 minutes** today — which is why the window stays at 90; a **finished** row (`done` / `error`) has no window at all, and its worst-case decision age is the next tick, at most one interval (**≤ 15 minutes**) after the ledger records the end.
+
 ## v0.27.3
 
 - fix: **a closed spawn no longer suppresses its row for the rest of the 90-minute window.** `recentlySpawned` kept every ledger entry as a spawn to stay away from, but the window exists only to stop a row being opened twice while its session is still *starting* — a hazard that is gone once the session has ended. Since v0.27.0 a headless worker's turn end is its end of life, so a worker that closed its turn without finishing the task left the row dark, eligible, and untouched for up to 90 minutes. The guard now skips a ledger row whose `status` is terminal, reusing `terminalLedgerStatuses` (`done`, `error`) rather than adding a second vocabulary; every other value, an absent one included, still suppresses, because that asymmetry is what keeps a still-registering session from being opened twice. Measured 2026-11-16 17:47: of 33 ABSENT rows, 30 were suppressed this way — the oldest at 84 minutes — every one of their ledger entries already terminal.

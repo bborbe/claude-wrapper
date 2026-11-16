@@ -48,11 +48,23 @@ const (
 	// package-level constant for that mutation to be a code change rather than
 	// test input.
 	//
-	// 90 minutes, not 60: the row cache a tick decides on can be up to
-	// 2 × predicateTimeout + one interval old (a read that started just before a
-	// spawn, then a full read and an interval after it) — 65 minutes today. A
-	// window shorter than that lets a stale `none` row be opened a second time.
-	// The cost: an ABSENT row is resumed up to 30 minutes later than before.
+	// The window governs ONE class of row only, and since a terminal ledger
+	// status became an exemption in `recentlySpawned` the two classes have
+	// different worst-case decision ages:
+	//
+	//   - STARTING row (ledger status non-terminal, or no ledger entry at all):
+	//     90 minutes, not 60, because the row cache a tick decides on can be up
+	//     to 2 × predicateTimeout + one interval old (a read that started just
+	//     before a spawn, then a full read and an interval after it) —
+	//     2 × 25 + 15 = 65 minutes today. A window shorter than that lets a
+	//     stale `none` row be opened a second time. The cost of the extra 30
+	//     minutes over the old 60: such a row is resumed that much later.
+	//   - FINISHED row (ledger status `done` or `error`): no window at all. Its
+	//     worst-case decision age is the next tick — at most one interval
+	//     (15 minutes) after the ledger records the end, plus that tick's own
+	//     read. Nothing is gained by holding it longer: the duplicate-open
+	//     hazard this constant covers exists only while a session may still be
+	//     registering.
 	recentlySpawnedWindow = 90 * time.Minute
 
 	// predicateTimeout bounds one predicate read.
