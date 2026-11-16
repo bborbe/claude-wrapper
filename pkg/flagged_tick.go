@@ -91,6 +91,11 @@ const (
 	reasonRowBudget       = "row budget"
 	reasonCapsRefused     = "caps refused"
 	reasonRateRefused     = "rate refused"
+	// reasonUnconsidered marks a row the tick never evaluated because an earlier
+	// row's caps or rate refusal ended the opening pass. It exists so such a row
+	// is still accounted for: the alternative is dropping it, which makes the
+	// counts under-report the fleet and leaves a row with no trace at all.
+	reasonUnconsidered = "unconsidered"
 )
 
 // FlaggedTickResult is one tick's outcome, and the whole of what it logs.
@@ -101,45 +106,95 @@ type FlaggedTickResult struct {
 	Refused []string
 	// Skipped holds `key: reason` for every row that was eligible but not due.
 	Skipped []string
+	// Considered is how many rows the tick was handed. It is the number the
+	// three buckets must add up to; without it a dropped row is invisible.
+	Considered int
 }
 
-// Line renders the one log line a tick writes.
+// Line renders the summary line a tick writes.
 //
 // `rows=` is the field the liveness measurement pairs against a reaper close: a
-// count alone cannot be matched to a session, so the keys are part of the line
-// rather than a second line a caller might not write.
+// count alone cannot be matched to a session, so the keys are part of the line.
 //
-// `reasons=` exists because counts alone are undiagnosable. Measured 2026-11-12:
-// the deployed tick logged `opened=0 refused=17..33` across ten ticks while the
-// predicate offered twelve eligible ABSENT rows, and nothing in the line said
-// why — the reason strings were already computed per row and then dropped here.
-// Capped so a large fleet cannot produce a megabyte line; the head of the list
-// carries the cause because the first failure is what stops a tick.
+// `refused_by_reason=` / `skipped_by_reason=` exist because counts alone are
+// undiagnosable, and because a single truncated list is worse than a count: the
+// five-entry `reasons=` field this replaces measured 2026-11-16 on a tick with
+// `refused=9 skipped=31` printed five `agent-set-flag` entries, so the skip
+// reasons — and four refusals — were truncated out of existence. A per-class
+// count cannot be truncated: every class that has a member is printed.
+//
+// `considered=` is the number of rows the tick was handed, so
+// `opened + refused + skipped == considered` is checkable. Without it a row the
+// loop dropped reads exactly like a row that was never in the set.
+//
+// Detail() carries the per-row names. The two lines together are the whole of
+// what a tick logs.
 func (r FlaggedTickResult) Line() string {
 	line := fmt.Sprintf(
-		"flagged-tick opened=%d refused=%d skipped=%d rows=%s",
-		len(r.Opened), len(r.Refused), len(r.Skipped), strings.Join(r.Opened, ","),
+		"flagged-tick opened=%d refused=%d skipped=%d considered=%d rows=%s",
+		len(r.Opened), len(r.Refused), len(r.Skipped), r.Considered,
+		strings.Join(r.Opened, ","),
 	)
-	if reasons := summariseReasons(r); reasons != "" {
-		line += " reasons=" + reasons
+	if counts := formatCounts(r.Refused); counts != "" {
+		line += " refused_by_reason=" + counts
+	}
+	if counts := formatCounts(r.Skipped); counts != "" {
+		line += " skipped_by_reason=" + counts
 	}
 	return line
 }
 
-// maxLoggedReasons bounds the reasons field.
-const maxLoggedReasons = 5
-
-func summariseReasons(r FlaggedTickResult) string {
-	all := make([]string, 0, len(r.Refused)+len(r.Skipped))
-	all = append(all, r.Refused...)
-	all = append(all, r.Skipped...)
-	if len(all) == 0 {
+// Detail renders the untruncated per-row reasons, or "" when there are none.
+//
+// It is a second line rather than another field on Line() because it is bounded
+// by the row count, not by a constant: a 50-row fleet names 50 rows. Splitting
+// the two keeps the summary greppable and short while every row stays
+// recoverable — the property the capped `reasons=` field could not provide.
+func (r FlaggedTickResult) Detail() string {
+	if len(r.Refused) == 0 && len(r.Skipped) == 0 {
 		return ""
 	}
-	if len(all) > maxLoggedReasons {
-		all = all[:maxLoggedReasons]
+	return fmt.Sprintf(
+		"flagged-tick detail refused=%s skipped=%s",
+		strings.Join(r.Refused, "; "), strings.Join(r.Skipped, "; "),
+	)
+}
+
+// formatCounts renders `reason:count` pairs, sorted so the line is stable across
+// runs of the same tick.
+func formatCounts(entries []string) string {
+	if len(entries) == 0 {
+		return ""
 	}
-	return strings.Join(all, "; ")
+	counts := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		counts[reasonClass(entry)]++
+	}
+	classes := make([]string, 0, len(counts))
+	for class := range counts {
+		classes = append(classes, class)
+	}
+	sort.Strings(classes)
+	parts := make([]string, 0, len(classes))
+	for _, class := range classes {
+		parts = append(parts, fmt.Sprintf("%s:%d", class, counts[class]))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// reasonClass is the guard name an entry belongs to.
+//
+// An entry is `key: reason`, and a caps/rate refusal carries the cap's own error
+// after its guard name (`key: caps refused: maxConcurrent reached`), so the class
+// is the second field cut at the next `: `. Row keys are vault/kind/name or a
+// session id and never contain `: `, which is what makes the first cut safe.
+func reasonClass(entry string) string {
+	_, rest, ok := strings.Cut(entry, ": ")
+	if !ok {
+		return entry
+	}
+	class, _, _ := strings.Cut(rest, ": ")
+	return class
 }
 
 // FlaggedTick reopens flagged rows that have gone dark.
@@ -282,7 +337,14 @@ func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
 		t.logf("flagged-tick failed: %v", err)
 		return
 	}
-	t.logf("%s", t.tickFromRows(ctx, rows).Line())
+	result := t.tickFromRows(ctx, rows)
+	t.logf("%s", result.Line())
+	// The detail line is logged separately so it carries its own timestamp: a
+	// newline embedded in one Printf would leave the second line unprefixed and
+	// harder to pair with the tick it belongs to.
+	if detail := result.Detail(); detail != "" {
+		t.logf("%s", detail)
+	}
 }
 
 func (t *FlaggedTick) logf(format string, args ...any) {
@@ -312,10 +374,20 @@ func (t *FlaggedTick) tickFromRows(
 	ctx context.Context, rows []FlaggedRow,
 ) FlaggedTickResult {
 	var result FlaggedTickResult
+	ordered := orderFlaggedRows(rows)
+	result.Considered = len(ordered)
 	recent := t.recentlySpawned(ctx)
 	t.mergeOpened(recent)
 	now := t.now()
-	for _, row := range orderFlaggedRows(rows) {
+	// halted is the fleet-level refusal that ended this tick's opening pass. It
+	// is a reason string, not a bool, because the rows it leaves behind are still
+	// recorded — as unconsidered — so the buckets add up to Considered.
+	halted := ""
+	for _, row := range ordered {
+		if halted != "" {
+			result.Refused = append(result.Refused, row.Key()+": "+halted)
+			continue
+		}
 		if len(result.Opened) >= maxRowsPerTick {
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
@@ -330,15 +402,22 @@ func (t *FlaggedTick) tickFromRows(
 		}
 		// A cap or rate refusal ENDS the tick's opening rather than being retried
 		// against every remaining row: the refusal is a property of the fleet, not
-		// of the row, so the next row would be refused for the same reason and the
-		// log would fill with duplicate noise.
+		// of the row, so the next row would be refused for the same reason.
+		//
+		// ⚠️ It does NOT end the loop. Ending it dropped every later row out of all
+		// three buckets, so `opened + refused + skipped` under-reported the fleet and
+		// a row could vanish with no trace at all — the accounting defect this tick
+		// had measured 2026-11-16. The remaining rows are now recorded as
+		// unconsidered, which is the honest description of what happened to them.
 		if err := t.Caps.CheckWorker(ctx, row.Mode, false); err != nil {
+			halted = reasonUnconsidered
 			result.Refused = append(result.Refused, row.Key()+": "+reasonCapsRefused+": "+err.Error())
-			break
+			continue
 		}
 		if err := t.Caps.ReserveStart(ctx); err != nil {
+			halted = reasonUnconsidered
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRateRefused+": "+err.Error())
-			break
+			continue
 		}
 		if err := t.Reopener.Reopen(ctx, row); err != nil {
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
