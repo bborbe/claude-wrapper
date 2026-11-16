@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.29.2
 
 - chore: update Go to 1.27.4 and github.com/bborbe/errors to v1.7.0, github.com/bborbe/time to v1.27.28, github.com/onsi/ginkgo/v2 to v2.34.0
 
