@@ -27,7 +27,7 @@ var _ = ginkgo.Describe("waiting for an adopted child to exit", func() {
 		// while macOS reaps it eagerly and the spec passes for the wrong
 		// reason. A grandchild is reaped by init, which is the adopted-child
 		// shape the spec is actually about.
-		cmd := exec.Command("sh", "-c", "sleep 30 & echo $!")
+		cmd := exec.Command("sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!")
 		out, err := cmd.Output()
 		gomega.Expect(err).To(gomega.Succeed())
 		pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
