@@ -530,7 +530,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			rows, err := source.Rows(context.Background())
 			gomega.Expect(err).To(gomega.BeNil())
 			ginkgo.GinkgoWriter.Printf("argv=%v rows=%d\n", runner.argv, len(rows))
-			gomega.Expect(runner.argv).To(gomega.Equal([]string{"python3", "/tmp/fr.py", "--json"}))
+			gomega.Expect(runner.argv).To(gomega.Equal([]string{"python3", "/tmp/fr.py", "--json", "--no-pane"}))
 			gomega.Expect(rows).To(gomega.HaveLen(1))
 			gomega.Expect(rows[0].Kind).To(gomega.Equal("task"))
 			gomega.Expect(rows[0].Vault).To(gomega.Equal("v"))
