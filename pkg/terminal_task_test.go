@@ -366,6 +366,30 @@ var _ = ginkgo.Describe("headless turn end", func() {
 		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
 		checkTurnEnd()
 		expectAlive()
+		gomega.Eventually(func() int {
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			return c.cardRetries
+		}, "2s").Should(gomega.Equal(1))
+	})
+	ginkgo.It("stops anyway once the store-error retry budget is spent", func() {
+		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
+		c.mutex.Lock()
+		c.cardRetries = headlessCardRetryBudget
+		c.mutex.Unlock()
+		checkTurnEnd()
+		expectKilled()
+	})
+	ginkgo.It("resets the store-error budget after a successful read", func() {
+		c.openCards = &fakeOpenCards{ids: map[string]struct{}{}}
+		c.mutex.Lock()
+		c.cardRetries = 3
+		c.mutex.Unlock()
+		checkTurnEnd()
+		expectKilled()
+		c.mutex.Lock()
+		defer c.mutex.Unlock()
+		gomega.Expect(c.cardRetries).To(gomega.Equal(0))
 	})
 	ginkgo.It("stops when the attention store holds no card for it", func() {
 		c.openCards = &fakeOpenCards{ids: map[string]struct{}{"other": {}}}

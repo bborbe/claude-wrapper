@@ -1301,6 +1301,11 @@ type child struct {
 	// accepted and then lost by the kill. It is never cleared on the stop path:
 	// the child is gone. A failed kill clears it.
 	ending bool
+	// cardRetries counts consecutive attention-store read failures for this
+	// child, under c.mutex. It bounds the keep-after-a-store-error branch: a keep
+	// with no re-check turns a transient outage into a permanent leak, so the
+	// budget is finite and the last attempt stops the child anyway.
+	cardRetries int
 	// exitRecorder is the daemon's exit store; nil means the record is disabled.
 	exitRecorder SessionExitRecorder
 }

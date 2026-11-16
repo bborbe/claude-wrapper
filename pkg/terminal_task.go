@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bborbe/errors"
 )
@@ -195,6 +196,22 @@ const (
 	reasonQuestionPending = "a question is pending"
 )
 
+// A store error keeps the session — not orphaning a card is the right instinct —
+// but a keep with NO re-check converts a transient outage into a permanent leak.
+// Measured 2026-11-16: the attention store was unreachable at 20:48:57, a
+// finished headless worker was kept, nothing retried it, and it heartbeated for
+// nine minutes until an external signal killed it. The store also flapped five
+// times between 16:09 and 16:14, so this is a recurring shape, not a one-off.
+//
+// The budget is deliberately finite: after it, the session is stopped and the
+// warning says an open card may be orphaned. A worker that can never be stopped
+// because a store is down is worse than a card whose producer is gone — the
+// card still reads, and the operator can still see it.
+const (
+	headlessCardRetryDelay  = 60 * time.Second
+	headlessCardRetryBudget = 5
+)
+
 // keepReasonLocked reports why the child must not be stopped, or ok=false when
 // it is idle and unparked. The caller must hold c.mutex.
 func (c *child) keepReasonLocked() (string, bool) {
@@ -207,6 +224,67 @@ func (c *child) keepReasonLocked() (string, bool) {
 		return reasonQuestionPending, true
 	}
 	return "", false
+}
+
+// noteCardRetry records one store-error attempt and reports whether another
+// re-check is still allowed.
+func (c *child) noteCardRetry() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.cardRetries >= headlessCardRetryBudget {
+		return false
+	}
+	c.cardRetries++
+	return true
+}
+
+// cardRetryCount reports how many store-error attempts have been made, for the
+// log line only.
+func (c *child) cardRetryCount() int {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.cardRetries
+}
+
+// resetCardRetry clears the budget after a successful store read, so a later
+// outage on the same child starts from a full budget rather than a spent one.
+func (c *child) resetCardRetry() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.cardRetries = 0
+}
+
+// cardVerdict is what one attention-store read decided for a turn end.
+type cardVerdict int
+
+const (
+	// cardProceed: no card names the child, or no store is configured — stop it.
+	cardProceed cardVerdict = iota
+	// cardKeepOpen: an open card names the child — keep it.
+	cardKeepOpen
+	// cardKeepRetry: the store could not be read and the retry budget remains.
+	cardKeepRetry
+	// cardBudgetSpent: the store could not be read and the budget is spent.
+	cardBudgetSpent
+)
+
+// cardVerdict reads the attention store once and reports what it decided. It is
+// split out of closeHeadlessTurnEnd to keep that function readable: the store
+// error, the retry budget and the card test nested inline produced a branch tree
+// the linter refused, and the split names each outcome instead of nesting it.
+func (c *child) cardVerdict(ctx context.Context) (cardVerdict, error) {
+	cards, err := c.openCards.OpenSessionIDs(ctx)
+	if err != nil {
+		if c.noteCardRetry() {
+			return cardKeepRetry, err
+		}
+		return cardBudgetSpent, err
+	}
+	c.resetCardRetry()
+	if _, open := cards[c.id]; open {
+		return cardKeepOpen, nil
+	}
+	return cardProceed, nil
 }
 
 // closeHeadlessTurnEnd stops a headless worker whose turn has closed with
@@ -232,14 +310,25 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	// as late as it can be — after the cheap in-process checks would have kept the
 	// child anyway — so the window is only ever as long as one store call.
 	if c.openCards != nil {
-		cards, err := c.openCards.OpenSessionIDs(ctx)
-		if err != nil {
-			log.Printf("WARNING: could not read the attention store for %s; keeping the session: %v", c.id, err)
-			return
-		}
-		if _, open := cards[c.id]; open {
+		switch verdict, err := c.cardVerdict(ctx); verdict {
+		case cardKeepOpen:
 			log.Printf("agent %s: keeping worker — open-card", c.id)
 			return
+		case cardKeepRetry:
+			log.Printf(
+				"WARNING: could not read the attention store for %s; keeping the session and re-checking in %s (attempt %d/%d): %v",
+				c.id, headlessCardRetryDelay, c.cardRetryCount(), headlessCardRetryBudget, err,
+			)
+			time.AfterFunc(headlessCardRetryDelay, func() { c.closeHeadlessTurnEnd(ctx) })
+			return
+		case cardBudgetSpent:
+			log.Printf(
+				"WARNING: attention store still unreadable for %s after %d attempts — stopping the session anyway; an open card, if any, is orphaned: %v",
+				c.id, headlessCardRetryBudget, err,
+			)
+			// Fall through to the stop: the budget is spent, and a worker that can
+			// never be stopped because a store is down is the leak this path exists
+			// to remove.
 		}
 	}
 
