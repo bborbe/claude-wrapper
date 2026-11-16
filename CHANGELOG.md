@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.28.1
 
 - docs: **the 90-minute window's justification now states both classes of row.** v0.27.3 made a terminal ledger status an exemption from `recentlySpawnedWindow`, but the constant's comment still justified 90 minutes with the *starting* case alone, so a reader could not tell what the exemption does to the bound. It now gives both figures and the derivation: a **starting** row (ledger status non-terminal or absent) can be decided on a cache up to 2 × predicateTimeout + one interval old — 2 × 25 + 15 = **65 minutes** today — which is why the window stays at 90; a **finished** row (`done` / `error`) has no window at all, and its worst-case decision age is the next tick, at most one interval (**≤ 15 minutes**) after the ledger records the end.
 
