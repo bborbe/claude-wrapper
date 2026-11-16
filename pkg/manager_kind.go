@@ -134,29 +134,44 @@ func ManagerKindForLabel(label string, roots []string, exists func(string) bool)
 // asserting a case-insensitive match passed for the filesystem's reason rather
 // than the code's. On a case-sensitive filesystem — Linux, which is where the
 // agent runs — the same lookup misses and the label resolves to unresolved.
-// The listing below is what actually makes the match case-insensitive.
+// listedPageMatches is what actually makes the match case-insensitive.
 func managerPageExists(roots []string, dir string, names []string, exists func(string) bool) bool {
 	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
-		for _, name := range names {
-			if exists(filepath.Join(root, dir, name+".md")) {
-				return true
-			}
+		if managerPageInRoot(root, dir, names, exists) {
+			return true
 		}
-		entries, err := os.ReadDir(filepath.Join(root, dir))
-		if err != nil {
+	}
+	return false
+}
+
+// managerPageInRoot answers for one root: the direct lookup first, then the
+// case-insensitive listing that makes the match independent of the filesystem.
+func managerPageInRoot(root, dir string, names []string, exists func(string) bool) bool {
+	for _, name := range names {
+		if exists(filepath.Join(root, dir, name+".md")) {
+			return true
+		}
+	}
+	return listedPageMatches(filepath.Join(root, dir), names)
+}
+
+// listedPageMatches reports whether dir holds a file whose name matches one of
+// names, ignoring case.
+func listedPageMatches(dir string, names []string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
 			continue
 		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			for _, name := range names {
-				if strings.EqualFold(entry.Name(), name+".md") {
-					return true
-				}
+		for _, name := range names {
+			if strings.EqualFold(entry.Name(), name+".md") {
+				return true
 			}
 		}
 	}
