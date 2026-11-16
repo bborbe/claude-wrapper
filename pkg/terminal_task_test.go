@@ -111,6 +111,23 @@ var _ = ginkgo.Describe("DirAnchoredTaskResolver", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(result.Matches).To(gomega.Equal(2))
 	})
+
+	// ⚠️ The scoping boundary, and it is the counterpart of "counts two matches across
+	// dirs" on purpose: that case configures BOTH dirs and expects 2, this one
+	// configures ONE and puts the task file in the other. `private-agent/tasks` is
+	// deliberately absent from the launcher's `-close-on-terminal-task-dirs` list, so a
+	// task anchored there must not be resolved — otherwise widening the list would
+	// silently become a no-op, and close-at-turn-end would stop sessions the operator
+	// excluded. A resolver that globbed beyond its configured set fails here.
+	ginkgo.It("ignores a task file in an unconfigured directory", func() {
+		unconfigured := ginkgo.GinkgoT().TempDir()
+		write("a.md", "---\nstatus: completed\nclaude_session_id: other\n---\n")
+		gomega.Expect(os.WriteFile(filepath.Join(unconfigured, "b.md"),
+			[]byte("---\nstatus: completed\nclaude_session_id: "+sid+"\n---\n"), 0o600)).To(gomega.Succeed())
+		result, err := NewDirAnchoredTaskResolver([]string{dir}).Resolve(ctx, sid)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Matches).To(gomega.Equal(0))
+	})
 })
 
 var _ = ginkgo.Describe("close on terminal task", func() {
