@@ -922,10 +922,15 @@ var _ = ginkgo.Describe("spawn caps after review", func() {
 
 	ginkgo.It("records role and resumed_from on the headless ledger row", func() {
 		ledger := &rosterLedger{}
-		server := &RosterToolServer{Supervisor: &toolSupervisor{}, Ledger: ledger}
+		// The live channel and the prompt are both load-bearing: a headless resume
+		// with no opening turn is refused, and a prompt makes the fake supervisor Send.
+		server := &RosterToolServer{
+			Supervisor: &toolSupervisor{live: make(chan Event, 64)},
+			Ledger:     ledger,
+		}
 
 		_, err := server.spawnAgent(ctx, json.RawMessage(
-			`{"interactive":false,"cwd":"/tmp","role":"manager",`+
+			`{"interactive":false,"cwd":"/tmp","role":"manager","prompt":"continue",`+
 				`"resume":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`,
 		), "caller")
 

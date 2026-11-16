@@ -370,6 +370,11 @@ func (s *RosterToolServer) spawnLocalAgent(
 	if err != nil {
 		return "", err
 	}
+	// Checked before the terminal-resume guard because it needs no vault scan:
+	// a promptless resume is refused on the argument alone.
+	if err := refusePromptlessResume(ctx, body); err != nil {
+		return "", err
+	}
 	if err := s.refuseTerminalResume(ctx, body, cwd); err != nil {
 		return "", err
 	}

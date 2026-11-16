@@ -117,4 +117,14 @@ var (
 	// nicety — and it is a sentinel so a caller can tell it from a transport
 	// failure that happened to mention a task.
 	ErrTaskTerminal = stderrors.New("task-terminal")
+	// ErrResumeWithoutPrompt is returned when a headless resume carries no
+	// opening turn.
+	//
+	// Such a resume spawns a child with nothing to do: it closes one empty turn
+	// and the reaper stops it, so the caller is told the resume started and no
+	// work is done. Measured 2026-11-16 — six of twelve flagged resumes returned
+	// `state: starting`, each with a "turn closed with nothing pending" line and
+	// an unchanged task file. A sentinel so a caller can tell this refusal from a
+	// transport failure that happened to mention a prompt.
+	ErrResumeWithoutPrompt = stderrors.New("resume-without-prompt")
 )

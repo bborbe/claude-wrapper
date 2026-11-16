@@ -31,7 +31,9 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume", func() {
 
 	ginkgo.BeforeEach(func() {
 		ctx = context.Background()
-		supervisor = &toolSupervisor{}
+		// The live channel is load-bearing: a resume now carries an opening turn, and
+		// the fake supervisor's Send emits on `live` — a nil one blocks forever.
+		supervisor = &toolSupervisor{live: make(chan Event, 64)}
 		server = &RosterToolServer{Supervisor: supervisor, Spawner: &fakeSpawner{}}
 	})
 
@@ -40,7 +42,9 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume", func() {
 	}
 
 	ginkgo.It("forwards a session id to a headless spawn, so the child resumes it", func() {
-		_, err := spawn(`{"resume":"` + resumed + `","interactive":false,"cwd":"/tmp"}`)
+		// The prompt is required: a headless resume with no opening turn is refused
+		// (see refusePromptlessResume), so forwarding is only reachable with one.
+		_, err := spawn(`{"resume":"` + resumed + `","interactive":false,"cwd":"/tmp","prompt":"continue"}`)
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(supervisor.spawned).To(gomega.HaveLen(1))
 		options := supervisor.spawned[0]
@@ -52,6 +56,27 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume", func() {
 		gomega.Expect(indexOf(args, "--resume")).To(gomega.BeNumerically(">=", 0))
 		gomega.Expect(indexOf(args, "--resume") + 1).To(gomega.Equal(indexOf(args, resumed)))
 		gomega.Expect(args).NotTo(gomega.ContainElement("--session-id"))
+	})
+
+	// A headless resume with no opening turn starts a child that closes one empty
+	// turn and is reaped: the caller is told it started and no work is done.
+	// Measured 2026-11-16 — six of twelve flagged resumes did exactly that.
+	ginkgo.It("refuses a headless resume that carries no opening turn", func() {
+		_, err := spawn(`{"resume":"` + resumed + `","interactive":false,"cwd":"/tmp"}`)
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("resume-without-prompt"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("prompt"))
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
+
+	// The refusal is the headless path's, never a rule about resumes: a promptless
+	// interactive resume is how a human reopens a tab to keep working.
+	ginkgo.It("leaves a promptless interactive resume alone", func() {
+		_, err := spawn(`{"resume":"` + resumed + `","interactive":true,"cwd":"/tmp"}`)
+		// The tab path refuses for its own reason, never for the missing prompt.
+		if err != nil {
+			gomega.Expect(err.Error()).NotTo(gomega.ContainSubstring("resume-without-prompt"))
+		}
 	})
 
 	ginkgo.It("spawns a fresh conversation when no resume is given", func() {
