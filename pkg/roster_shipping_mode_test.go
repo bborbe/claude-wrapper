@@ -29,7 +29,9 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent headless spawn permission m
 
 	ginkgo.BeforeEach(func() {
 		ctx = context.Background()
-		supervisor = &toolSupervisor{}
+		// Live channel required: the resume-shipping case carries an opening turn, and
+		// the fake supervisor's Send emits on `live` — a nil one blocks forever.
+		supervisor = &toolSupervisor{live: make(chan Event, 64)}
 		server = &RosterToolServer{Supervisor: supervisor, Spawner: &fakeSpawner{}}
 	})
 
@@ -74,7 +76,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent headless spawn permission m
 			`{"shipping":true,"permission_mode":"bypassPermissions","interactive":false,"cwd":"/tmp"}`,
 			ShippingPermissionMode, PermissionModeSourceShipping, false),
 		ginkgo.Entry("resume-shipping", "resume-shipping",
-			`{"resume":"`+resumed+`","shipping":true,"interactive":false,"cwd":"/tmp"}`,
+			`{"resume":"`+resumed+`","shipping":true,"interactive":false,"cwd":"/tmp","prompt":"continue"}`,
 			ShippingPermissionMode, PermissionModeSourceShipping, true),
 	)
 

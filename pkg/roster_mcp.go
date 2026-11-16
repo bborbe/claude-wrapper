@@ -370,7 +370,13 @@ func (s *RosterToolServer) spawnLocalAgent(
 	if err != nil {
 		return "", err
 	}
+	// Terminal first: a resume of a finished task must say so, not send the caller
+	// away to add a prompt and then refuse them for the task state on the retry.
+	// The vault scan this costs is paid only on a refusal path.
 	if err := s.refuseTerminalResume(ctx, body, cwd); err != nil {
+		return "", err
+	}
+	if err := refusePromptlessResume(ctx, body); err != nil {
 		return "", err
 	}
 	if err := s.enforceCaps(ctx, body, SpawnModeHeadless); err != nil {
