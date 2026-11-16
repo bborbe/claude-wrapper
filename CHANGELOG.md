@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.27.2
 
 - test: **the task-dir scoping boundary is pinned by its own test.** `NewDirAnchoredTaskResolver` resolves a session only against the dirs it was configured with, and `private-agent/tasks` is deliberately absent from the launcher's `-close-on-terminal-task-dirs` list — so a task anchored there must not be resolved. The counterpart case ("counts two matches across dirs") configures **both** dirs and expects 2; this one configures **one** and puts the task file in the other, asserting `Matches == 0`. Without it, widening the glob would silently become a no-op and close-at-turn-end would stop sessions the operator excluded.
 
