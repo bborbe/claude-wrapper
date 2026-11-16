@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.27.4
 
 - fix: **the flagged tick's log line can now name every row it considered, and its counts add up.** Two measured defects in one line. (a) `reasons=` was capped at five entries and appended refusals before skips, so the tick at 2026-11-16 16:23:43 logged `refused=9 skipped=31` with five `agent-set-flag` entries — four refusals and every skip reason were truncated out of existence, and no row was named. (b) The caps/rate branch `break`ed the loop after recording one refusal, so every later row was neither opened, refused nor skipped: `opened + refused + skipped` under-reported the fleet and a row could vanish with no trace. The summary line now carries `considered=` plus `refused_by_reason=` / `skipped_by_reason=` (a per-class count cannot be truncated), and a second untruncated line — `flagged-tick detail refused=<key: reason; …> skipped=…` — names every row, bounded by the row count rather than by a constant. A caps/rate refusal still ends the opening pass but every remaining row is recorded as `unconsidered`, so the three buckets always sum to `considered`. The `reasons=` field and its five-entry cap are removed deliberately: no machine consumer existed (verified by grep at filing, re-verified here — the only hits were the producer and the CHANGELOG entry that introduced it), so the only reader was a human, and the detail line serves that reader without losing rows.
 
