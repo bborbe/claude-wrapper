@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- chore: update Go to 1.27.4 and github.com/bborbe/errors to v1.7.0, github.com/bborbe/time to v1.27.28, github.com/onsi/ginkgo/v2 to v2.34.0
+
 ## v0.28.0
 
 - perf: **the flagged tick asks the predicate to skip pane lookups.** The tick never reads a pane — `decision` skips every non-ABSENT row before it looks at `jump`, and `FlaggedRow` carries no pane field — yet the script spawned one interpreter per LIVE row to resolve one, and on 2026-11-16 one of those helpers held a read 11m49s until `predicateTimeout` killed it. The predicate argv now carries `--no-pane`; a full run drops from 88 s to 19 s. ⚠️ Requires `bborbe/claude-supervisor#929` deployed first: an older predicate rejects the flag and every tick then fails.
