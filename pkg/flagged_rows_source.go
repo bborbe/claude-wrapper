@@ -110,7 +110,18 @@ func (s ExecFlaggedRowsSource) Rows(ctx context.Context) ([]FlaggedRow, error) {
 	}
 	// ⚠️ The argv is fixed and has no shell: no interpolation, no
 	// user-controlled path. The script path comes from the daemon's own flag.
-	out, err := runner.Run(ctx, python, s.Script, "--json")
+	//
+	// `--no-pane` because this tick never reads a pane: `decision` skips every
+	// non-ABSENT row as not-absent before it looks at `jump`, and FlaggedRow
+	// carries no pane field. Without it the script spawned one interpreter per
+	// LIVE row to resolve a pane this process discards, and one of those helpers
+	// held a read 11m49s until predicateTimeout killed it (2026-11-16). Measured:
+	// a full run drops from 88 s to 19 s.
+	//
+	// ⚠️ Requires a predicate that knows the flag (bborbe/claude-supervisor#929).
+	// An older script rejects it as an unrecognised argument and EVERY tick then
+	// fails, so that PR must be deployed before this one.
+	out, err := runner.Run(ctx, python, s.Script, "--json", "--no-pane")
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "run flagged-rows")
 	}

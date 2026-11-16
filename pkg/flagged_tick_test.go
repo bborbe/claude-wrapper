@@ -7,6 +7,8 @@ package pkg
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -451,7 +453,13 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			ginkgo.GinkgoWriter.Printf("reopens=%d refused=%d\n",
 				len(reopener.snapshot()), len(result.Refused))
 			gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
-			gomega.Expect(result.Refused).To(gomega.HaveLen(1))
+			// Three, not one: the caps refusal ends the opening pass but every later
+			// row is still accounted for as unconsidered. The old count of one was
+			// the defect — two rows vanished out of all three buckets.
+			gomega.Expect(result.Refused).To(gomega.HaveLen(3))
+			gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring(reasonCapsRefused))
+			gomega.Expect(result.Refused[1]).To(gomega.ContainSubstring(reasonUnconsidered))
+			gomega.Expect(result.Refused[2]).To(gomega.ContainSubstring(reasonUnconsidered))
 		})
 
 		ginkgo.It("spawns nothing when ReserveStart refuses", func() {
@@ -522,7 +530,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			rows, err := source.Rows(context.Background())
 			gomega.Expect(err).To(gomega.BeNil())
 			ginkgo.GinkgoWriter.Printf("argv=%v rows=%d\n", runner.argv, len(rows))
-			gomega.Expect(runner.argv).To(gomega.Equal([]string{"python3", "/tmp/fr.py", "--json"}))
+			gomega.Expect(runner.argv).To(gomega.Equal([]string{"python3", "/tmp/fr.py", "--json", "--no-pane"}))
 			gomega.Expect(rows).To(gomega.HaveLen(1))
 			gomega.Expect(rows[0].Kind).To(gomega.Equal("task"))
 			gomega.Expect(rows[0].Vault).To(gomega.Equal("v"))
@@ -695,5 +703,101 @@ var _ = ginkgo.Describe("flagged tick recently-spawned guard by label", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(second.Opened).To(gomega.BeEmpty())
 		gomega.Expect(reopener.snapshot()).To(gomega.HaveLen(1))
+	})
+})
+
+// The tick line is the only evidence a 24 h liveness measurement has. These
+// cases pin the two properties that make it usable: every row's reason is
+// recoverable (not the first five), and every considered row is accounted for
+// (a caps refusal does not drop the tail of the row set).
+var _ = ginkgo.Describe("flagged tick log line", func() {
+	// detailSegment returns the text between `name` and the next class marker.
+	detailSegment := func(detail, name string) string {
+		_, rest, ok := strings.Cut(detail, name)
+		if !ok {
+			return ""
+		}
+		segment, _, _ := strings.Cut(rest, " skipped=")
+		return segment
+	}
+
+	// countEntries counts `key: reason` pairs in one detail segment.
+	countEntries := func(segment string) int {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			return 0
+		}
+		return len(strings.Split(segment, "; "))
+	}
+
+	ginkgo.It("names every refused and skipped row, not the first five", func() {
+		rows := make([]FlaggedRow, 0, 13)
+		for i := range 9 {
+			rows = append(rows, FlaggedRow{
+				Kind: "task", Vault: "v", Name: fmt.Sprintf("refused-%d", i),
+				Liveness: "ABSENT", Refused: []string{"agent-set-flag"},
+			})
+		}
+		for i := range 4 {
+			rows = append(rows, FlaggedRow{
+				Kind: "task", Vault: "v", Name: fmt.Sprintf("skipped-%d", i), Liveness: "LIVE",
+			})
+		}
+		result, err := newTick(staticSource{rows: rows}, &recordingReopener{}, &recordingCaps{}).
+			Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		summary, detail := result.Line(), result.Detail()
+		ginkgo.GinkgoWriter.Printf("summary=%s\ndetail=%s\n", summary, detail)
+
+		gomega.Expect(summary).To(gomega.ContainSubstring("refused=9"))
+		gomega.Expect(summary).To(gomega.ContainSubstring("skipped=4"))
+		gomega.Expect(summary).To(gomega.ContainSubstring("refused_by_reason=agent-set-flag:9"))
+		gomega.Expect(summary).To(gomega.ContainSubstring("skipped_by_reason=not-absent:4"))
+
+		refused := detailSegment(detail, "refused=")
+		gomega.Expect(countEntries(refused)).To(gomega.Equal(9))
+		for i := range 9 {
+			gomega.Expect(detail).To(gomega.ContainSubstring(fmt.Sprintf("refused-%d", i)))
+		}
+		for i := range 4 {
+			gomega.Expect(detail).To(gomega.ContainSubstring(fmt.Sprintf("skipped-%d", i)))
+		}
+	})
+
+	ginkgo.It("accounts for every row when a caps refusal ends the opening pass", func() {
+		rows := []FlaggedRow{
+			rowWith("agent", "headless", "one"),
+			rowWith("agent", "headless", "two"),
+			rowWith("agent", "headless", "three"),
+		}
+		caps := &recordingCaps{workerErr: stderrors.New("maxConcurrent reached")}
+		result, err := newTick(staticSource{rows: rows}, &recordingReopener{}, caps).
+			Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		summary := result.Line()
+		ginkgo.GinkgoWriter.Printf("summary=%s\ndetail=%s\n", summary, result.Detail())
+
+		gomega.Expect(summary).To(gomega.ContainSubstring("considered=3"))
+		gomega.Expect(len(result.Opened) + len(result.Refused) + len(result.Skipped)).
+			To(gomega.Equal(3))
+		gomega.Expect(result.Detail()).To(gomega.ContainSubstring("two"))
+		gomega.Expect(result.Detail()).To(gomega.ContainSubstring("three"))
+	})
+
+	ginkgo.It("opens the named row's shape and accounts for it", func() {
+		row := FlaggedRow{
+			Kind: "task", Vault: "private-personal",
+			Name: "AgentUnknownAssignee Fires on Records Whose Assignee Is a Task Type",
+			Role: "agent", Mode: "headless",
+			SessionID: "abc-123", Liveness: "ABSENT", Branch: "resume",
+		}
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Ledger = ledgerWith{}
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.Opened).To(gomega.ConsistOf("abc-123"))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("considered=1"))
 	})
 })
