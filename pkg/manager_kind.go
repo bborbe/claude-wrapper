@@ -128,6 +128,13 @@ func ManagerKindForLabel(label string, roots []string, exists func(string) bool)
 
 // managerPageExists reports whether any root holds `<dir>/<name>.md` for any of
 // the candidate names.
+//
+// The direct lookup is case-sensitive, and on macOS that is invisible: APFS
+// folds case by default, so `some goal.md` opens `Some Goal.md` and the spec
+// asserting a case-insensitive match passed for the filesystem's reason rather
+// than the code's. On a case-sensitive filesystem — Linux, which is where the
+// agent runs — the same lookup misses and the label resolves to unresolved.
+// The listing below is what actually makes the match case-insensitive.
 func managerPageExists(roots []string, dir string, names []string, exists func(string) bool) bool {
 	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
@@ -136,6 +143,20 @@ func managerPageExists(roots []string, dir string, names []string, exists func(s
 		for _, name := range names {
 			if exists(filepath.Join(root, dir, name+".md")) {
 				return true
+			}
+		}
+		entries, err := os.ReadDir(filepath.Join(root, dir))
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			for _, name := range names {
+				if strings.EqualFold(entry.Name(), name+".md") {
+					return true
+				}
 			}
 		}
 	}
