@@ -9,6 +9,7 @@ import (
 	stderrors "errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -68,10 +69,40 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 		return s.sessions[id]
 	}
 
+	// spawn starts a child and registers a cleanup that kills it.
+	//
+	// The child is a REAL process started with Setsid (see supervisor.go), so it
+	// outlives this test binary unless something kills it — and nothing does:
+	// Drain deliberately leaves a live child alone (that is the "never severed"
+	// property these specs assert), and no spec calls Stop. Left alone, every run
+	// of this suite reparents its children to launchd, where they sleep in a
+	// deleted ginkgo temp dir for the lifetime of the machine.
+	//
+	// DeferCleanup rather than AfterEach so the kill sits next to the Spawn it
+	// belongs to, and runs LIFO after the spec body — the processAlive assertions
+	// inside the body still see a live child.
+	spawn := func(s *supervisor, options SpawnOptions) *Session {
+		session, err := s.Spawn(ctx, options)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.DeferCleanup(func() {
+			c := childFor(s, session.ID)
+			if c == nil {
+				return
+			}
+			// -pid is the child's process group. Setsid makes the child a session
+			// and group leader, so its group id equals its pid and anything it
+			// started dies with it. ESRCH means it already exited on its own.
+			if killErr := syscall.Kill(-c.pid, syscall.SIGKILL); killErr != nil &&
+				!stderrors.Is(killErr, syscall.ESRCH) {
+				gomega.Expect(killErr).NotTo(gomega.HaveOccurred())
+			}
+		})
+		return session
+	}
+
 	ginkgo.It("keeps the child running and reachable after the spawning side drops its handles", func() {
 		sup := newSupervisor(echoChild())
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		session := spawn(sup, SpawnOptions{Cwd: dir})
 		gomega.Eventually(func() State {
 			return childFor(sup, session.ID).snapshot().State
 		}, "5s").Should(gomega.Equal(StateIdle))
@@ -104,8 +135,7 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 
 	ginkgo.It("re-adopts a surviving child from its record and rebuilds its state", func() {
 		sup := newSupervisor(echoChild())
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		session := spawn(sup, SpawnOptions{Cwd: dir})
 		gomega.Eventually(func() State {
 			return childFor(sup, session.ID).snapshot().State
 		}, "5s").Should(gomega.Equal(StateIdle))
@@ -131,8 +161,7 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 
 	ginkgo.It("restores the mode and policy an adopted child was spawned under", func() {
 		sup := newSupervisor(echoChild())
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir, Mode: "headless"})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		session := spawn(sup, SpawnOptions{Cwd: dir, Mode: "headless"})
 		gomega.Eventually(func() State {
 			return childFor(sup, session.ID).snapshot().State
 		}, "5s").Should(gomega.Equal(StateIdle))
@@ -183,8 +212,7 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 
 	ginkgo.It("drains at a turn boundary without recording an interruption", func() {
 		sup := newSupervisor(echoChild())
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		session := spawn(sup, SpawnOptions{Cwd: dir})
 		gomega.Eventually(func() State {
 			return childFor(sup, session.ID).snapshot().State
 		}, "5s").Should(gomega.Equal(StateIdle))
@@ -207,8 +235,7 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 		gomega.Expect(os.WriteFile(path, []byte(script), 0o700)).To(gomega.Succeed())
 
 		sup := newSupervisor(path)
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		session := spawn(sup, SpawnOptions{Cwd: dir})
 		gomega.Eventually(func() State {
 			return childFor(sup, session.ID).snapshot().State
 		}, "5s").Should(gomega.Equal(StateGenerating))
@@ -232,8 +259,7 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 
 	ginkgo.It("hands out sequence numbers a reconnect can resume from", func() {
 		sup := newSupervisor(echoChild())
-		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		session := spawn(sup, SpawnOptions{Cwd: dir})
 		gomega.Eventually(func() State {
 			return childFor(sup, session.ID).snapshot().State
 		}, "5s").Should(gomega.Equal(StateIdle))
