@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the fleet-keeper handler reads the keeper's verdict word, not its exit code.** `Tick` treated exit `10` as "a lapse is owed" and every other non-zero code as a handler failure, but `fleet-keeper.py` never exits `10` — it exits `1` for all three of its reported verdicts, so every genuine lapse logged `job=fleet-keeper action=failed` and the card id never reached the log (measured 2026-11-16: 127 `action=failed` lines, 0 `action=card-raised`). The verdict word on the first output line is the only discriminator, and it is now the contract: `ok` / `stopped` / `pending` exit `0` → a quiet tick; `reported` exit `1` + `(card <id>)` → `action=card-raised card=<id>`; `cannot-tell`, `dead` and any unrecognised word → an error carrying the verdict and the keeper's own sentence. ⚠️ Accepting every exit `1` would have been strictly worse than the bug — `cannot-tell` and `dead` also exit `1` and would have logged as raised cards. The retired `fleetLapseOwedExitCode` constant is removed; `KEEPALIVE_EXIT` in the script is the inner probe's contract, not the keeper's.
+
 ## v0.28.1
 
 - docs: **the 90-minute window's justification now states both classes of row.** v0.27.3 made a terminal ledger status an exemption from `recentlySpawnedWindow`, but the constant's comment still justified 90 minutes with the *starting* case alone, so a reader could not tell what the exemption does to the bound. It now gives both figures and the derivation: a **starting** row (ledger status non-terminal or absent) can be decided on a cache up to 2 × predicateTimeout + one interval old — 2 × 25 + 15 = **65 minutes** today — which is why the window stays at 90; a **finished** row (`done` / `error`) has no window at all, and its worst-case decision age is the next tick, at most one interval (**≤ 15 minutes**) after the ledger records the end.
