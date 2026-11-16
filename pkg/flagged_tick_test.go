@@ -368,6 +368,35 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 		)
 	})
 
+	ginkgo.Describe("the recently-spawned guard", func() {
+		now := time.Date(2026, 11, 16, 17, 47, 0, 0, time.UTC)
+		spawned := now.Add(-10 * time.Minute).Format(time.RFC3339)
+
+		// A terminal status proves the session ENDED, so the duplicate-open
+		// hazard the window exists for is gone. Every other value — an absent
+		// one included — proves nothing and must keep suppressing, or a row
+		// whose worker is still registering would be opened twice.
+		ginkgo.DescribeTable("suppresses only a spawn that has not closed",
+			func(status string, wantSuppressed bool) {
+				tick := &FlaggedTick{
+					Ledger: ledgerWith{rows: []LedgerRow{{
+						SessionID: "sid", Label: "a task", SpawnedAt: spawned, Status: status,
+					}}},
+					Logf: func(string, ...any) {},
+				}
+				recent := tick.recentlySpawned(context.Background())
+				_, bySession := recent["sid"]
+				_, byLabel := recent[labelKey("a task")]
+				gomega.Expect(bySession).To(gomega.Equal(wantSuppressed))
+				gomega.Expect(byLabel).To(gomega.Equal(wantSuppressed))
+			},
+			ginkgo.Entry("done — the session ended", "done", false),
+			ginkgo.Entry("error — the session ended", "error", false),
+			ginkgo.Entry("running — it may still be starting", "running", true),
+			ginkgo.Entry("absent status proves nothing", "", true),
+		)
+	})
+
 	ginkgo.Describe("bounds rows per tick", func() {
 		ginkgo.It("opens exactly maxRowsPerTick of a larger eligible set", func() {
 			rows := make([]FlaggedRow, 60)

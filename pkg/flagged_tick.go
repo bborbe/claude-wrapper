@@ -375,6 +375,22 @@ func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time 
 	}
 	out := make(map[string]time.Time, len(rows))
 	for _, row := range rows {
+		// A spawn the ledger has CLOSED is not a spawn to stay away from.
+		//
+		// The window exists so a row whose session has not yet registered is not
+		// opened a second time, and that hazard is gone once the session has
+		// ended. Keeping a closed spawn in this map suppresses a row whose
+		// worker finished its turn WITHOUT finishing the task: the row is dark,
+		// eligible, and untouched for the rest of the window. Measured
+		// 2026-11-16 17:47 — 30 of 33 ABSENT rows suppressed, the oldest at 84
+		// minutes, every one of their ledger entries already terminal.
+		//
+		// ⚠️ One direction only, like every reader of this field: a terminal
+		// status proves the session ENDED; every other value, an absent one
+		// included, proves nothing and still suppresses.
+		if terminalLedgerStatuses[row.Status] {
+			continue
+		}
 		at, parseErr := time.Parse(time.RFC3339, row.SpawnedAt)
 		if parseErr != nil {
 			continue
