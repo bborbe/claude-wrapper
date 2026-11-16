@@ -39,8 +39,8 @@ const (
 	maxFirstLineRunes = 200
 )
 
-// The keeper's own verdict words, each printed on its own FIRST output line by
-// `report()` in `fleet-keeper.py`.
+// FleetKeeperVerdict is one word the keeper prints on its own FIRST output line
+// via `report()` in `fleet-keeper.py`.
 //
 // ⚠️ The exit code is NOT the contract. The keeper exits `1` for three different
 // verdicts — `reported` (a card was raised), `cannot-tell` (it could not decide
@@ -51,14 +51,55 @@ const (
 // `KEEPALIVE_EXIT` inside the script is the INNER `fleet-keepalive.py` probe's
 // contract, not the keeper's own exit; conflating the two is the defect this
 // split removes.
+type FleetKeeperVerdict string
+
 const (
-	fleetKeeperVerdictOK         = "ok"
-	fleetKeeperVerdictStopped    = "stopped"
-	fleetKeeperVerdictPending    = "pending"
-	fleetKeeperVerdictReported   = "reported"
-	fleetKeeperVerdictCannotTell = "cannot-tell"
-	fleetKeeperVerdictDead       = "dead"
+	// FleetKeeperVerdictOK is a fleet round inside its limit — exit 0.
+	FleetKeeperVerdictOK FleetKeeperVerdict = "ok"
+	// FleetKeeperVerdictStopped is a deliberate /supervisor:stop — exit 0.
+	FleetKeeperVerdictStopped FleetKeeperVerdict = "stopped"
+	// FleetKeeperVerdictPending is a stale round short of the lapse threshold — exit 0.
+	FleetKeeperVerdictPending FleetKeeperVerdict = "pending"
+	// FleetKeeperVerdictReported is a lapse whose card was raised, or was already
+	// raised this day — exit 1.
+	FleetKeeperVerdictReported FleetKeeperVerdict = "reported"
+	// FleetKeeperVerdictCannotTell is a keeper that could not decide or persist
+	// its state — exit 1.
+	FleetKeeperVerdictCannotTell FleetKeeperVerdict = "cannot-tell"
+	// FleetKeeperVerdictDead is a fleet manager that is ABSENT — exit 1.
+	FleetKeeperVerdictDead FleetKeeperVerdict = "dead"
 )
+
+// FleetKeeperVerdicts is a collection of FleetKeeperVerdict values.
+type FleetKeeperVerdicts []FleetKeeperVerdict
+
+// AvailableFleetKeeperVerdicts lists every verdict word the keeper can print.
+// The handler uses it to tell a known verdict it must not treat as quiet from a
+// word it has never seen, which is a script/handler drift rather than a keeper
+// failure.
+var AvailableFleetKeeperVerdicts = FleetKeeperVerdicts{
+	FleetKeeperVerdictOK,
+	FleetKeeperVerdictStopped,
+	FleetKeeperVerdictPending,
+	FleetKeeperVerdictReported,
+	FleetKeeperVerdictCannotTell,
+	FleetKeeperVerdictDead,
+}
+
+// Contains reports whether the collection holds the given verdict.
+func (v FleetKeeperVerdicts) Contains(verdict FleetKeeperVerdict) bool {
+	for _, candidate := range v {
+		if candidate == verdict {
+			return true
+		}
+	}
+	return false
+}
+
+// String returns the verdict as the keeper printed it.
+func (v FleetKeeperVerdict) String() string {
+	return string(v)
+}
 
 // FleetCheck runs the keepalive and reports its output and exit code.
 //
@@ -117,18 +158,18 @@ func (j *FleetKeeperJob) Tick(ctx context.Context) (string, error) {
 	if checkErr != nil {
 		return "", errors.Wrap(ctx, checkErr, "fleet keepalive failed")
 	}
-	word := firstLine(output)
-	switch word {
-	case fleetKeeperVerdictOK, fleetKeeperVerdictStopped, fleetKeeperVerdictPending:
+	verdict := FleetKeeperVerdict(firstLine(output))
+	switch verdict {
+	case FleetKeeperVerdictOK, FleetKeeperVerdictStopped, FleetKeeperVerdictPending:
 		// The only quiet outcomes. A non-zero exit here means the script and this
 		// handler disagree, which is a fault in its own right.
 		if code != 0 {
-			return "", errors.Errorf(ctx, "fleet keeper reported %q but exited %d: %s", word, code, keeperDetail(output))
+			return "", errors.Errorf(ctx, "fleet keeper reported %q but exited %d: %s", verdict, code, keeperDetail(output))
 		}
 		return "", nil
-	case fleetKeeperVerdictReported:
+	case FleetKeeperVerdictReported:
 		if code != 1 {
-			return "", errors.Errorf(ctx, "fleet keeper reported %q but exited %d: %s", word, code, keeperDetail(output))
+			return "", errors.Errorf(ctx, "fleet keeper reported %q but exited %d: %s", verdict, code, keeperDetail(output))
 		}
 		cardID := fleetCardID(output)
 		if cardID == "" {
@@ -139,11 +180,15 @@ func (j *FleetKeeperJob) Tick(ctx context.Context) (string, error) {
 		}
 		return cardID, nil
 	}
-	// `cannot-tell`, `dead`, and any word this handler does not know. None may be
-	// logged as a quiet tick or as a raised card: a crashed or undecidable keeper
-	// must never read as a healthy fleet, and `dead` is the fleet manager being
-	// ABSENT.
-	return "", errors.Errorf(ctx, "fleet keeper exited %d with verdict %q: %s", code, word, keeperDetail(output))
+	// None of these may be logged as a quiet tick or as a raised card: a crashed or
+	// undecidable keeper must never read as a healthy fleet, and `dead` is the fleet
+	// manager being ABSENT. The two classes are kept apart because they need
+	// different fixes — a word this handler has never seen is script/handler drift,
+	// while `cannot-tell` and `dead` are the keeper doing its job.
+	if !AvailableFleetKeeperVerdicts.Contains(verdict) {
+		return "", errors.Errorf(ctx, "fleet keeper printed an unrecognised verdict %q (exit %d): %s", verdict, code, keeperDetail(output))
+	}
+	return "", errors.Errorf(ctx, "fleet keeper exited %d with verdict %q: %s", code, verdict, keeperDetail(output))
 }
 
 // fleetCardID pulls the item id out of the keeper's sentence, which ends with

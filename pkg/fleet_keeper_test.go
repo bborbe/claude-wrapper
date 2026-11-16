@@ -96,6 +96,26 @@ var _ = ginkgo.Describe("FleetKeeperJob", func() {
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the digest ledger is missing"))
 	})
 
+	ginkgo.It("separates a word it has never seen from a verdict the keeper means", func() {
+		// Script/handler drift and a keeper failure need different fixes, so they
+		// must not collapse into one message.
+		_, err := job("paused\nwaiting for a window", 0).Tick(ctx)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("unrecognised"))
+
+		_, err = job("dead\nfleet manager 90601db5 is ABSENT", 1).Tick(ctx)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.Not(gomega.ContainSubstring("unrecognised")))
+	})
+
+	ginkgo.It("lists every verdict the keeper prints", func() {
+		gomega.Expect(AvailableFleetKeeperVerdicts).To(gomega.HaveLen(6))
+		for _, verdict := range AvailableFleetKeeperVerdicts {
+			gomega.Expect(AvailableFleetKeeperVerdicts.Contains(verdict)).To(gomega.BeTrue())
+		}
+		gomega.Expect(AvailableFleetKeeperVerdicts.Contains(FleetKeeperVerdict("paused"))).To(gomega.BeFalse())
+	})
+
 	ginkgo.It("surfaces a check failure rather than reporting a quiet tick", func() {
 		broken := &FleetKeeperJob{
 			Check: func(context.Context) (string, int, error) {
