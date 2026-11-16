@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- chore: update Go to 1.27.4 and github.com/bborbe/errors to v1.7.0, github.com/bborbe/time to v1.27.28, github.com/onsi/ginkgo/v2 to v2.34.0
+
 ## v0.29.0
 
 - feat: **the session-exit daily metric runs inside the daemon, so the claude-wrapper row has no shell job left.** `com.bborbe.session-exit-daily` ran `session-exit-record.py daily --line --days 1` from launchd at 23:50; the store it reads is written by this process. The job keeps the reading's three load-bearing properties — one line per calendar day, zero-filled so a quiet day prints `ends=0` and a *missing* line means the job did not run; bucketed by UTC while fired at 23:50 local, so the row is provisional until the UTC day rolls over; the same `day` / `ends` / `unknown_end` / `unknown_end_pct` field names and formatting, now under the `job=session-exit-daily action=metric` prefix every ported job carries. The last-fired local date lives in `~/.claude/state/session-exit/daily-last-fired` rather than in memory, because a daemon restart must not emit a second line for the same day — an in-memory guard turns every `make install` into a duplicate reading. The baseline fire and the evening fire are one line rather than two for the same reason: the plist's `RunAtLoad` and its 23:50 `StartCalendarInterval` both fired on install day, which is the same duplicate by a different route.
