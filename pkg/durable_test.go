@@ -86,7 +86,10 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		ginkgo.DeferCleanup(func() {
 			c := childFor(s, session.ID)
-			if c == nil {
+			if c == nil || c.pid <= 0 {
+				// No recorded pid means there is no group to signal. Guarding it
+				// matters: kill(0, …) would target THIS process's group, taking
+				// the test binary and every sibling spec down with it.
 				return
 			}
 			// -pid is the child's process group. Setsid makes the child a session
