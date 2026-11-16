@@ -257,7 +257,7 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	}
 	// Commit: from here `send` refuses a new turn, so the kill cannot lose one.
 	c.ending = true
-	killErr := syscall.Kill(c.pid, syscall.SIGKILL)
+	killErr := c.killLocked("headless-turn-end", syscall.SIGKILL)
 	if killErr != nil {
 		c.ending = false
 	}
@@ -309,7 +309,7 @@ func (c *child) stopIfIdleAndUnparked(ctx context.Context) (bool, string, error)
 	if reason, keep := c.keepReasonLocked(); keep {
 		return false, reason, nil
 	}
-	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
+	if err := c.killLocked("close-on-terminal-task", syscall.SIGKILL); err != nil {
 		return false, "", errors.Wrapf(ctx, err, "kill session %q failed", c.id)
 	}
 	return true, "", nil

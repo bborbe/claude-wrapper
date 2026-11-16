@@ -830,6 +830,19 @@ func (s *supervisor) Stop(ctx context.Context, id string) error {
 	return c.stop(ctx)
 }
 
+// StopAs stops a session and names the job doing it, so the exit record can
+// attribute the kill. It is the attribution-aware sibling of Stop; a caller
+// that does not know its own name uses Stop.
+func (s *supervisor) StopAs(ctx context.Context, id string, sender string) error {
+	s.mutex.RLock()
+	c, ok := s.sessions[id]
+	s.mutex.RUnlock()
+	if !ok {
+		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
+	}
+	return c.stopWithSender(ctx, sender)
+}
+
 // newID returns a random UUID v4.
 //
 // It must be a UUID: `claude --session-id` rejects anything else outright
@@ -1250,6 +1263,16 @@ type child struct {
 	// reads it to decide whether an empty read means "wait" or "finished", which is
 	// what lets it drain the last events before the session is settled.
 	procGone atomic.Bool
+	// lastKillSender names the daemon job that signalled this child, and
+	// lastKillSignal is the signal it sent. Both are written under mutex
+	// immediately before the signal is delivered, so reap can attribute the exit
+	// to the job that caused it rather than reporting an anonymous kill.
+	lastKillSender string
+	lastKillSignal syscall.Signal
+	// exitSignal is the signal recovered from the reaped WaitStatus. It is the
+	// only place the signal survives: exec.ExitCode() collapses a signal kill to
+	// -1. Zero for an adopted child, which was never Wait'ed.
+	exitSignal syscall.Signal
 	// tailDone closes once the event tailer has returned, so the watcher settles
 	// the session only after every event the child wrote has been applied.
 	tailDone chan struct{}
@@ -1323,6 +1346,12 @@ func (c *child) snapshot() *Session {
 }
 
 func (c *child) stop(ctx context.Context) error {
+	return c.stopWithSender(ctx, "")
+}
+
+// stopWithSender is stop with the calling job's name, so the exit record can
+// name the job that closed the session instead of reporting an anonymous kill.
+func (c *child) stopWithSender(ctx context.Context, sender string) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	if c.session.State == StateExited {
@@ -1331,10 +1360,20 @@ func (c *child) stop(ctx context.Context) error {
 	// Signalled by pid rather than through *exec.Cmd: an adopted child was started
 	// by a daemon that no longer exists, so this process holds no Cmd for it and
 	// Process would be nil.
-	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
+	if err := c.killLocked(sender, syscall.SIGKILL); err != nil {
 		return errors.Wrapf(ctx, err, "kill session %q failed", c.id)
 	}
 	return nil
+}
+
+// killLocked delivers sig to the child and records who sent it, so reap can
+// attribute the exit. The caller must hold c.mutex: the sender and the signal
+// must be set in the same critical section that delivers the signal, or a
+// concurrent reap reads a stale name.
+func (c *child) killLocked(sender string, sig syscall.Signal) error {
+	c.lastKillSender = sender
+	c.lastKillSignal = sig
+	return syscall.Kill(c.pid, sig)
 }
 
 // stopIfStillStarting kills the child only if, at the instant the signal is
@@ -1359,7 +1398,7 @@ func (c *child) stopIfStillStarting(
 	// Signalled by pid rather than through *exec.Cmd: an adopted child was started
 	// by a daemon that no longer exists, so this process holds no Cmd for it and
 	// Process would be nil.
-	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
+	if err := c.killLocked("startup-deadline", syscall.SIGKILL); err != nil {
 		return false, errors.Wrapf(ctx, err, "kill session %q failed", c.id)
 	}
 	return true, nil
@@ -1599,6 +1638,13 @@ func (c *child) watch() {
 		code := 0
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
+			// ⚠️ ExitCode() collapses a signal kill to -1. The signal itself lives
+			// only in the WaitStatus, and this is the only place that holds it.
+			if ws, ok := exitErr.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				c.mutex.Lock()
+				c.exitSignal = ws.Signal()
+				c.mutex.Unlock()
+			}
 		}
 		exitCode = &code
 	} else {
@@ -1642,7 +1688,11 @@ func (c *child) reap(exitCode *int) {
 	// both the settled session and the wait status, and a poller would have to
 	// reconstruct the second from the first.
 	if c.exitRecorder != nil {
-		c.exitRecorder.Record(c.session, c.pid, exitCode)
+		c.exitRecorder.Record(c.session, c.pid, ExitStatus{
+			Code:   exitCode,
+			Signal: c.exitSignal,
+			Sender: c.lastKillSender,
+		})
 	}
 	// A child killed mid-turn closes nothing, so the counter would otherwise
 	// stay positive for the life of the process and misreport the field.
