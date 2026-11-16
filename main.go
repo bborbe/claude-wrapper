@@ -380,6 +380,10 @@ func lifecycleJobs(
 		&pkg.FleetKeeperJob{
 			Check: pkg.NewFleetCheck(pkg.FleetKeeperCheckScript),
 		},
+		// The daily metric over the store the exit recorder writes. It is the
+		// last launchd tick of this row: its reading ran from outside the fleet,
+		// over a store this process owns.
+		&pkg.SessionExitDailyJob{Now: now},
 	}
 }
 
