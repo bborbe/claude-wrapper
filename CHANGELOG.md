@@ -5,10 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- docs: **the 90-minute window's justification now states both classes of row.** v0.27.3 made a terminal ledger status an exemption from `recentlySpawnedWindow`, but the constant's comment still justified 90 minutes with the *starting* case alone, so a reader could not tell what the exemption does to the bound. It now gives both figures and the derivation: a **starting** row (ledger status non-terminal or absent) can be decided on a cache up to 2 × predicateTimeout + one interval old — 2 × 25 + 15 = **65 minutes** today — which is why the window stays at 90; a **finished** row (`done` / `error`) has no window at all, and its worst-case decision age is the next tick, at most one interval (**≤ 15 minutes**) after the ledger records the end.
+
 ## v0.28.0
 
 - perf: **the flagged tick asks the predicate to skip pane lookups.** The tick never reads a pane — `decision` skips every non-ABSENT row before it looks at `jump`, and `FlaggedRow` carries no pane field — yet the script spawned one interpreter per LIVE row to resolve one, and on 2026-11-16 one of those helpers held a read 11m49s until `predicateTimeout` killed it. The predicate argv now carries `--no-pane`; a full run drops from 88 s to 19 s. ⚠️ Requires `bborbe/claude-supervisor#929` deployed first: an older predicate rejects the flag and every tick then fails.
-- docs: **the 90-minute window's justification now states both classes of row.** v0.27.3 made a terminal ledger status an exemption from `recentlySpawnedWindow`, but the constant's comment still justified 90 minutes with the *starting* case alone, so a reader could not tell what the exemption does to the bound. It now gives both figures and the derivation: a **starting** row (ledger status non-terminal or absent) can be decided on a cache up to 2 × predicateTimeout + one interval old — 2 × 25 + 15 = **65 minutes** today — which is why the window stays at 90; a **finished** row (`done` / `error`) has no window at all, and its worst-case decision age is the next tick, at most one interval (**≤ 15 minutes**) after the ledger records the end.
 
 ## v0.27.4
 
