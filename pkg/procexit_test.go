@@ -6,6 +6,8 @@ package pkg
 
 import (
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,13 +21,18 @@ import (
 // already happened (a child that exited between adoption and the registration).
 var _ = ginkgo.Describe("waiting for an adopted child to exit", func() {
 	ginkgo.It("returns as soon as the process leaves", func() {
-		cmd := exec.Command("sleep", "30")
-		gomega.Expect(cmd.Start()).To(gomega.Succeed())
-		pid := cmd.Process.Pid
-		ginkgo.DeferCleanup(func() {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		})
+		// The pid must NOT be this process's child. A killed child stays a
+		// zombie until it is reaped, and a zombie still answers kill(pid, 0),
+		// so on Linux the watcher never sees it leave and this spec fails —
+		// while macOS reaps it eagerly and the spec passes for the wrong
+		// reason. A grandchild is reaped by init, which is the adopted-child
+		// shape the spec is actually about.
+		cmd := exec.Command("sh", "-c", "sleep 30 & echo $!")
+		out, err := cmd.Output()
+		gomega.Expect(err).To(gomega.Succeed())
+		pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+		gomega.Expect(err).To(gomega.Succeed())
+		ginkgo.DeferCleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 
 		done := make(chan struct{})
 		go func() {
@@ -36,7 +43,7 @@ var _ = ginkgo.Describe("waiting for an adopted child to exit", func() {
 		// Give the watcher time to register before the process leaves; without
 		// this the test would pass on the already-dead path instead.
 		time.Sleep(200 * time.Millisecond)
-		gomega.Expect(cmd.Process.Signal(syscall.SIGKILL)).To(gomega.Succeed())
+		gomega.Expect(syscall.Kill(pid, syscall.SIGKILL)).To(gomega.Succeed())
 
 		gomega.Eventually(done, "3s").Should(gomega.BeClosed())
 	})
