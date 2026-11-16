@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
@@ -20,8 +21,11 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 	at := func(hour, minute int) time.Time {
 		return time.Date(2026, 11, 16, hour, minute, 0, 0, time.Local)
 	}
+	// dayOf is the day the job reports for an instant: the last COMPLETE UTC day.
+	// The current UTC day still has hours to run at a 23:50-local fire, and no
+	// later run re-reads it, so its tail would be lost for good.
 	dayOf := func(instant time.Time) string {
-		return instant.UTC().Format("2006-01-02")
+		return instant.UTC().AddDate(0, 0, -1).Format("2006-01-02")
 	}
 	record := func(day, kind, session, pid string) string {
 		return day + "T20:00:00Z\tkind=" + kind + "\tpane=-" +
@@ -50,28 +54,61 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 
 	ginkgo.It("writes nothing on a poll that is not due", func() {
 		dir := ginkgo.GinkgoT().TempDir()
-		state(dir, "2026-11-15")
+		state(dir, "2026-11-01")
 		line, fired, err := newJob(dir, at(12, 0)).Tick(ginkgo.GinkgoT().Context())
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 		gomega.Expect(fired).To(gomega.BeFalse())
 		gomega.Expect(line).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("writes nothing a second time on the same local day", func() {
+	ginkgo.It("writes nothing a second time for the same reported day", func() {
 		dir := ginkgo.GinkgoT().TempDir()
-		state(dir, "2026-11-16")
+		state(dir, dayOf(at(23, 59)))
 		_, fired, err := newJob(dir, at(23, 59)).Tick(ginkgo.GinkgoT().Context())
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 		gomega.Expect(fired).To(gomega.BeFalse())
 	})
 
+	ginkgo.It("fires at the scheduled minute and not one minute earlier", func() {
+		early := ginkgo.GinkgoT().TempDir()
+		state(early, "2026-11-01")
+		_, firedEarly, err := newJob(early, at(23, 49)).Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(firedEarly).To(gomega.BeFalse())
+
+		onTime := ginkgo.GinkgoT().TempDir()
+		state(onTime, "2026-11-01")
+		_, firedOnTime, err := newJob(onTime, at(23, 50)).Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(firedOnTime).To(gomega.BeTrue())
+	})
+
 	ginkgo.It("fires once the clock passes the scheduled time", func() {
 		dir := ginkgo.GinkgoT().TempDir()
-		state(dir, "2026-11-15")
-		line, fired, err := newJob(dir, at(23, 51)).Tick(ginkgo.GinkgoT().Context())
+		now := at(23, 51)
+		state(dir, "2026-11-01")
+		line, fired, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 		gomega.Expect(fired).To(gomega.BeTrue())
-		gomega.Expect(line).To(gomega.ContainSubstring("job=session-exit-daily action=metric"))
+		gomega.Expect(line).To(gomega.Equal(metric(dayOf(now), "0", "0", "0.0")))
+	})
+
+	ginkgo.It("still reports the evening's day when a baseline fired earlier that local day", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		clock := libtime.NewCurrentDateTime()
+		job := &SessionExitDailyJob{Dir: dir, Now: clock, Logf: func(string) {}}
+		// A restart just after local midnight reports the UTC day before yesterday
+		// and must not consume the slot of the day the evening fire reports.
+		clock.SetNow(libtime.DateTime(time.Date(2026, 11, 17, 0, 10, 0, 0, time.Local)))
+		_, firstFired, err := job.Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(firstFired).To(gomega.BeTrue())
+
+		clock.SetNow(libtime.DateTime(time.Date(2026, 11, 17, 23, 50, 0, 0, time.Local)))
+		line, secondFired, err := job.Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(secondFired).To(gomega.BeTrue())
+		gomega.Expect(line).To(gomega.ContainSubstring("day=2026-11-16 "))
 	})
 
 	ginkgo.It("fires a baseline on the first run whatever the hour", func() {
@@ -90,6 +127,34 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 		_, secondFired, err := job.Tick(ginkgo.GinkgoT().Context())
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 		gomega.Expect(secondFired).To(gomega.BeFalse())
+	})
+
+	ginkgo.It("reports the last complete UTC day, not the day still running", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		now := at(23, 55)
+		line, _, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		// The current UTC day still has time to run at 23:50 local, and the next
+		// fire is a different day, so reporting it would lose its tail silently.
+		gomega.Expect(line).To(gomega.ContainSubstring(
+			"day=" + now.UTC().AddDate(0, 0, -1).Format("2006-01-02")))
+		gomega.Expect(line).To(gomega.Not(gomega.ContainSubstring(
+			"day=" + now.UTC().Format("2006-01-02") + " ")))
+	})
+
+	ginkgo.It("buckets by UTC, which is a different date from local at local midnight", func() {
+		if _, offset := time.Now().Zone(); offset == 0 {
+			ginkgo.Skip("host runs in UTC, so the local and UTC dates cannot differ")
+		}
+		dir := ginkgo.GinkgoT().TempDir()
+		now := time.Date(2026, 11, 17, 0, 30, 0, 0, time.Local)
+		line, fired, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(fired).To(gomega.BeTrue())
+		// A local bucket would report 2026-11-16 here; the UTC one reports 2026-11-15
+		// east of UTC, which is the whole point of the pin.
+		gomega.Expect(line).To(gomega.ContainSubstring(
+			"day=" + now.UTC().AddDate(0, 0, -1).Format("2006-01-02")))
 	})
 
 	ginkgo.It("zero-fills a day with no records, so a quiet day is not a missing line", func() {
@@ -131,20 +196,37 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 		dir := ginkgo.GinkgoT().TempDir()
 		now := at(23, 55)
 		day := dayOf(now)
-		// The same pid, seen by the pane's trap and by the daemon's reap. Counting
-		// both would inflate the day by the overlap (24 sessions carry both).
+		// The real shape: the pane's trap records the shell's pid, the daemon's reap
+		// records the child's, so the pids DIFFER for one death. Measured on the
+		// store 2026-11-16: 24 sessions in both families, 0 sharing a pid — a
+		// session+pid key collapses none of them.
 		write(dir, "pane-7.log", record(day, "signalled kill", "sid-a", "100"))
-		write(dir, "session-sid-a.log", record(day, "signalled", "sid-a", "100"))
+		write(dir, "session-sid-a.log", record(day, "signalled", "sid-a", "999"))
 		line, _, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 		gomega.Expect(line).To(gomega.Equal(metric(day, "1", "0", "0.0")))
+	})
+
+	ginkgo.It("upgrades a death to unknown when one record for it says so", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		now := at(23, 55)
+		day := dayOf(now)
+		// One process recorded twice, once with a signal and once as unexplained.
+		// Reporting the flattering half is the bias this metric exists to remove.
+		write(dir, "session-sid-a.log",
+			record(day, "signalled", "sid-a", "100")+
+				record(day, "unknown", "sid-a", "100"),
+		)
+		line, _, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(line).To(gomega.Equal(metric(day, "1", "1", "100.0")))
 	})
 
 	ginkgo.It("counts two ends of one session when the pids differ", func() {
 		dir := ginkgo.GinkgoT().TempDir()
 		now := at(23, 55)
 		day := dayOf(now)
-		// A resumed session is a new process; two panes are two ends.
+		// A respawned session is a new process; two panes are two ends.
 		write(dir, "pane-1.log", record(day, "exited", "sid-a", "100"))
 		write(dir, "pane-2.log", record(day, "exited", "sid-a", "200"))
 		line, _, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
@@ -156,7 +238,7 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 		dir := ginkgo.GinkgoT().TempDir()
 		now := at(23, 55)
 		day := dayOf(now)
-		earlier := now.AddDate(0, 0, -1).UTC().Format("2006-01-02")
+		earlier := now.AddDate(0, 0, -2).UTC().Format("2006-01-02")
 		write(dir, "pane-1.log",
 			record(day, "heartbeat", "sid-a", "100")+
 				record(day, "spawn", "sid-b", "200")+
@@ -178,10 +260,23 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 
 	ginkgo.It("refuses a schedule it cannot read rather than guessing one", func() {
 		dir := ginkgo.GinkgoT().TempDir()
-		state(dir, "2026-11-15")
+		state(dir, "2026-11-01")
 		job := newJob(dir, at(23, 55))
 		job.At = "half past"
 		_, fired, err := job.Tick(ginkgo.GinkgoT().Context())
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(fired).To(gomega.BeFalse())
+	})
+
+	ginkgo.It("refuses to guess when the state file cannot be read", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		// A directory at the state path is a read error that is not IsNotExist.
+		// Reading it as "never fired" would re-emit a day already emitted, which is
+		// the one outcome the design says is worse than a missed line.
+		gomega.Expect(os.Mkdir(
+			filepath.Join(dir, SessionExitDailyStateFile), 0o750,
+		)).To(gomega.Succeed())
+		_, fired, err := newJob(dir, at(23, 55)).Tick(ginkgo.GinkgoT().Context())
 		gomega.Expect(err).To(gomega.HaveOccurred())
 		gomega.Expect(fired).To(gomega.BeFalse())
 	})
