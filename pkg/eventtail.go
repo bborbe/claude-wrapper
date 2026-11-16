@@ -255,12 +255,26 @@ func countNewlines(file *os.File, limit int64) int {
 // Signal 0 performs the permission and existence checks without delivering
 // anything. EPERM is a live process this user may not signal, which is still a
 // live process — reading it as dead would abandon a child that is running.
+// processAlive reports whether pid is still running.
+//
+// A zombie is NOT running. It has exited and is only waiting to be reaped, yet
+// kill(pid, 0) still succeeds for it, so the signal check alone reports a dead
+// process as alive forever. That matters for an adopted child: normally init
+// reaps it, but where nothing reaps — a container whose PID 1 is the process
+// itself — the zombie lingers and pollForProcessExit never returns. /proc
+// carries the state, so read it.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	if err != nil && err != syscall.EPERM {
+		return false
+	}
+	if state, ok := procState(pid); ok && state == "Z" {
+		return false
+	}
+	return true
 }
 
 // pollForProcessExit blocks until pid is no longer running, checking every
