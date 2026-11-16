@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.27.1
 
 - fix: **a headless resume with no opening turn is now refused instead of started.** Since v0.27.0 a headless worker's turn end is its end of life, so a resume carrying no `prompt` spawned a child that closed one empty turn and was reaped — the caller was told the resume started, nothing was written, and the task file never moved. Measured 2026-11-16: six of twelve flagged resumes returned `state: starting`, each with a `turn closed with nothing pending — stopping the session` line and an unchanged task file. `spawn_agent` now returns `resume-without-prompt` naming the remedy (pass the work as `prompt`) before any child is created. The refusal is scoped to the headless path: a promptless *interactive* resume is legitimate, since that is how a human reopens a tab to keep working.
 
