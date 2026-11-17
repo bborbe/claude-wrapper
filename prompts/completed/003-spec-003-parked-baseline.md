@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-parked-observable-reopen-gate]
+summary: Added the parked baseline store, shared state-directory resolution, and the hold-or-open gate with tests and changelog entry
+execution_id: claude-wrapper-parked-observable-exec-003-spec-003-parked-baseline
+dark-factory-version: v0.198.17
 created: "2026-11-17T12:00:00Z"
 queued: "2026-11-17T20:40:51Z"
+started: "2026-11-17T23:35:41Z"
+completed: "2026-11-17T23:40:10Z"
 ---
 
 # Record each park's baseline and decide when it is satisfied

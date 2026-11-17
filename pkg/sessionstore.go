@@ -114,8 +114,15 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) sessionsRoot(ctx context.Context) (string, error) {
-	if s.root != "" {
-		return s.root, nil
+	return resolveSessionsRoot(ctx, s.root)
+}
+
+// resolveSessionsRoot resolves the sessions directory from dir, then
+// $CLAUDE_WRAPPER_STATE_DIR/sessions, then
+// ~/.claude/state/claude-wrapper/sessions.
+func resolveSessionsRoot(ctx context.Context, dir string) (string, error) {
+	if dir != "" {
+		return dir, nil
 	}
 	if env := os.Getenv(StateDirEnv); env != "" {
 		return filepath.Join(env, "sessions"), nil
