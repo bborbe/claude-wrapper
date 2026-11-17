@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: `LastCloser` reads a session's last closer from its own `events.jsonl` over a bounded 256 KB tail, and `ClassifyParked` turns that closer's `⏰ Ends:` declaration into exactly one `parked-on-card`, `parked-on-pr`, `parked-on-host` or `parked-until` wait class — the two pure pieces the reopen tick needs to stop reopening rows parked on something outside the worker's control. Only the last assistant record is considered (a tool-only one yields no closer), a partial trailing line is dropped, and a declaration whose owner/repo/number or host/port would smuggle a flag or an out-of-range value into a later command or dial falls through to `parked-until` with a nil deadline.
+
 ## v0.32.0
 
 - feat: `run_slash_command` roster tool runs an allowlisted `/compact` or `/reload-plugins` in a local worker — a headless worker gets it as a user turn on its stdin, a tab worker has it typed into its pane; anything else is refused with `not allowlisted`, and A2A/cluster workers are refused by name
