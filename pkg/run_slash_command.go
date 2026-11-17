@@ -101,6 +101,17 @@ func (s *RosterToolServer) runSlashCommandOnStdin(
 		}
 		return true, "", errors.Wrapf(ctx, err, "look up worker %s failed", agentID)
 	}
+	if s.Locks == nil {
+		return true, "", errors.Errorf(ctx, "run_slash_command on a headless worker is not wired")
+	}
+	// TryAcquire, the same fail-fast set_agent_permission_mode uses: a running
+	// sequence counts the child's turns, and a turn written into the middle of
+	// it would be read as one of its steps.
+	release, ok := s.Locks.TryAcquire(agentID)
+	if !ok {
+		return true, "", errors.Errorf(ctx, "session %q is running a sequence", agentID)
+	}
+	defer release()
 	if err := s.Supervisor.Send(ctx, agentID, command); err != nil {
 		return true, "", errors.Wrapf(
 			ctx, err, "send %s to headless worker %s failed", command, agentID,

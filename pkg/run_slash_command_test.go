@@ -32,12 +32,14 @@ var _ = ginkgo.Describe("RosterToolServer.runSlashCommand", func() {
 		tabs       *fakeTabClient
 		ledger     *fakeLedger
 		supervisor *slashSupervisor
+		locks      *SessionLocks
 	)
 
 	ginkgo.BeforeEach(func() {
 		ctx = context.Background()
 		tabs = &fakeTabClient{}
 		ledger = &fakeLedger{}
+		locks = NewSessionLocks()
 		supervisor = &slashSupervisor{
 			toolSupervisor: &toolSupervisor{live: make(chan Event, 64)},
 		}
@@ -49,6 +51,7 @@ var _ = ginkgo.Describe("RosterToolServer.runSlashCommand", func() {
 			Tabs:       tabs,
 			Roster:     &fakeRoster{},
 			Ledger:     ledger,
+			Locks:      locks,
 		}
 	}
 
@@ -89,6 +92,15 @@ var _ = ginkgo.Describe("RosterToolServer.runSlashCommand", func() {
 		ginkgo.Entry("compact", "/compact"),
 		ginkgo.Entry("reload-plugins", "/reload-plugins"),
 	)
+
+	ginkgo.It("refuses a headless worker that is running a sequence, writing nothing", func() {
+		release, ok := locks.TryAcquire("s1")
+		gomega.Expect(ok).To(gomega.BeTrue())
+		defer release()
+		_, err := run(newServer(), `{"agent_id":"s1","command":"/compact"}`)
+		gomega.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("running a sequence")))
+		gomega.Expect(supervisor.sent).To(gomega.BeEmpty())
+	})
 
 	ginkgo.It("types the command into a tab worker's pane", func() {
 		supervisor.getErr = ErrSessionNotFound
