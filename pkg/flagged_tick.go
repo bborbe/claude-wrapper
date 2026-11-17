@@ -110,6 +110,15 @@ type FlaggedTickResult struct {
 	// Considered is how many rows the tick was handed. It is the number the
 	// three buckets must add up to; without it a dropped row is invisible.
 	Considered int
+	// ResumeDelays holds `key=<delay>` for every row this tick opened, where the
+	// delay is measured from the ledger's own `ended_at` — the instant the turn
+	// that produced the stop closed. It is the per-resume measurement: the row's
+	// dead time between becoming able to continue and being resumed.
+	//
+	// A row with no `ended_at` is ABSENT rather than zero. An absent entry means
+	// the delay was not measurable; a zero would read as an instant resume, which
+	// is the one reading this measurement exists to distinguish.
+	ResumeDelays []string
 	// LiveCountSource names the channel the spawn caps counted from this tick
 	// (`ledger`, `registry`, `heartbeat` or `none`). Empty when the caps cannot
 	// report one.
@@ -162,6 +171,12 @@ func (r FlaggedTickResult) Line() string {
 	}
 	if r.LiveCountSource != "" {
 		line += " live_count_source=" + r.LiveCountSource
+	}
+	// `resume_delay=` is the per-resume measurement, and it sits on the summary
+	// line for the same reason `rows=` does: a row's dead time has to be readable
+	// next to the tick that ended it, or the delay cannot be attributed to a tick.
+	if len(r.ResumeDelays) > 0 {
+		line += " resume_delay=" + strings.Join(r.ResumeDelays, ",")
 	}
 	return line
 }
@@ -456,8 +471,16 @@ func (t *FlaggedTick) tickFromRows(
 	if reporter, ok := t.Caps.(liveCountSourceReporter); ok {
 		result.LiveCountSource = reporter.LiveCountSource(ctx)
 	}
-	recent := t.recentlySpawned(ctx)
+	// One ledger read serves both the recently-spawned guard and the resume-delay
+	// measurement: two reads of the same store in one tick could disagree, and the
+	// measurement would then describe a fleet state the decision never saw.
+	ledger := t.ledgerRows(ctx)
+	recent := recentlySpawned(ledger)
+	// The child table answers when the ledger cannot, so a controller outage does
+	// not empty the double-open guard.
+	t.mergeChildSpawnTimes(ctx, recent)
 	t.mergeOpened(recent)
+	ended := endedAtBySession(ledger)
 	now := t.now()
 	// halted is the fleet-level refusal that ended this tick's opening pass. It
 	// is a reason string, not a bool, because the rows it leaves behind are still
@@ -507,8 +530,32 @@ func (t *FlaggedTick) tickFromRows(
 			t.rememberOpened(row, now)
 		}
 		result.Opened = append(result.Opened, row.Key())
+		recordResumeDelay(&result, row, ended, now)
 	}
 	return result
+}
+
+// recordResumeDelay appends `key=<delay>` for a row this tick just opened, where
+// the delay is measured from the ledger's own `ended_at` — the instant the turn
+// that produced the stop closed.
+//
+// A row with no ended_at — never stopped, or a spawn row whose turn never closed
+// — is omitted rather than recorded as zero: a zero would read as an instant
+// resume, which is the one reading this measurement exists to distinguish. A
+// future ended_at is skipped for the same reason, since clock skew would
+// otherwise print a negative delay.
+func recordResumeDelay(
+	result *FlaggedTickResult,
+	row FlaggedRow,
+	ended map[string]time.Time,
+	now time.Time,
+) {
+	at, ok := ended[row.SessionID]
+	if !ok || at.After(now) {
+		return
+	}
+	result.ResumeDelays = append(result.ResumeDelays,
+		row.Key()+"="+now.Sub(at).Round(time.Second).String())
 }
 
 // readRows bounds one predicate read.
@@ -529,64 +576,66 @@ func (t *FlaggedTick) readRows(ctx context.Context) ([]FlaggedRow, error) {
 	return rows, nil
 }
 
-// recentlySpawned maps session id — and, for a never-opened row, labelKey(task
-// name) — to its ledger spawn time.
+// ledgerRows reads the ledger once for a tick.
 //
-// A ledger read that fails is an empty map, not an error: the guard is a safety
-// margin, and refusing every row because the store was down would turn a store
-// outage into a fleet-wide stall.
-func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time {
-	out := make(map[string]time.Time)
-	t.mergeLedgerSpawnTimes(ctx, out)
-	t.mergeChildSpawnTimes(ctx, out)
-	return out
-}
-
-// mergeChildSpawnTimes adds the spawn times of the wrapper's own live children.
-//
-// This is what keeps the double-open guard alive while the attention-controller
-// is down: the durable per-session `record.json` is on disk, so it answers when
-// the ledger cannot. A record whose child pid is gone is not a spawn to stay away
-// from, and a record with no pid check would suppress a row forever.
-func (t *FlaggedTick) mergeChildSpawnTimes(ctx context.Context, out map[string]time.Time) {
-	store := t.Sessions
-	if store == nil {
-		dir, err := SupervisorStateDir(ctx, "", os.Getenv)
-		if err != nil {
-			return
-		}
-		store = NewSessionStore(dir)
-	}
-	records, err := store.List(ctx)
-	if err != nil {
-		t.logf("flagged-tick: child table read failed, recently-spawned guard is ledger-only: %v", err)
-		return
-	}
-	for _, record := range records {
-		if record.ID == "" || !pidAlive(record.ChildPID) {
-			continue
-		}
-		if prev, ok := out[record.ID]; !ok || record.StartedAt.After(prev) {
-			out[record.ID] = record.StartedAt
-		}
-	}
-}
-
-// mergeLedgerSpawnTimes adds the ledger's spawn times, keyed by session id and by
-// label for a never-opened row.
-//
-// A failed read leaves the map as it was rather than returning empty: the child
-// table still answers, and refusing every row because the store was down would
-// turn a store outage into a fleet-wide stall.
-func (t *FlaggedTick) mergeLedgerSpawnTimes(ctx context.Context, out map[string]time.Time) {
+// A nil result means the read could not run. Every consumer degrades to its
+// empty-map behaviour rather than refusing rows: the store is a safety margin
+// here, not a gate, and turning a store outage into a fleet-wide stall is the
+// failure this shape exists to avoid.
+func (t *FlaggedTick) ledgerRows(ctx context.Context) []LedgerRow {
 	if t.Ledger == nil {
-		return
+		return nil
 	}
 	rows, err := t.Ledger.Rows(ctx)
 	if err != nil {
-		t.logf("flagged-tick: ledger read failed, recently-spawned guard degraded to the child table: %v", err)
-		return
+		// ⚠️ Both consumers go dark on this failure, not just the guard: a tick
+		// that opened rows while the store was down logs no `resume_delay=` at
+		// all. Naming only the guard would leave an operator reading this line
+		// during an outage with no idea the metric is dark too.
+		t.logf("flagged-tick: ledger read failed, recently-spawned guard and "+
+			"resume_delay measurement inactive: %v", err)
+		return nil
 	}
+	return rows
+}
+
+// endedAtBySession maps a session id to the instant its last turn ended, which
+// is the start of clock for the resume-delay measurement.
+//
+// It is a package function rather than a method, and `recentlySpawned` lost its
+// receiver in the same change, so that ONE ledger read can feed both. That shape
+// matches the rest of this file (`formatCounts`, `reasonClass`, `orderFlaggedRows`,
+// `labelKey`, `neverOpened` are all package-level), and neither function holds
+// state: the alternative is two reads of the same store in one tick, which could
+// disagree and leave the measurement describing a fleet state the decision never
+// saw.
+//
+// ⚠️ It must NOT skip terminal ledger rows, unlike recentlySpawned below. A
+// closed row is precisely the one being resumed: `ended_at` is written by the
+// turn end that closed it, so skipping terminal rows would empty the map for
+// exactly the rows this measurement exists for, and the metric would read as
+// "never measurable" on a fleet where it should be at its largest.
+func endedAtBySession(rows []LedgerRow) map[string]time.Time {
+	out := make(map[string]time.Time, len(rows))
+	for _, row := range rows {
+		if row.SessionID == "" || row.EndedAt == nil {
+			continue
+		}
+		at, parseErr := time.Parse(time.RFC3339, *row.EndedAt)
+		if parseErr != nil {
+			continue
+		}
+		if prev, ok := out[row.SessionID]; !ok || at.After(prev) {
+			out[row.SessionID] = at
+		}
+	}
+	return out
+}
+
+// recentlySpawned maps session id — and, for a never-opened row, labelKey(task
+// name) — to its ledger spawn time.
+func recentlySpawned(rows []LedgerRow) map[string]time.Time {
+	out := make(map[string]time.Time, len(rows))
 	for _, row := range rows {
 		// A spawn the ledger has CLOSED is not a spawn to stay away from.
 		//
@@ -618,6 +667,37 @@ func (t *FlaggedTick) mergeLedgerSpawnTimes(ctx context.Context, out map[string]
 			if prev, ok := out[key]; !ok || at.After(prev) {
 				out[key] = at
 			}
+		}
+	}
+	return out
+}
+
+// mergeChildSpawnTimes adds the spawn times of the wrapper's own live children.
+//
+// This is what keeps the double-open guard alive while the attention-controller
+// is down: the durable per-session `record.json` is on disk, so it answers when
+// the ledger cannot. A record whose child pid is gone is not a spawn to stay away
+// from, and a record with no pid check would suppress a row forever.
+func (t *FlaggedTick) mergeChildSpawnTimes(ctx context.Context, out map[string]time.Time) {
+	store := t.Sessions
+	if store == nil {
+		dir, err := SupervisorStateDir(ctx, "", os.Getenv)
+		if err != nil {
+			return
+		}
+		store = NewSessionStore(dir)
+	}
+	records, err := store.List(ctx)
+	if err != nil {
+		t.logf("flagged-tick: child table read failed, recently-spawned guard is ledger-only: %v", err)
+		return
+	}
+	for _, record := range records {
+		if record.ID == "" || !pidAlive(record.ChildPID) {
+			continue
+		}
+		if prev, ok := out[record.ID]; !ok || record.StartedAt.After(prev) {
+			out[record.ID] = record.StartedAt
 		}
 	}
 }
