@@ -541,3 +541,62 @@ var _ = Describe("CdGitChainGuard", func() {
 		Expect(guard.Name()).To(Equal("deny-cd-git-chain.py"))
 	})
 })
+
+// tempWorktree builds a linked-worktree checkout: a .git pointer file whose
+// target carries a commondir, so the git dir and the common dir differ.
+func tempWorktree(main string) string {
+	wt := tempRepo(map[string]string{})
+	gitdir := main + "/.git/worktrees/wt"
+	Expect(os.MkdirAll(gitdir, 0o700)).To(Succeed())
+	Expect(os.WriteFile(gitdir+"/commondir", []byte("../..\n"), 0o600)).To(Succeed())
+	Expect(os.WriteFile(
+		wt+"/.git", []byte("gitdir: "+gitdir+"\n"), 0o600,
+	)).To(Succeed())
+	return wt
+}
+
+var _ = Describe("BranchSwitchGuard", func() {
+	guard := hook.NewBranchSwitchGuard()
+
+	main := tempGitRepo(map[string]string{}, "master")
+	Expect(os.MkdirAll(main+"/.git/refs/heads", 0o700)).To(Succeed())
+	Expect(os.WriteFile(
+		main+"/.git/refs/heads/existing", []byte("0000000000000000000000000000000000000000\n"), 0o600,
+	)).To(Succeed())
+	Expect(os.WriteFile(main+"/README.md", []byte("x\n"), 0o600)).To(Succeed())
+	linked := tempWorktree(main)
+
+	DescribeTable("denies a branch switch in a main checkout only",
+		func(command string, cwd string, denied bool) {
+			input := bashInput(command)
+			input.Cwd = cwd
+			Expect(guard.Evaluate(input).Deny).To(Equal(denied))
+		},
+		Entry("checkout -b in the main checkout", "git checkout -b feat/x", main, true),
+		Entry("switch -c in the main checkout", "git switch -c feat/x", main, true),
+		Entry("switching back to trunk", "git checkout master", main, false),
+		Entry("a path restore with --", "git checkout -- file.txt", main, false),
+		Entry("an existing branch", "git checkout existing", main, true),
+		Entry("a path that names no ref", "git checkout README.md", main, false),
+		Entry("the same switch inside a linked worktree",
+			"git checkout -b feat/x", linked, false),
+		Entry("a switch after a fetch", "git fetch && git checkout -b feat/x", main, true),
+		Entry("an allowed switch followed by a denied one",
+			"git checkout master && git checkout -b feat/x", main, true),
+		Entry("quoted prose naming a switch",
+			`echo "git checkout -b x"`, main, false),
+		Entry("an unrelated command", "ls -la", main, false),
+	)
+
+	It("keeps the refusal text byte-identical", func() {
+		input := bashInput("git checkout -b feat/x")
+		input.Cwd = main
+		Expect(guard.Evaluate(input).Reason).To(Equal(
+			"Refused: `git checkout -b feat/x` switches the branch of a repo's main checkout (" +
+				main + "). The main checkout stays on main/master — a branch lives in a worktree. " +
+				"Create it with:\n" +
+				"  git fetch && git worktree add --no-track ../<repo>-<name> -b <branch> " +
+				"origin/master\n" +
+				"Or switch back to trunk. Work inside an existing linked worktree is unaffected."))
+	})
+})

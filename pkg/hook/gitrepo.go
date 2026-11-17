@@ -121,3 +121,108 @@ func parseRemoteURL(config string, remote string) string {
 	}
 	return ""
 }
+
+// commonDir returns the directory shared by every worktree of the repo: the git
+// dir itself in a main checkout, and the main repo's .git in a linked worktree.
+func commonDir(git string) string {
+	data, err := os.ReadFile(filepath.Join(git, "commondir")) //#nosec G304 -- a fixed name
+	if err != nil {
+		return git
+	}
+	target := strings.TrimSpace(string(data))
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(git, target)
+	}
+	return filepath.Clean(target)
+}
+
+// isMainCheckout reports whether dir resolves to a repository whose git dir IS
+// its common dir. A linked worktree, or no repository at all, is out of scope.
+func isMainCheckout(dir string) (string, bool) {
+	root, ok := repoRoot(dir)
+	if !ok {
+		return "", false
+	}
+	git, ok := gitDir(root)
+	if !ok {
+		return "", false
+	}
+	if git != commonDir(git) {
+		return "", false
+	}
+	return root, true
+}
+
+// refExists reports whether name resolves to a commit in the repo at root: a
+// local branch, a tag, a remote-tracking branch, or a hex object name.
+func refExists(root string, name string) bool {
+	git, ok := gitDir(root)
+	if !ok {
+		return false
+	}
+	common := commonDir(git)
+	candidates := []string{
+		"refs/heads/" + name,
+		"refs/tags/" + name,
+		name,
+	}
+	for _, ref := range candidates {
+		if fileExists(filepath.Join(common, ref)) || fileExists(filepath.Join(git, ref)) {
+			return true
+		}
+	}
+	if packedRefsContain(filepath.Join(common, "packed-refs"), candidates) {
+		return true
+	}
+	if packedRefsContain(filepath.Join(git, "packed-refs"), candidates) {
+		return true
+	}
+	if remoteRefExists(filepath.Join(common, "refs", "remotes"), name) ||
+		remoteRefExists(filepath.Join(git, "refs", "remotes"), name) {
+		return true
+	}
+	return hexObjectName.MatchString(name)
+}
+
+// fileExists reports whether path is an existing file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// packedRefsContain reports whether any of refs appears in a packed-refs file.
+func packedRefsContain(path string, refs []string) bool {
+	data, err := os.ReadFile(path) //#nosec G304 -- a fixed name under a resolved git dir
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		for _, ref := range refs {
+			if fields[len(fields)-1] == ref {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// remoteRefExists reports whether refs/remotes/<any>/<name> exists on disk.
+func remoteRefExists(remoteDir string, name string) bool {
+	entries, err := os.ReadDir(remoteDir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if fileExists(filepath.Join(remoteDir, entry.Name(), name)) {
+			return true
+		}
+	}
+	return false
+}
