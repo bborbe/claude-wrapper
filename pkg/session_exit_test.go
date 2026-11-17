@@ -44,6 +44,54 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 		gomega.Expect(line).To(gomega.ContainSubstring("pane=-"))
 	})
 
+	// SC2 of the startup-deadline task: a child killed before its init event
+	// carries where it was waiting, so the next occurrence diagnoses itself from
+	// the record instead of a post-mortem.
+	ginkgo.It("records the stall point of a child killed before its init event", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		recorder := &SessionExitFileRecorder{Dir: dir}
+		recorder.Record(Session{
+			ID: "sid-2",
+			Stall: &Stall{
+				LastEvent:    "system/hook_response",
+				PendingHooks: []string{"SessionStart:startup"},
+			},
+		}, 4343, ExitStatus{Code: code(-1), Signal: syscall.SIGKILL, Sender: "startup-deadline"})
+		raw, err := os.ReadFile(filepath.Join(dir, "session-sid-2.log"))
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		line := string(raw)
+		gomega.Expect(fields(line)).To(gomega.HaveLen(12))
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_phase=hook"))
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_last_event=system/hook_response"))
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_hooks=SessionStart:startup"))
+	})
+
+	// An initialised session's line is unchanged. The nine-field record is the
+	// contract every existing reader parses, so the stall fields must be absent
+	// rather than empty.
+	ginkgo.It("omits the stall fields for a session that initialised", func() {
+		line := record(ExitStatus{Code: code(0)})
+		gomega.Expect(line).NotTo(gomega.ContainSubstring("stall_"))
+	})
+
+	// The worst case has no event to hang the point on: a child that emitted
+	// nothing at all still reports where it was waiting.
+	ginkgo.It("records a child that emitted no event at all", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		recorder := &SessionExitFileRecorder{Dir: dir}
+		recorder.Record(Session{ID: "sid-3", Stall: &Stall{}}, 4444, ExitStatus{
+			Code:   code(-1),
+			Signal: syscall.SIGKILL,
+			Sender: "startup-deadline",
+		})
+		raw, err := os.ReadFile(filepath.Join(dir, "session-sid-3.log"))
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		line := string(raw)
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_phase=no-event"))
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_last_event=-"))
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_hooks=-"))
+	})
+
 	// SC5: the full field set AND ORDER for a signalled record with a named
 	// sender. The order is pinned because `session-exit-record.py` already emits
 	// `signal`/`sender` in this position, and one reader parses both families.

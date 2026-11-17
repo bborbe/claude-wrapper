@@ -433,6 +433,7 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			session: Session{
 				ID:       record.ID,
 				State:    StateStarting,
+				Stall:    &Stall{},
 				Controls: []Control{ControlMessage},
 				Cwd:      record.Cwd,
 				// Mode is what a board answer is checked against: a permission gate
@@ -961,6 +962,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
+			Stall:     &Stall{},
 			Controls:  []Control{ControlMessage},
 			Cwd:       options.Cwd,
 			Mode:      sessionMode(options.Mode),
@@ -1352,6 +1354,12 @@ func (c *child) snapshot() *Session {
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
 	clone.PendingTurns = c.pendingTurns
+	if c.session.Stall != nil {
+		stall := *c.session.Stall
+		stall.PendingHooks = append([]string{}, c.session.Stall.PendingHooks...)
+		stall.Phase = stallPhase(&stall)
+		clone.Stall = &stall
+	}
 	if !c.lastEventAt.IsZero() {
 		age := int(c.now.Now().Time().Sub(c.lastEventAt).Seconds())
 		clone.LastEventAgeSeconds = &age
@@ -1764,6 +1772,9 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.lastEventAt = c.now.Now().Time()
+	if !replayed && c.session.State == StateStarting {
+		c.recordStallLocked(event)
+	}
 	switch event["type"] {
 	case "system":
 		if event["subtype"] == "init" {
@@ -1789,6 +1800,14 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 			c.recordTurnVerdict(event, c.closedTurnLocked())
 			c.checkTerminalTask()
 		}
+	}
+	// The stall point describes a child that is still starting. Any event that
+	// moves the state on — init, an assistant message, a result — is proof the
+	// child got somewhere, so the point is dropped here rather than only in
+	// applyInit: a session that leaves StateStarting by any other route must not
+	// carry "awaiting-init" into its exit record.
+	if c.session.State != StateStarting {
+		c.session.Stall = nil
 	}
 	c.publish(seq, Event(event))
 }
@@ -1919,6 +1938,10 @@ func (c *child) applyInit(event map[string]any) {
 	if c.session.State == StateStarting {
 		c.session.State = StateIdle
 	}
+	// init is re-emitted for every turn, so this clear runs more than once on a
+	// running child; it is idempotent, and the first one is what removes the
+	// point before the deadline could act on it.
+	c.session.Stall = nil
 }
 
 // applyControlResponse stores the mode a set_permission_mode answer reports.
