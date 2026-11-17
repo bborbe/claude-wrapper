@@ -800,4 +800,71 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 		gomega.Expect(result.Opened).To(gomega.ConsistOf("abc-123"))
 		gomega.Expect(result.Line()).To(gomega.ContainSubstring("considered=1"))
 	})
+
+	ginkgo.Describe("survives a killed predicate read", func() {
+		// The failure mode from 2026-11-16: one read killed by the 25-minute
+		// predicateTimeout left the cache carrying the error, and every later tick
+		// returned early on it — 18 consecutive dead ticks, four operator-flagged
+		// rows opening 2 h 01 m late. A kill is an expected outcome of the bound;
+		// it must cost freshness, not the tick.
+		killed := stderrors.New("run python3 failed: signal: killed")
+
+		ginkgo.It("keeps the last good row set when a read fails", func() {
+			cache := &flaggedRowCache{}
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil)
+			cache.store(nil, killed)
+
+			rows, stale, ok := cache.snapshot()
+			ginkgo.GinkgoWriter.Printf("rows=%d stale=%v ok=%t\n", len(rows), stale, ok)
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(rows).To(gomega.HaveLen(1))
+			gomega.Expect(stale).NotTo(gomega.BeNil())
+		})
+
+		ginkgo.It("still runs the tick after the read is killed", func() {
+			reopener := &recordingReopener{}
+			tick := newTick(nil, reopener, &recordingCaps{})
+			var lines []string
+			tick.Logf = func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}
+			cache := &flaggedRowCache{}
+
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil)
+			tick.tickAndLog(context.Background(), cache)
+
+			cache.store(nil, killed)
+			before := len(lines)
+			tick.tickAndLog(context.Background(), cache)
+			after := strings.Join(lines[before:], "\n")
+			ginkgo.GinkgoWriter.Printf("lines-after-kill=%s\n", after)
+
+			// A tick line that CONSIDERED the row, not merely one that was emitted:
+			// with the sticky error the cache carries no rows, so the tick still
+			// logs `opened=0 refused=0 skipped=0` and would satisfy a weaker
+			// assertion while serving nothing.
+			gomega.Expect(after).To(gomega.ContainSubstring("read failed"))
+			gomega.Expect(after).To(gomega.ContainSubstring("considered=1"))
+			gomega.Expect(after).NotTo(gomega.ContainSubstring("flagged-tick failed:"))
+		})
+
+		ginkgo.It("keeps logging skipped when the FIRST read fails", func() {
+			tick := newTick(nil, &recordingReopener{}, &recordingCaps{})
+			var lines []string
+			tick.Logf = func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}
+			cache := &flaggedRowCache{}
+			cache.store(nil, killed)
+			tick.tickAndLog(context.Background(), cache)
+
+			// No good row set yet, so there is nothing to serve: `skipped` stays
+			// honest rather than fabricating an empty set — but the read's own
+			// error is still named, or a first read that always fails would hide
+			// behind `skipped` forever.
+			gomega.Expect(strings.Join(lines, "\n")).To(gomega.ContainSubstring("skipped"))
+			gomega.Expect(strings.Join(lines, "\n")).To(gomega.ContainSubstring("read failed"))
+			gomega.Expect(strings.Join(lines, "\n")).NotTo(gomega.ContainSubstring("opened="))
+		})
+	})
 })
