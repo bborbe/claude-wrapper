@@ -827,7 +827,9 @@ func (s *supervisor) Stop(ctx context.Context, id string) error {
 	if !ok {
 		return errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
 	}
-	return c.stop(ctx)
+	// The daemon sends this kill, so it names itself rather than recording the
+	// signal as coming from outside the process.
+	return c.stopWithSender(ctx, "stop-api")
 }
 
 // StopAs stops a session and names the job doing it, so the exit record can
@@ -1345,12 +1347,9 @@ func (c *child) snapshot() *Session {
 	return &clone
 }
 
-func (c *child) stop(ctx context.Context) error {
-	return c.stopWithSender(ctx, "")
-}
-
-// stopWithSender is stop with the calling job's name, so the exit record can
-// name the job that closed the session instead of reporting an anonymous kill.
+// stopWithSender stops the child and records the calling job's name, so the
+// exit record can name the job that closed the session instead of reporting an
+// anonymous kill.
 func (c *child) stopWithSender(ctx context.Context, sender string) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -1373,7 +1372,14 @@ func (c *child) stopWithSender(ctx context.Context, sender string) error {
 func (c *child) killLocked(sender string) error {
 	c.lastKillSender = sender
 	c.lastKillSignal = syscall.SIGKILL
-	return syscall.Kill(c.pid, syscall.SIGKILL)
+	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
+		// ⚠️ The signal was never delivered, so a later natural exit must not be
+		// attributed to this sender — the stale name would outlive the failed kill.
+		c.lastKillSender = ""
+		c.lastKillSignal = 0
+		return err
+	}
+	return nil
 }
 
 // signalFromExitErr recovers the signal that killed a child from the reaped
