@@ -150,6 +150,7 @@ func main() {
 	// half-open files.
 	decider := &pkg.PermissionDecider{Log: pkg.NewPermissionLog(*permissionLog, now), Now: now}
 	store := pkg.NewSessionStore(*stateDir)
+	parkedGate := newParkedGate(*stateDir, *attentionURL, now)
 	supervisor, ledger := newSupervisor(
 		ctx, *claudeBin, *listen, *attentionURL, store, decider, *permissionTimeout, now,
 		taskResolverFromFlag(*closeOnTerminalTaskDirs),
@@ -174,7 +175,7 @@ func main() {
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
 		*flagged.interval, *flagged.script,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
-		*fleetPusher.heartbeat,
+		*fleetPusher.heartbeat, parkedGate,
 	)
 
 	// The startup deadline is the only verb that can clear a child stuck in
@@ -270,6 +271,23 @@ func openCardsFromURL(attentionURL string) pkg.OpenCardReader {
 		return nil
 	}
 	return pkg.NewBoardOpenCards(pkg.NewBoardStore(attentionURL, nil))
+}
+
+// newParkedGate builds the flagged tick's park gate, or nil when the state
+// directories cannot be resolved — a nil gate is an inactive gate.
+func newParkedGate(
+	stateDir string,
+	attentionURL string,
+	now libtime.CurrentDateTimeGetter,
+) pkg.ParkedHold {
+	sessionsDir, parkedDir, err := pkg.StateDirs(stateDir)
+	if err != nil {
+		log.Printf("WARNING: parked gate disabled: %v", err)
+		return nil
+	}
+	return pkg.NewParkedGate(
+		sessionsDir, parkedDir, openCardsFromURL(attentionURL), pkg.ExecCommandRunner{}, now,
+	)
 }
 
 // taskResolverFromFlag builds the close-on-terminal-task resolver; an empty
@@ -518,6 +536,7 @@ func startFleetFaces(
 	fleetPusherWatchInterval time.Duration,
 	fleetPusherWatchMaxAge time.Duration,
 	fleetPusherHeartbeat string,
+	parked pkg.ParkedHold,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
@@ -591,6 +610,7 @@ func startFleetFaces(
 		caps,
 		ledger,
 		now,
+		parked,
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
@@ -775,6 +795,7 @@ func startFlaggedTick(
 	caps pkg.SpawnCaps,
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
+	parked pkg.ParkedHold,
 ) {
 	if interval <= 0 {
 		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
@@ -785,6 +806,7 @@ func startFlaggedTick(
 		Reopener: reopener,
 		Caps:     caps,
 		Ledger:   ledger,
+		Parked:   parked,
 		Now:      now,
 		Interval: interval,
 	}

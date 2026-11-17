@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-parked-observable-reopen-gate]
+summary: Added a Parked gate to the reopen tick that holds rows parked on cards, PRs, hosts or clocks as skips, wired it in the daemon, and proved all four classes plus fail-closed and no-reservation behaviour end-to-end.
+execution_id: claude-wrapper-parked-observable-exec-004-spec-003-flagged-tick-guard
+dark-factory-version: v0.198.17
 created: "2026-11-17T12:00:00Z"
 queued: "2026-11-17T20:40:52Z"
+started: "2026-11-17T23:40:12Z"
+completed: "2026-11-17T23:46:36Z"
 ---
 
 # Hold a parked row in the reopen tick
