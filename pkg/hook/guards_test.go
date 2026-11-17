@@ -354,3 +354,47 @@ var _ = Describe("NukeShutdownGuard", func() {
 		Expect(guard.Name()).To(Equal("deny-nuke-shutdown.sh"))
 	})
 })
+
+var _ = Describe("SecretReadGuard", func() {
+	guard := hook.NewSecretReadGuard()
+
+	DescribeTable("denies a value-printing read and allows the key-name forms",
+		func(command string, denied bool) {
+			Expect(guard.Evaluate(bashInput(command)).Deny).To(Equal(denied))
+		},
+		Entry("get secret -o yaml",
+			"kubectl -n prod get secret db -o yaml", true),
+		Entry("get cm -o json",
+			"kubectl get cm app-config -o json", true),
+		Entry("get config -o yaml",
+			"kubectl get config agent -o yaml", true),
+		Entry("edit a secret",
+			"kubectl edit secret db", true),
+		Entry("jsonpath into .data",
+			"kubectl get secret db -o jsonpath='{.data}'", true),
+		Entry("jsonpath into a non-value field",
+			"kubectl get secret db -o jsonpath='{.metadata.name}'", false),
+		Entry("--raw on secrets",
+			"kubectl --raw /api/v1/namespaces/prod/secrets/db", true),
+		Entry("get without an output format",
+			"kubectl get secrets", false),
+		Entry("describe a secret", "kubectl describe secret db", false),
+		Entry("get with jq keys as the last stage",
+			`kubectl get secret db -o json | jq '.data | keys'`, false),
+		Entry("get with a trailing stage after jq",
+			`kubectl get secret db -o json | jq '.data | keys' | head -3`, true),
+		Entry("an unrelated command", "ls -la", false),
+	)
+
+	It("keeps the -o yaml denial text byte-identical", func() {
+		decision := guard.Evaluate(bashInput("kubectl get secret db -o yaml"))
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: printing a Secret/ConfigMap/Config with -o yaml/json leaks values"))
+		Expect(decision.Reason).To(ContainSubstring(
+			`"-o json | jq '<path> | keys'" as the last stage for key names`))
+	})
+
+	It("does not apply to a Bash command that names no kubectl", func() {
+		Expect(guard.Applies(bashInput("ls -la"))).To(BeFalse())
+	})
+})

@@ -15,6 +15,7 @@ func NewDefaultRegistry() *Registry {
 		NewSleepGuard(),
 		NewProdDeployGuard(),
 		NewNukeShutdownGuard(),
+		NewSecretReadGuard(),
 		NewAttributionGuard(),
 	)
 }
