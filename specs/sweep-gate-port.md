@@ -106,6 +106,8 @@ Modes, as they stand today (`sweep-gate.py:3181-3330`):
 
   Evidence: `git -C <vault> log -1 --stat` naming every deletion; `ps -eo command= | grep -cE '^[^ ]*[Pp]ython[^ ]* .*sweep-gate\.py'` returning 0; the plugin PR number recorded in `# Results` of the owning task.
 
+  ⚠️ **Read the count with no `--check` mid-flight.** The count is zero only once every spawner is gone; a single one-shot invocation — an operator debugging, or a session running the gate by hand — reads 1 and is not a failure of this AC. Record what the matching lines were, not just the number.
+
   ⚠️ **Not `pgrep -f`.** Measured 2026-11-18 with exactly one real gate process alive: `pgrep -f 'sweep-gate\.py' | wc -l` returned **3**, because the Bash tool runs every command as `/bin/zsh -c <snapshot + command>` and the pattern text sits in that wrapper's own argv — the bracket form does not save you, since the earlier command line already contains it. The `ps` form anchors on the interpreter path (`^[^ ]*[Pp]ython`), so a shell wrapper cannot match; it returned **1**, the real process.
 
   ⚠️ The grep is scoped to the two deleted **paths**, not a directory sweep: `sweep-gate-boundary-probe.py` and `__pycache__/sweep-gate*.pyc` legitimately still mention the name, and a directory-wide `grep` would never return clean.
