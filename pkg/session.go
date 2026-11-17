@@ -225,6 +225,36 @@ type Session struct {
 	// verdict, recorded so a restart that cut a turn short cannot afterwards read
 	// the same as one that landed between turns.
 	Interrupted string `json:"interrupted,omitempty"`
+	// Stall names where a child that never initialised was waiting when it was
+	// killed, so the next startup-deadline kill diagnoses itself from its exit
+	// record instead of a post-mortem.
+	//
+	// It is nil for a session that emitted its init event. It is populated only
+	// from events this process saw: a replayed transcript from an earlier run
+	// never fills it, so an empty LastEvent on a resume is the finding that the
+	// resumed child emitted nothing — not a lost record.
+	Stall *Stall `json:"stall,omitempty"`
+}
+
+// Stall is the stall point of a child that rested in StateStarting until the
+// startup deadline killed it.
+//
+// It answers the question the deadline's log line cannot: the child emitted no
+// init event, but which phase was it in? A pending hook names the hook. An
+// empty pending list with a last event names the phase that followed the hooks,
+// which is where MCP servers are connected — init is only emitted once every
+// server has been tried, and the init event itself carries the per-server
+// status that proves it.
+type Stall struct {
+	// LastEvent is the type/subtype of the last event this process observed,
+	// or empty when the child emitted nothing at all in this run.
+	LastEvent string `json:"last_event,omitempty"`
+	// PendingHooks are the hooks that started and never returned, in the order
+	// they started.
+	PendingHooks []string `json:"pending_hooks,omitempty"`
+	// Phase is where the child was waiting: "hook" when a hook is pending,
+	// "no-event" when it emitted nothing, and "awaiting-init" otherwise.
+	Phase string `json:"phase,omitempty"`
 }
 
 // ModelChange is what a model change reports back.

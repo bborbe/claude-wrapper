@@ -1352,6 +1352,12 @@ func (c *child) snapshot() *Session {
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
 	clone.PendingTurns = c.pendingTurns
+	if c.session.Stall != nil {
+		stall := *c.session.Stall
+		stall.PendingHooks = append([]string{}, c.session.Stall.PendingHooks...)
+		stall.Phase = stallPhase(&stall)
+		clone.Stall = &stall
+	}
 	if !c.lastEventAt.IsZero() {
 		age := int(c.now.Now().Time().Sub(c.lastEventAt).Seconds())
 		clone.LastEventAgeSeconds = &age
@@ -1764,6 +1770,9 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.lastEventAt = c.now.Now().Time()
+	if !replayed && c.session.State == StateStarting {
+		c.recordStallLocked(event)
+	}
 	switch event["type"] {
 	case "system":
 		if event["subtype"] == "init" {
@@ -1919,6 +1928,10 @@ func (c *child) applyInit(event map[string]any) {
 	if c.session.State == StateStarting {
 		c.session.State = StateIdle
 	}
+	// The child initialised, so it is no longer a stall candidate: clearing the
+	// point here is what keeps a long-running session from carrying a stale
+	// "awaiting-init" into its exit record.
+	c.session.Stall = nil
 }
 
 // applyControlResponse stores the mode a set_permission_mode answer reports.
