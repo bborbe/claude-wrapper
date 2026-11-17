@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.31.0
 
 - feat: **a startup-deadline kill now records where the child was waiting**, so the next occurrence diagnoses itself from the session's exit record instead of a post-mortem. The record gains `stall_phase=`, `stall_last_event=` and `stall_pending_hooks=` for a session that never emitted its init event; an initialised session's line is byte-identical to before, which is what keeps every existing reader working. `stall_phase` is `hook` when a hook started and never returned, `no-event` when the child emitted nothing at all, and `awaiting-init` otherwise — likely the MCP-connect phase, since `init` is emitted only after every server has been tried and the init event itself carries the per-server status that proves it. The point is allocated at spawn, so the worst case — a child that emitted no event at all — is still diagnosable, and it is dropped as soon as the session leaves the starting state by any route. Replayed transcript events never populate it, so a resumed child that emitted nothing reports `no-event` rather than an earlier run's last event. **API surface:** `GET` of a starting session now carries a `stall` object; an initialised session's response is unchanged.
 - fix: gosec G703 on the launcher-script read is annotated rather than left failing the lint gate — the path is the operator's own launcher, read from the spawn config this process owns and never from a request.
