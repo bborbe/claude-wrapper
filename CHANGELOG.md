@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the flagged tick logs `resume_delay=` per opened row, so a worker's dead time between becoming able to continue and being resumed is measurable from the log.** The delay was known only by pairing a `turn closed with nothing pending` line against a later `flagged-tick opened=` line by hand; measured 2026-11-17 that way, 583 gaps split into 371 that could have continued (median 8.6 min, p90 16.2 min) and 212 with nothing to do (median 38.2 min) — the all-gaps figure the operator was shown conflated the two. The start of clock is the ledger's own `ended_at`, so no new plumbing is threaded from the stop site, and one ledger read per tick serves both this and the recently-spawned guard. ⚠️ `endedAtBySession` deliberately does **not** skip terminal ledger rows the way `recentlySpawned` does: a closed row is precisely the one being resumed, and reusing that filter would empty the map for every row the metric exists to measure. A row with no `ended_at` is omitted rather than recorded as zero, since a zero reads as an instant resume.
+
 ## v0.30.1
 
 - fix: tabClient.SendText no longer runs wezterm activate-pane, so fleet wakes and roster sends stop switching the operator's tab
@@ -12,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## v0.30.0
 
 - feat: **the flagged tick logs `read_duration=` on every tick line, so the predicate's cost is measurable from the log.** The read cost was known only from a one-off 2026-11-12 measurement (18.8 min wall against 75 s of CPU) recorded in a code comment; nothing emitted it, so a p50/p95 over a real day was not computable and a regression in it was invisible. `refreshLoop` now times each read — **including a failed one**, because a read killed at `predicateTimeout` is the worst case the measurement exists to catch and dropping it would bias the p95 down exactly on the slow reads — and the cache carries that duration to the tick line. The field is on the tick line rather than the detail line so a `grep -c 'read_duration='` counts ticks, and it reports the cost of the most recent read **attempt**, not the tick's own elapsed time, which would hide a slow read behind a fast tick.
-- feat: **the flagged tick logs `resume_delay=` per opened row, so a worker's dead time between becoming able to continue and being resumed is measurable from the log.** The delay was known only by pairing a `turn closed with nothing pending` line against a later `flagged-tick opened=` line by hand; measured 2026-11-17 that way, 583 gaps split into 371 that could have continued (median 8.6 min, p90 16.2 min) and 212 with nothing to do (median 38.2 min) — the all-gaps figure the operator was shown conflated the two. The start of clock is the ledger's own `ended_at`, so no new plumbing is threaded from the stop site, and one ledger read per tick serves both this and the recently-spawned guard. ⚠️ `endedAtBySession` deliberately does **not** skip terminal ledger rows the way `recentlySpawned` does: a closed row is precisely the one being resumed, and reusing that filter would empty the map for every row the metric exists to measure. A row with no `ended_at` is omitted rather than recorded as zero, since a zero reads as an instant resume.
 
 ## v0.29.7
 
