@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -402,7 +401,7 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	}
 	// Commit: from here `send` refuses a new turn, so the kill cannot lose one.
 	c.ending = true
-	killErr := syscall.Kill(c.pid, syscall.SIGKILL)
+	killErr := c.killLocked("headless-turn-end")
 	if killErr != nil {
 		c.ending = false
 	}
@@ -454,7 +453,7 @@ func (c *child) stopIfIdleAndUnparked(ctx context.Context) (bool, string, error)
 	if reason, keep := c.keepReasonLocked(); keep {
 		return false, reason, nil
 	}
-	if err := syscall.Kill(c.pid, syscall.SIGKILL); err != nil {
+	if err := c.killLocked("close-on-terminal-task"); err != nil {
 		return false, "", errors.Wrapf(ctx, err, "kill session %q failed", c.id)
 	}
 	return true, "", nil
