@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,15 +113,47 @@ func (r *SessionExitFileRecorder) Record(session Session, pid int, status ExitSt
 // a stable field count, and `-` is already the store's spelling for "not
 // applicable".
 func (r *SessionExitFileRecorder) line(session Session, pid int, status ExitStatus) string {
-	return r.now().UTC().Format(time.RFC3339) +
-		"\tkind=" + exitKind(status) +
-		"\tpane=-" +
-		"\tsession=" + session.ID +
-		"\tpid=" + strconv.Itoa(pid) +
-		"\trc=" + exitCodeField(status.Code) +
-		"\tsignal=" + signalField(status) +
-		"\tsender=" + senderField(status) +
-		"\twriter=" + SessionExitWriterWrapper + "\n"
+	fields := make([]string, 0, 12)
+	fields = append(fields,
+		r.now().UTC().Format(time.RFC3339),
+		"kind="+exitKind(status),
+		"pane=-",
+		"session="+session.ID,
+		"pid="+strconv.Itoa(pid),
+		"rc="+exitCodeField(status.Code),
+		"signal="+signalField(status),
+		"sender="+senderField(status),
+		"writer="+SessionExitWriterWrapper,
+	)
+	fields = append(fields, stallFields(session.Stall)...)
+	return strings.Join(fields, "\t") + "\n"
+}
+
+// stallFields reports where a child that never left the starting state was
+// waiting when it was killed.
+//
+// They are written only for a session carrying a stall point — one that never
+// initialised — so their presence in the record is itself the finding. An
+// initialised session's line stays byte-identical to what it was before this
+// field existed, which is what keeps every existing reader working: the daily
+// job parses the fields as a name→value map, and an absent name reads as absent
+// rather than as a shifted column.
+func stallFields(stall *Stall) []string {
+	if stall == nil {
+		return nil
+	}
+	return []string{
+		"stall_phase=" + valueOrDash(stallPhase(stall)),
+		"stall_last_event=" + valueOrDash(stall.LastEvent),
+		"stall_pending_hooks=" + valueOrDash(strings.Join(stall.PendingHooks, ",")),
+	}
+}
+
+func valueOrDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 // exitKind names how the child ended.
