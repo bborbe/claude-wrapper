@@ -73,6 +73,9 @@ func LauncherMCPConfig(launcher string) string {
 	if !strings.Contains(launcher, "/") {
 		return ""
 	}
+	// #nosec G703 -- the path is the operator's own launcher script, read from the
+	// spawn config this process owns. It never comes from an HTTP request, and a
+	// traversal here could only name another file the operator already chose.
 	raw, err := os.ReadFile(launcher)
 	if err != nil {
 		return ""
