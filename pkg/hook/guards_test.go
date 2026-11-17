@@ -506,3 +506,38 @@ var _ = Describe("PushGateGuard", func() {
 			"No operator approval is needed for this."))
 	})
 })
+
+var _ = Describe("CdGitChainGuard", func() {
+	guard := hook.NewCdGitChainGuard()
+
+	DescribeTable("denies a cd followed by a git segment",
+		func(command string, denied bool) {
+			Expect(guard.Evaluate(bashInput(command)).Deny).To(Equal(denied))
+		},
+		Entry("cd then git", "cd /tmp && git status", true),
+		Entry("cd then git with a semicolon", "cd /tmp; git status", true),
+		Entry("cd then git on the next line", "cd /tmp\ngit status", true),
+		Entry("git then cd", "git status && cd /tmp", false),
+		Entry("cd then a non-git command", "cd /tmp && ls -la", false),
+		Entry("a git with no cd", "ls && git status", false),
+		Entry("a parenthesised loop body", "(cd /tmp && git status)", true),
+		Entry("a do-prefixed loop body", "do cd /tmp && git status", true),
+		Entry("a bash -c payload", `bash -c 'cd /tmp && git status'`, true),
+		Entry("a heredoc body that mentions the chain",
+			"cat <<'EOF'\ncd /x && git status\nEOF", false),
+		Entry("a real chain followed by a heredoc", "cd /x && git status <<EOF\nbody\nEOF", true),
+		Entry("an unbalanced quote is left to the normal flow",
+			`cd /x && git status "`, false),
+		Entry("an unrelated command", "ls -la", false),
+	)
+
+	It("keeps the denial text byte-identical", func() {
+		Expect(guard.Evaluate(bashInput("cd /tmp && git status")).Reason).To(HavePrefix(
+			"Refused: this command chains `cd <dir>` with `git`, which the rules forbid " +
+				"(~/.claude/CLAUDE.md § Git — No Git -C Flag)."))
+	})
+
+	It("names the script it replaces", func() {
+		Expect(guard.Name()).To(Equal("deny-cd-git-chain.py"))
+	})
+})
