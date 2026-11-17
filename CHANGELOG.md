@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 - feat: `LastCloser` reads a session's last closer from its own `events.jsonl` over a bounded 256 KB tail, and `ClassifyParked` turns that closer's `⏰ Ends:` declaration into exactly one `parked-on-card`, `parked-on-pr`, `parked-on-host` or `parked-until` wait class — the two pure pieces the reopen tick needs to stop reopening rows parked on something outside the worker's control. Only the last assistant record is considered (a tool-only one yields no closer), a partial trailing line is dropped, and a declaration whose owner/repo/number or host/port would smuggle a flag or an out-of-range value into a later command or dial falls through to `parked-until` with a nil deadline.
+- feat: `CardProbe`, `PRProbe`, `HostProbe` and `ClockProbe` give the park gate one bounded observable per wait class — an open attention card for the row's session, a pull request's `headRefOid|reviewDecision|state` read through the fixed `gh pr view <N> --repo <owner>/<repo> --json headRefOid,reviewDecision,state` argv, a two-second TCP dial that writes no bytes, and the declared deadline against the injected clock. Each returns a fingerprint the gate can record and compare plus whether the observable is satisfied on its own; a probe that cannot be read returns an error so the caller holds the row, and an unconfigured card store or empty session id is an error rather than an `answered` reading.
 
 ## v0.34.0
 

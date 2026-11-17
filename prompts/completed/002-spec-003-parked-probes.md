@@ -1,10 +1,13 @@
 ---
-status: failed
+status: completed
 spec: [003-parked-observable-reopen-gate]
+summary: Added bounded per-class park probes (card, PR, host, clock) with fingerprints and fail-closed error semantics, plus three ginkgo specs
+execution_id: claude-wrapper-parked-observable-exec-002-spec-003-parked-probes
+dark-factory-version: v0.198.17
 created: "2026-11-17T12:00:00Z"
 queued: "2026-11-17T20:40:50Z"
-completed: "2026-11-17T21:31:59Z"
-lastFailReason: 'setup workflow: git fetch origin: fetch from origin: : context deadline exceeded'
+started: "2026-11-17T23:32:19Z"
+completed: "2026-11-17T23:35:40Z"
 ---
 
 # Observe each of the four park classes
