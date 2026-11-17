@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: tabClient.SendText no longer runs wezterm activate-pane, so fleet wakes and roster sends stop switching the operator's tab
+
 ## v0.30.0
 
 - feat: **the flagged tick logs `read_duration=` on every tick line, so the predicate's cost is measurable from the log.** The read cost was known only from a one-off 2026-11-12 measurement (18.8 min wall against 75 s of CPU) recorded in a code comment; nothing emitted it, so a p50/p95 over a real day was not computable and a regression in it was invisible. `refreshLoop` now times each read — **including a failed one**, because a read killed at `predicateTimeout` is the worst case the measurement exists to catch and dropping it would bias the p95 down exactly on the slow reads — and the cache carries that duration to the tick line. The field is on the tick line rather than the detail line so a `grep -c 'read_duration='` counts ticks, and it reports the cost of the most recent read **attempt**, not the tick's own elapsed time, which would hide a slow read behind a fast tick.
