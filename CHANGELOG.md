@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- feat: **a single Go hook binary replaces the per-call script chain**, starting one process per event instead of twenty processes and sixty-odd children. `cmd/hook` reads the Claude Code payload on stdin and evaluates the ported guards in-process; the first four are `fix-bborge.sh`, `deny-sleep-commands.sh`, `deny-attribution.sh` and `deny-prod-deploy.sh`, with denial texts byte-identical to the scripts. `deny-prod-deploy.sh` keeps its Makefile.env resolution, so `BRANCH=master` selects prod only in a repo that maps it there, and `BRANCH=dev` is denied where the target repo maps no dev stage. A crash exits 2, so a broken hook refuses the call rather than silently allowing it.
+- feat: **a single Go hook binary replaces the per-call script chain**, starting one process per event instead of twenty processes and sixty-odd children. `cmd/hook` reads the Claude Code payload on stdin and evaluates the ported guards in-process; the first five are `fix-bborge.sh`, `deny-sleep-commands.sh`, `deny-attribution.sh`, `deny-prod-deploy.sh` and `deny-nuke-shutdown.sh`, with denial texts byte-identical to the scripts. `deny-prod-deploy.sh` keeps its Makefile.env resolution, so `BRANCH=master` selects prod only in a repo that maps it there, and `BRANCH=dev` is denied where the target repo maps no dev stage. A crash exits 2, so a broken hook refuses the call rather than silently allowing it.
 
 ## v0.31.0
 

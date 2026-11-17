@@ -317,3 +317,40 @@ var _ = Describe("ProdDeployGuard", func() {
 				"Never ask the operator to type it."))
 	})
 })
+
+var _ = Describe("NukeShutdownGuard", func() {
+	guard := hook.NewNukeShutdownGuard()
+
+	DescribeTable("denies nuke power-down and leaves inspection and other hosts alone",
+		func(command string, denied bool) {
+			Expect(guard.Evaluate(bashInput(command)).Deny).To(Equal(denied))
+		},
+		Entry("the k3s shutdown script", "remote-k3s-shutdown-nuke.sh", true),
+		Entry("the shutdown script via sudo and a path",
+			"sudo /opt/bin/remote-k3s-shutdown-nuke.sh --yes", true),
+		Entry("the VM power-off script", "virsh-shutdown-all.sh", true),
+		Entry("virsh destroy inside an ssh payload",
+			`ssh nuke1 "sudo virsh destroy vm1"`, true),
+		Entry("virsh list is read-only", "virsh list --all", false),
+		Entry("stopping k3s", "sudo systemctl stop k3s", true),
+		Entry("querying k3s", "systemctl is-active k3s", false),
+		Entry("rebooting a nuke host over ssh", "ssh nuke reboot", true),
+		Entry("rebooting a non-nuke host over ssh", "ssh fire reboot", false),
+		Entry("a commit message that merely names the script",
+			`git commit -m "remote-k3s-shutdown-nuke.sh is operator-only"`, false),
+		Entry("an unrelated command", "ls -la", false),
+	)
+
+	It("keeps the denial text byte-identical, including the approve-run contradiction", func() {
+		decision := guard.Evaluate(bashInput("remote-k3s-shutdown-nuke.sh"))
+		Expect(decision.Reason).To(Equal(
+			"Refused: nuke K3s shutdown / VM power-down is operator-only " +
+				"(operator ruling 2026-11-14). No AI session may run it — the operator runs it " +
+				"by hand in their own shell. Do not route it through approve-run.py either; " +
+				"hand the exact command to the operator as a `you run:` line."))
+	})
+
+	It("names the script it replaces", func() {
+		Expect(guard.Name()).To(Equal("deny-nuke-shutdown.sh"))
+	})
+})
