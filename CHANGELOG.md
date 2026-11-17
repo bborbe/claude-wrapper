@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - fix: **a signalled session-exit record now names the signal and the job that sent it, so a killed session can be attributed.** The wrapper wrote `ts kind pane session pid rc writer` and collapsed every negative exit code to `kind=signalled`: `exec.ExitCode()` returns `-1` for a signal kill, so the signal was destroyed before `Record` saw it, and no kill site had a path to the record at all — `Record`'s only caller is `reap`, on the watcher goroutine. `Record` now takes an `ExitStatus` carrying the code, the signal recovered from the reaped `WaitStatus`, and the sender; `line()` emits `signal=` and `sender=` before `writer=`, the position `session-exit-record.py` already uses. Every in-process kill records the job that sent it (`idle-reaper`, `close-on-terminal-task`, `headless-turn-end`, `startup-deadline`); a signal from outside the process records `sender=unavailable(external-signal)`, and an adopted child — never `Wait`ed, so it holds no `WaitStatus` — records `signal=unavailable(no-wait-status)` rather than an invented value. Additive fields only: the reader parses `key=value` by name, so old and new lines both parse.
 
+
+## v0.29.3
+
+- fix: **the durable-session specs kill the fixture children they spawn.** Six specs in `pkg/durable_test.go` start a real `/bin/sh` child and assert it is still alive after a drain — that is the "never severed" property, so nothing in production reaps it and nothing in the spec did either. Every `make test` therefore reparented its children to launchd, where they sleep in a deleted ginkgo temp dir for the life of the machine: measured 2026-11-16, 426 orphans at 20:11 and 25 still present at 21:36, six of them from a run that evening. Each spawn now goes through a helper that registers a `DeferCleanup` killing the child's process group — `Setsid` makes the child a session and group leader, so its group id equals its pid and anything it started dies with it, and `ESRCH` is tolerated because a self-terminating fixture is not a failure. The cleanup runs after the spec body, so the alive assertions still observe a live child.
+
 ## v0.29.2
 
 - chore: update Go to 1.27.4 and github.com/bborbe/errors to v1.7.0, github.com/bborbe/time to v1.27.28, github.com/onsi/ginkgo/v2 to v2.34.0
