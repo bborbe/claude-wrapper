@@ -811,10 +811,10 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 
 		ginkgo.It("keeps the last good row set when a read fails", func() {
 			cache := &flaggedRowCache{}
-			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil)
-			cache.store(nil, killed)
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 0)
+			cache.store(nil, killed, 0)
 
-			rows, stale, ok := cache.snapshot()
+			rows, _, ok, stale := cache.snapshot()
 			ginkgo.GinkgoWriter.Printf("rows=%d stale=%v ok=%t\n", len(rows), stale, ok)
 			gomega.Expect(ok).To(gomega.BeTrue())
 			gomega.Expect(rows).To(gomega.HaveLen(1))
@@ -830,10 +830,10 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 			}
 			cache := &flaggedRowCache{}
 
-			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil)
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 0)
 			tick.tickAndLog(context.Background(), cache)
 
-			cache.store(nil, killed)
+			cache.store(nil, killed, 0)
 			before := len(lines)
 			tick.tickAndLog(context.Background(), cache)
 			after := strings.Join(lines[before:], "\n")
@@ -855,7 +855,7 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 				lines = append(lines, fmt.Sprintf(format, args...))
 			}
 			cache := &flaggedRowCache{}
-			cache.store(nil, killed)
+			cache.store(nil, killed, 0)
 			tick.tickAndLog(context.Background(), cache)
 
 			// No good row set yet, so there is nothing to serve: `skipped` stays
@@ -865,6 +865,24 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 			gomega.Expect(strings.Join(lines, "\n")).To(gomega.ContainSubstring("skipped"))
 			gomega.Expect(strings.Join(lines, "\n")).To(gomega.ContainSubstring("read failed"))
 			gomega.Expect(strings.Join(lines, "\n")).NotTo(gomega.ContainSubstring("opened="))
+		})
+
+		ginkgo.It("reports the read duration on the tick line", func() {
+			tick := newTick(nil, &recordingReopener{}, &recordingCaps{})
+			var lines []string
+			tick.Logf = func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}
+			cache := &flaggedRowCache{}
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 95*time.Second)
+			tick.tickAndLog(context.Background(), cache)
+
+			joined := strings.Join(lines, "\n")
+			ginkgo.GinkgoWriter.Printf("lines=%s\n", joined)
+			// The read-cost measurement is a log grep, so the field has to be on the
+			// tick line itself and carry the read's real cost — the tick's own
+			// elapsed time would be a different number and would hide a slow read.
+			gomega.Expect(joined).To(gomega.ContainSubstring("read_duration=1m35s"))
 		})
 	})
 })
