@@ -555,7 +555,7 @@ func startFleetFaces(
 			supervisor,
 			ledger,
 			pkg.NewRegistryLiveness(registry, heartbeats),
-			pkg.NewTranscriptReader(registry, now),
+			pkg.NewTranscriptReader(now),
 			registry,
 		),
 		Supervisor: supervisor,
