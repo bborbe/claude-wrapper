@@ -126,6 +126,43 @@ var _ = ginkgo.Describe("childEnv", func() {
 	})
 })
 
+var _ = ginkgo.Describe("spawnEnv", func() {
+	ginkgo.It("fills the compaction window when neither the caller nor the daemon supplies it", func() {
+		env := spawnEnv([]string{"PATH=/usr/bin"}, nil)
+		gomega.Expect(env).To(gomega.ContainElement("CLAUDE_CODE_AUTO_COMPACT_WINDOW=900000"))
+	})
+
+	// A plist or launcher that sets the value has made a decision; a default that
+	// overwrote it would be the daemon silently overruling its own configuration.
+	ginkgo.It("does not override a value the daemon already inherits", func() {
+		env := spawnEnv([]string{"CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000"}, nil)
+		gomega.Expect(env).To(gomega.ContainElement("CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000"))
+		gomega.Expect(env).NotTo(gomega.ContainElement("CLAUDE_CODE_AUTO_COMPACT_WINDOW=900000"))
+	})
+
+	ginkgo.It("does not override a caller's own value", func() {
+		env := spawnEnv(nil, map[string]string{"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500000"})
+		gomega.Expect(env).To(gomega.Equal([]string{"CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000"}))
+	})
+
+	ginkgo.It("keeps the caller's other overrides alongside the default", func() {
+		env := spawnEnv(nil, map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:8788"})
+		gomega.Expect(env).To(gomega.ConsistOf(
+			"ANTHROPIC_BASE_URL=http://127.0.0.1:8788",
+			"CLAUDE_CODE_AUTO_COMPACT_WINDOW=900000",
+		))
+	})
+
+	// No value for the output cap is named anywhere in this fleet; a default would
+	// be a guess that truncates turns, so the key is deliberately not emitted.
+	ginkgo.It("does not invent an output-token cap", func() {
+		env := spawnEnv([]string{"PATH=/usr/bin"}, nil)
+		for _, entry := range env {
+			gomega.Expect(entry).NotTo(gomega.HavePrefix("CLAUDE_CODE_MAX_OUTPUT_TOKENS="))
+		}
+	})
+})
+
 var _ = ginkgo.Describe("validateEnv", func() {
 	ginkgo.It("accepts a normal environment", func() {
 		gomega.Expect(validateEnv(context.Background(), map[string]string{"PATH": "/usr/bin"})).To(gomega.Succeed())
