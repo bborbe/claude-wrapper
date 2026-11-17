@@ -386,7 +386,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 					}}},
 					Logf: func(string, ...any) {},
 				}
-				recent := tick.recentlySpawned(context.Background())
+				recent := recentlySpawned(tick.ledgerRows(context.Background()))
 				_, bySession := recent["sid"]
 				_, byLabel := recent[labelKey("a task")]
 				gomega.Expect(bySession).To(gomega.Equal(wantSuppressed))
@@ -683,7 +683,7 @@ var _ = ginkgo.Describe("flagged tick recently-spawned guard by label", func() {
 			SessionID: "new-session", Label: "fresh",
 			SpawnedAt: now.Add(-2 * time.Minute).Format(time.RFC3339),
 		}}}
-		gomega.Expect(tick.recentlySpawned(context.Background())).
+		gomega.Expect(recentlySpawned(tick.ledgerRows(context.Background()))).
 			To(gomega.HaveKey(labelKey("fresh")))
 		result, err := tick.Tick(context.Background())
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -884,5 +884,56 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 			// elapsed time would be a different number and would hide a slow read.
 			gomega.Expect(joined).To(gomega.ContainSubstring("read_duration=1m35s"))
 		})
+	})
+})
+
+var _ = ginkgo.Describe("flagged tick resume delay", func() {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	// A RESUMED row: it has a session, its liveness read ABSENT, and the branch
+	// sends it back through resume.
+	row := FlaggedRow{
+		Kind: "task", Vault: "private-personal", Name: "a flagged row",
+		Role: "agent", Mode: "headless",
+		SessionID: "abc-123", Liveness: "ABSENT", Branch: "resume",
+	}
+
+	ginkgo.It("measures the delay from the ledger's ended_at even on a TERMINAL row", func() {
+		// The trap this guards: `recentlySpawned` skips terminal ledger rows, so a
+		// reader that reused that filter would find no ended_at for any row being
+		// resumed — every real row is terminal by definition, and the metric would
+		// read as "never measurable" on the fleet it exists to measure.
+		ended := now.Add(-8 * time.Minute).Format(time.RFC3339)
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+			EndedAt:   &ended,
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.Opened).To(gomega.ConsistOf("abc-123"))
+		gomega.Expect(result.ResumeDelays).To(gomega.ConsistOf("abc-123=8m0s"))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("resume_delay=abc-123=8m0s"))
+	})
+
+	ginkgo.It("omits the delay when the ledger carries no ended_at", func() {
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+		gomega.Expect(result.Opened).To(gomega.ConsistOf("abc-123"))
+		// Absent, never zero: a zero would read as an instant resume.
+		gomega.Expect(result.ResumeDelays).To(gomega.BeEmpty())
+		gomega.Expect(result.Line()).NotTo(gomega.ContainSubstring("resume_delay="))
 	})
 })
