@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.29.2
 
+- fix: **the durable-session specs kill the fixture children they spawn.** Six specs in `pkg/durable_test.go` start a real `/bin/sh` child and assert it is still alive after a drain — that is the "never severed" property, so nothing in production reaps it and nothing in the spec did either. Every `make test` therefore reparented its children to launchd, where they sleep in a deleted ginkgo temp dir for the life of the machine: measured 2026-11-16, 426 orphans at 20:11 and 25 still present at 21:36, six of them from a run that evening. Each spawn now goes through a helper that registers a `DeferCleanup` killing the child's process group — `Setsid` makes the child a session and group leader, so its group id equals its pid and anything it started dies with it, and `ESRCH` is tolerated because a self-terminating fixture is not a failure. The cleanup runs after the spec body, so the alive assertions still observe a live child.
 - chore: update Go to 1.27.4 and github.com/bborbe/errors to v1.7.0, github.com/bborbe/time to v1.27.28, github.com/onsi/ginkgo/v2 to v2.34.0
 
 ## v0.29.1
