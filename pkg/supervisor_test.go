@@ -293,6 +293,99 @@ var _ = ginkgo.Describe("child.apply", func() {
 		c.apply(0, map[string]any{"type": "system", "subtype": "init", "permissionMode": "acceptEdits"}, false)
 		gomega.Expect(c.session.PermissionMode).To(gomega.Equal("acceptEdits"))
 	})
+
+	// A child that never initialises keeps a stall point, so the startup
+	// deadline's kill can write where it waited into the exit record instead of
+	// only that no init event arrived.
+	newStartingChild := func() *child {
+		return &child{
+			now:         libtime.NewCurrentDateTime(),
+			session:     Session{State: StateStarting, Stall: &Stall{}},
+			subscribers: map[int]chan Event{},
+		}
+	}
+
+	ginkgo.It("records the stall point while the child is starting", func() {
+		c := newStartingChild()
+		c.apply(0, map[string]any{
+			"type": "system", "subtype": "hook_started", "hook_name": "SessionStart:startup",
+		}, false)
+		gomega.Expect(c.session.Stall).NotTo(gomega.BeNil())
+		gomega.Expect(c.session.Stall.PendingHooks).To(gomega.Equal([]string{"SessionStart:startup"}))
+		gomega.Expect(stallPhase(c.session.Stall)).To(gomega.Equal("hook"))
+
+		c.apply(0, map[string]any{
+			"type": "system", "subtype": "hook_response", "hook_name": "SessionStart:startup",
+			"outcome": "success",
+		}, false)
+		gomega.Expect(c.session.Stall.LastEvent).To(gomega.Equal("system/hook_response"))
+		gomega.Expect(c.session.Stall.PendingHooks).To(gomega.BeEmpty())
+		// Past the hooks and still starting: this is the MCP-connect phase, the
+		// one init is only emitted after.
+		gomega.Expect(stallPhase(c.session.Stall)).To(gomega.Equal("awaiting-init"))
+	})
+
+	// The point is cleared once the child initialises, so a long-running session
+	// cannot carry "awaiting-init" into its exit record.
+	ginkgo.It("clears the stall point once the child initialises", func() {
+		c := newStartingChild()
+		c.apply(0, map[string]any{
+			"type": "system", "subtype": "hook_started", "hook_name": "SessionStart:startup",
+		}, false)
+		gomega.Expect(c.session.Stall).NotTo(gomega.BeNil())
+		c.apply(0, map[string]any{"type": "system", "subtype": "init"}, false)
+		gomega.Expect(c.session.Stall).To(gomega.BeNil())
+	})
+
+	// A replayed transcript describes an earlier run. Folding it in would report
+	// a stall point this child never reached — the same false positive the
+	// deadline itself produces on a resume.
+	ginkgo.It("ignores replayed events when recording the stall point", func() {
+		c := newStartingChild()
+		c.apply(0, map[string]any{
+			"type": "system", "subtype": "hook_started", "hook_name": "SessionStart:startup",
+		}, true)
+		gomega.Expect(c.session.Stall.LastEvent).To(gomega.BeEmpty())
+		gomega.Expect(c.session.Stall.PendingHooks).To(gomega.BeEmpty())
+	})
+
+	// Two SessionStart hooks share a name. A name-keyed set would drop the
+	// second start and clear the phase as soon as the first returned.
+	ginkgo.It("keeps the hook phase while a second same-named hook is pending", func() {
+		c := newStartingChild()
+		for i := 0; i < 2; i++ {
+			c.apply(0, map[string]any{
+				"type": "system", "subtype": "hook_started", "hook_name": "SessionStart:startup",
+			}, false)
+		}
+		c.apply(0, map[string]any{
+			"type": "system", "subtype": "hook_response", "hook_name": "SessionStart:startup",
+		}, false)
+		gomega.Expect(c.session.Stall.PendingHooks).To(gomega.HaveLen(1))
+		gomega.Expect(stallPhase(c.session.Stall)).To(gomega.Equal("hook"))
+	})
+
+	// A child that leaves StateStarting without an init event did real work, so
+	// it must not carry a stall point into its exit record.
+	ginkgo.It("drops the stall point once the state leaves starting", func() {
+		c := newStartingChild()
+		c.apply(0, map[string]any{"type": "result", "subtype": "success"}, false)
+		gomega.Expect(c.session.Stall).To(gomega.BeNil())
+	})
+
+	// The snapshot is what the API and the exit recorder read, so a caller
+	// mutating it must not reach the child's own slice.
+	ginkgo.It("copies the stall point into the snapshot", func() {
+		c := newStartingChild()
+		c.apply(0, map[string]any{
+			"type": "system", "subtype": "hook_started", "hook_name": "SessionStart:startup",
+		}, false)
+		snapshot := c.snapshot()
+		gomega.Expect(snapshot.Stall).NotTo(gomega.BeNil())
+		gomega.Expect(snapshot.Stall.Phase).To(gomega.Equal("hook"))
+		snapshot.Stall.PendingHooks[0] = "mutated"
+		gomega.Expect(c.session.Stall.PendingHooks).To(gomega.Equal([]string{"SessionStart:startup"}))
+	})
 })
 
 var _ = ginkgo.Describe("permissionModeAnswer", func() {
