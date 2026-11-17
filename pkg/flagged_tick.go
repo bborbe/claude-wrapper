@@ -268,22 +268,41 @@ func (t *FlaggedTick) mergeOpened(recent map[string]time.Time) {
 // With the cache the tick always fires on schedule against the last good row set,
 // and a slow read costs freshness rather than a tick.
 type flaggedRowCache struct {
-	mutex sync.RWMutex
-	rows  []FlaggedRow
-	err   error
-	set   bool
+	mutex   sync.RWMutex
+	rows    []FlaggedRow
+	lastErr error
+	set     bool
 }
 
+// store records one read.
+//
+// A FAILED read never discards the last good row set. That is the point of the
+// cache: the read is bounded by predicateTimeout, a kill is an expected outcome of
+// that bound, and one killed read must cost freshness rather than every later tick.
+//
+// Before this, the error was stored alongside the rows and tickAndLog returned
+// early on it, so a single kill disabled EVERY subsequent tick until a read
+// succeeded. On 2026-11-16 that turned one killed read into 18 consecutive dead
+// ticks and four operator-flagged rows opening 2 h 01 m late.
+//
+// A failed FIRST read leaves set=false on purpose: there is no good row set yet, so
+// the tick keeps logging `skipped` rather than fabricating an empty one.
 func (c *flaggedRowCache) store(rows []FlaggedRow, err error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	c.rows, c.err, c.set = rows, err, true
+	if err != nil {
+		c.lastErr = err
+		return
+	}
+	c.rows, c.lastErr, c.set = rows, nil, true
 }
 
-func (c *flaggedRowCache) snapshot() (rows []FlaggedRow, err error, ok bool) {
+// snapshot returns the row set the tick should serve, plus the last read's error
+// when the rows are stale.
+func (c *flaggedRowCache) snapshot() (rows []FlaggedRow, stale error, ok bool) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
-	return c.rows, c.err, c.set
+	return c.rows, c.lastErr, c.set
 }
 
 // Run ticks until the context ends.
@@ -328,14 +347,25 @@ func (t *FlaggedTick) refreshLoop(
 
 // tickAndLog runs one tick against the cached row set and writes its line.
 func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
-	rows, err, ok := cache.snapshot()
+	rows, stale, ok := cache.snapshot()
 	if !ok {
+		// No good row set yet. Name the failure when there was one — a first read
+		// that always fails would otherwise log `skipped: predicate has not
+		// returned yet` forever and hide its own error.
+		if stale != nil {
+			t.logf("flagged-tick read failed: %v (no good row set yet — skipping)", stale)
+		}
 		t.logf("flagged-tick skipped: predicate has not returned yet")
 		return
 	}
-	if err != nil {
-		t.logf("flagged-tick failed: %v", err)
-		return
+	if stale != nil {
+		// The read failed; the tick still runs on the last good row set. The
+		// failure gets its own line, deliberately distinct from `flagged-tick
+		// failed` (which means no tick ran): a stale tick must be visible in the
+		// log without being counted as a dead one, or a 24 h measurement cannot
+		// tell "served stale rows" from "opened nothing".
+		t.logf("flagged-tick read failed: %v (serving %d rows from the last good read)",
+			stale, len(rows))
 	}
 	result := t.tickFromRows(ctx, rows)
 	t.logf("%s", result.Line())

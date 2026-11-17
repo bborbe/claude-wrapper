@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **a killed predicate read no longer disables every later tick.** `refreshLoop` stored whatever the read returned — error included — and `tickAndLog` returned early on it, so one read killed by `predicateTimeout` (25 min) left the cache carrying that error and **every** subsequent tick logged `failed` and opened nothing until a read succeeded. Measured 2026-11-16: 18 consecutive dead ticks 08:15–12:23 and four operator-flagged `seibert-brogrammers` rows opening **2 h 01 m** late, while the kill itself is an expected outcome of the bound (`exec.CommandContext` reports an expired context as `signal: killed`, reproduced). The cache now keeps the last good row set across a failed read and logs `flagged-tick read failed: … (serving N rows from the last good read)` — deliberately distinct from `flagged-tick failed`, which still means no tick ran — so a kill costs freshness rather than the tick. A failed **first** read still logs `skipped`: there is no good set to serve, and fabricating an empty one would hide the read entirely. `predicateTimeout` is unchanged; raising it was tried twice and the failure returned both times.
 ## v0.29.4
 
 - fix: **a signalled session-exit record now names the signal and the job that sent it, so a killed session can be attributed.** The wrapper wrote `ts kind pane session pid rc writer` and collapsed every negative exit code to `kind=signalled`: `exec.ExitCode()` returns `-1` for a signal kill, so the signal was destroyed before `Record` saw it, and no kill site had a path to the record at all — `Record`'s only caller is `reap`, on the watcher goroutine. `Record` now takes an `ExitStatus` carrying the code, the signal recovered from the reaped `WaitStatus`, and the sender; `line()` emits `signal=` and `sender=` before `writer=`, the position `session-exit-record.py` already uses. Every in-process kill records the job that sent it (`idle-reaper`, `close-on-terminal-task`, `headless-turn-end`, `startup-deadline`); a signal from outside the process records `sender=unavailable(external-signal)`, and an adopted child — never `Wait`ed, so it holds no `WaitStatus` — records `signal=unavailable(no-wait-status)` rather than an invented value. Additive fields only: the reader parses `key=value` by name, so old and new lines both parse.
-
 
 ## v0.29.3
 
