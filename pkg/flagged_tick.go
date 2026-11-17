@@ -382,10 +382,11 @@ func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
 			stale, readFor, len(rows))
 	}
 	result := t.tickFromRows(ctx, rows)
-	// read_duration= is the read-cost measurement: it reports the cost of the read
-	// this tick is serving, so a p50/p95 over a day's ticks is computable from the
-	// log alone. It is emitted on the tick line, not the detail line, so a grep for
-	// it counts ticks.
+	// read_duration= is the read-cost measurement: the cost of the most recent read
+	// ATTEMPT, including a failed one — a read killed at the bound is the slow case
+	// this exists to catch, so reporting only successful reads would bias the p95
+	// down exactly where it matters. It is emitted on the tick line, not the detail
+	// line, so a grep for it counts ticks.
 	t.logf("%s read_duration=%s", result.Line(), readFor.Round(time.Second))
 	// The detail line is logged separately so it carries its own timestamp: a
 	// newline embedded in one Printf would leave the second line unprefixed and
