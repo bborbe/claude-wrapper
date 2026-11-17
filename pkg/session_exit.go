@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -37,13 +38,31 @@ const (
 	SessionExitJobName = "session-exit-daily"
 )
 
+// ExitStatus is how a child left: the code it exited with, the signal that
+// killed it, and the daemon job that sent that signal.
+//
+// One type rather than three arguments because the three are only meaningful
+// together: a signalled exit has a signal and, when the daemon sent it, a
+// sender; an adopted child has none of them; a clean exit has only a code.
+type ExitStatus struct {
+	// Code is the exit code, nil when this process never Wait'ed the child and
+	// so has no status to report.
+	Code *int
+	// Signal is the signal that killed the child. Zero means it exited on its
+	// own, or the status is unknown.
+	Signal syscall.Signal
+	// Sender names the daemon job that signalled the child. Empty means the
+	// signal came from outside this process, so it cannot be named here.
+	Sender string
+}
+
 // SessionExitRecorder records how one session ended.
 //
 // It takes no context: it is called from the child's exit path, which holds the
 // child's own lock and has no request to cancel against. A recorder that blocks
 // delays settling a session, so an implementation must be a bounded local write.
 type SessionExitRecorder interface {
-	Record(session Session, pid int, exitCode *int)
+	Record(session Session, pid int, status ExitStatus)
 }
 
 // SessionExitFileRecorder appends one line per ended session to
@@ -64,7 +83,7 @@ type SessionExitFileRecorder struct {
 // Record appends the session's exit line. A failed write is logged, never
 // returned: the child is already gone, and refusing to settle it because a
 // diagnostic file could not be appended would be the worse failure.
-func (r *SessionExitFileRecorder) Record(session Session, pid int, exitCode *int) {
+func (r *SessionExitFileRecorder) Record(session Session, pid int, status ExitStatus) {
 	path := r.path(session.ID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		r.logf(JobLine(SessionExitJobName, "write-failed",
@@ -78,13 +97,13 @@ func (r *SessionExitFileRecorder) Record(session Session, pid int, exitCode *int
 		return
 	}
 	defer func() { _ = file.Close() }()
-	if _, writeErr := file.WriteString(r.line(session, pid, exitCode)); writeErr != nil {
+	if _, writeErr := file.WriteString(r.line(session, pid, status)); writeErr != nil {
 		r.logf(JobLine(SessionExitJobName, "write-failed",
 			"sid", session.ID, "error", writeErr.Error()))
 		return
 	}
 	r.logf(JobLine(SessionExitJobName, "recorded",
-		"sid", session.ID, "kind", exitKind(exitCode)))
+		"sid", session.ID, "kind", exitKind(status)))
 }
 
 // line is one tab-separated record, the shape the existing reader parses.
@@ -92,13 +111,15 @@ func (r *SessionExitFileRecorder) Record(session Session, pid int, exitCode *int
 // `pane=-` is deliberate rather than omitted: a reader that splits on tabs sees
 // a stable field count, and `-` is already the store's spelling for "not
 // applicable".
-func (r *SessionExitFileRecorder) line(session Session, pid int, exitCode *int) string {
+func (r *SessionExitFileRecorder) line(session Session, pid int, status ExitStatus) string {
 	return r.now().UTC().Format(time.RFC3339) +
-		"\tkind=" + exitKind(exitCode) +
+		"\tkind=" + exitKind(status) +
 		"\tpane=-" +
 		"\tsession=" + session.ID +
 		"\tpid=" + strconv.Itoa(pid) +
-		"\trc=" + exitCodeField(exitCode) +
+		"\trc=" + exitCodeField(status.Code) +
+		"\tsignal=" + signalField(status) +
+		"\tsender=" + senderField(status) +
 		"\twriter=" + SessionExitWriterWrapper + "\n"
 }
 
@@ -107,14 +128,59 @@ func (r *SessionExitFileRecorder) line(session Session, pid int, exitCode *int) 
 // An adopted child is `unknown`, never `exited`: this process never held its
 // Wait, so it has no exit status to report and inventing one is the defect the
 // store exists to remove.
-func exitKind(exitCode *int) string {
-	if exitCode == nil {
+func exitKind(status ExitStatus) string {
+	if status.Code == nil {
 		return "unknown"
 	}
-	if *exitCode < 0 {
+	if *status.Code < 0 {
 		return "signalled"
 	}
 	return "exited"
+}
+
+// signalField names the signal that killed the child, or explains why it cannot
+// be named.
+//
+// ⚠️ `unavailable(...)` is reserved for an exit this process never Wait'ed: an
+// adopted child, or a signalled code whose WaitStatus could not be read. A
+// reaped child always carries a concrete signal when one killed it, and `none`
+// when it exited on its own — inventing a value would be the defect this store
+// exists to remove.
+func signalField(status ExitStatus) string {
+	if status.Signal != 0 {
+		return signalName(status.Signal)
+	}
+	if status.Code == nil || *status.Code < 0 {
+		return "unavailable(no-wait-status)"
+	}
+	return "none"
+}
+
+// senderField names the daemon job that signalled the child.
+//
+// A signal delivered from outside this process cannot be named here — the
+// daemon observes the death, not the sender — so it says so rather than
+// substituting a plausible-looking process.
+func senderField(status ExitStatus) string {
+	if status.Sender != "" {
+		return status.Sender
+	}
+	if status.Signal != 0 {
+		return "unavailable(external-signal)"
+	}
+	return "none"
+}
+
+// signalName renders a signal in the store's vocabulary: the two the daemon
+// itself sends by name, and the number for anything else.
+func signalName(sig syscall.Signal) string {
+	switch sig {
+	case syscall.SIGKILL:
+		return "SIGKILL"
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	}
+	return "SIG" + strconv.Itoa(int(sig))
 }
 
 func exitCodeField(exitCode *int) string {
