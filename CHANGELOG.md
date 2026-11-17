@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.32.0
 
 - feat: **the flagged tick logs `resume_delay=` per opened row, so a worker's dead time between becoming able to continue and being resumed is measurable from the log.** The delay was known only by pairing a `turn closed with nothing pending` line against a later `flagged-tick opened=` line by hand; measured 2026-11-17 that way, 583 gaps split into 371 that could have continued (median 8.6 min, p90 16.2 min) and 212 with nothing to do (median 38.2 min) — the all-gaps figure the operator was shown conflated the two. The start of clock is the ledger's own `ended_at`, so no new plumbing is threaded from the stop site, and one ledger read per tick serves both this and the recently-spawned guard. ⚠️ `endedAtBySession` deliberately does **not** skip terminal ledger rows the way `recentlySpawned` does: a closed row is precisely the one being resumed, and reusing that filter would empty the map for every row the metric exists to measure. A row with no `ended_at` is omitted rather than recorded as zero, since a zero reads as an instant resume.
 
