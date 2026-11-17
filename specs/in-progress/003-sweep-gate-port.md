@@ -1,5 +1,7 @@
 ---
-status: draft
+status: approved
+approved: "2026-11-17T23:41:56Z"
+branch: dark-factory/sweep-gate-port
 ---
 
 ## Summary
