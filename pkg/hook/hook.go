@@ -16,6 +16,7 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/bborbe/errors"
 )
@@ -191,4 +192,14 @@ func (r *Registry) Names() []string {
 		names = append(names, guard.Name())
 	}
 	return names
+}
+
+// MatchesAny reports whether any of the patterns occurs in the command.
+func MatchesAny(command string, patterns ...string) bool {
+	for _, pattern := range patterns {
+		if strings.Contains(command, pattern) {
+			return true
+		}
+	}
+	return false
 }

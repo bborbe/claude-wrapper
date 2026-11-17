@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- feat: **a single Go hook binary replaces the per-call script chain**, starting one process per event instead of twenty processes and sixty-odd children. `cmd/hook` reads the Claude Code payload on stdin and evaluates the ported guards in-process; the first two are `fix-bborge.sh` and `deny-sleep-commands.sh`, with denial texts byte-identical to the scripts. A crash exits 2, so a broken hook refuses the call rather than silently allowing it.
+- feat: **a single Go hook binary replaces the per-call script chain**, starting one process per event instead of twenty processes and sixty-odd children. `cmd/hook` reads the Claude Code payload on stdin and evaluates the ported guards in-process; the first three are `fix-bborge.sh`, `deny-sleep-commands.sh` and `deny-attribution.sh`, with denial texts byte-identical to the scripts. A crash exits 2, so a broken hook refuses the call rather than silently allowing it.
 
 ## v0.31.0
 

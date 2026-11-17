@@ -6,6 +6,7 @@ package hook_test
 
 import (
 	"encoding/json"
+	"os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -160,3 +161,39 @@ func (denyGuard) Applies(hook.Input) bool { return true }
 func (denyGuard) Evaluate(hook.Input) hook.Decision {
 	return hook.DenyDecision("denied")
 }
+
+var _ = Describe("AttributionGuard", func() {
+	guard := hook.NewAttributionGuard()
+
+	DescribeTable("denies an attribution line and leaves ordinary prose alone",
+		func(command string, denied bool) {
+			Expect(guard.Evaluate(bashInput(command)).Deny).To(Equal(denied))
+		},
+		Entry("a plain commit", `git commit -m "feat: add the hook binary"`, false),
+		Entry("a generated-with line", `git commit -m "x\n\nGenerated with Claude Code"`, true),
+		Entry("a co-authored-by trailer", `git commit -m "x\n\nCo-Authored-By: DeepSeek v4.1"`, true),
+		Entry("an ordinary commit about cursor", `git commit -m "feat: add cursor support"`, false),
+		Entry("an ordinary commit about codex", `git commit -m "docs: codex notes"`, false),
+		Entry("a PR body carrying the marker", `gh pr create --body "Generated with Claude Code"`, true),
+		Entry("an unrelated command", `ls -la`, false),
+	)
+
+	It("reads a --body-file and denies on its contents", func() {
+		file, err := os.CreateTemp("", "pr-body-*.md")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(os.Remove(file.Name())).To(Succeed()) }()
+		_, err = file.WriteString("body\n\nGenerated with Claude Code\n")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(file.Close()).To(Succeed())
+		command := "gh pr create --body-file " + file.Name()
+		Expect(guard.Evaluate(bashInput(command)).Deny).To(BeTrue())
+	})
+
+	It("does not apply to a Bash command that publishes nothing", func() {
+		Expect(guard.Applies(bashInput("ls -la"))).To(BeFalse())
+	})
+
+	It("names the script it replaces", func() {
+		Expect(guard.Name()).To(Equal("deny-attribution.sh"))
+	})
+})
