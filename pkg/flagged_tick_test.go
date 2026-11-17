@@ -271,6 +271,31 @@ var _ = ginkgo.Describe("flagged tick: recently-spawned guard without the ledger
 	})
 })
 
+// SC2: a controller outage must not silence the tick. Fault injection — the
+// ledger and heartbeat endpoints refuse, the count source is healthy — and the
+// row must still open, with the line naming where the count came from.
+var _ = ginkgo.Describe("flagged tick: caps during a controller outage", func() {
+	ginkgo.It("opens the row when only the ledger is refused", func() {
+		ctx := context.Background()
+		caps := testCaps(
+			ledgerWith{err: stderrors.New("connection refused")},
+			&stubHeartbeats{err: stderrors.New("connection refused")},
+			"",
+			ginkgo.GinkgoT().TempDir(),
+		)
+		caps.registry = &capsRegistry{live: []RegistryEntry{{SessionID: "s1"}}}
+		row := rowWith("agent", SpawnModeHeadless, "flagged-row")
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, caps)
+
+		result := tick.tickFromRows(ctx, []FlaggedRow{row})
+
+		gomega.Expect(result.Opened).To(gomega.HaveLen(1))
+		gomega.Expect(result.Refused).To(gomega.BeEmpty())
+		gomega.Expect(result.LiveCountSource).To(gomega.Equal("registry"))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("live_count_source=registry"))
+	})
+})
+
 // ledgerWith supplies spawn times to the recently-spawned guard.
 type ledgerWith struct {
 	rows []LedgerRow
