@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.29.6
 
 - fix: **the session-exit daily metric reports a complete day, and counts each death once.** Two defects in the tick that replaced the launchd job, both found by review after it shipped.
   **(a) The row was the current UTC day, which is not finished at a 23:50-local fire.** Berlin is UTC+1/+2, so the day still had ~70/~130 minutes to run, and the gate marks the local day fired — the next fire is a different UTC day, so the tail was never read again. Measured on the store: 31 of 125 ends lost on 2026-11-08 (24.8%), 17 of 88 on 2026-11-09 (19.3%), 22 of 206 on 2026-11-14 (10.7%), silently, because the line looks like a whole day. It now reports `now.UTC().AddDate(0,0,-1)` — the last complete UTC day — which is what the script's own docstring meant by "the next evening's line is the final one"; it delivered that under today's date instead of re-reading it.
