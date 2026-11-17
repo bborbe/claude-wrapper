@@ -51,6 +51,17 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 		return "job=session-exit-daily action=metric day=" + day +
 			" ends=" + ends + " unknown_end=" + unknown + " unknown_end_pct=" + pct
 	}
+	// withZone pins time.Local for the duration of fn. The gate reads
+	// `now.In(time.Local)` and the bucket reads UTC, so a spec about the split
+	// between them must own the zone rather than inherit the host's: on a UTC host
+	// the two dates coincide and the premise silently disappears.
+	withZone := func(zone *time.Location, fn func()) {
+		previous := time.Local
+		time.Local = zone
+		defer func() { time.Local = previous }()
+		fn()
+	}
+	eastOfUTC := time.FixedZone("test-utc+1", 3600)
 
 	ginkgo.It("writes nothing on a poll that is not due", func() {
 		dir := ginkgo.GinkgoT().TempDir()
@@ -95,20 +106,25 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 
 	ginkgo.It("still reports the evening's day when a baseline fired earlier that local day", func() {
 		dir := ginkgo.GinkgoT().TempDir()
-		clock := libtime.NewCurrentDateTime()
-		job := &SessionExitDailyJob{Dir: dir, Now: clock, Logf: func(string) {}}
-		// A restart just after local midnight reports the UTC day before yesterday
-		// and must not consume the slot of the day the evening fire reports.
-		clock.SetNow(libtime.DateTime(time.Date(2026, 11, 17, 0, 10, 0, 0, time.Local)))
-		_, firstFired, err := job.Tick(ginkgo.GinkgoT().Context())
-		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-		gomega.Expect(firstFired).To(gomega.BeTrue())
+		withZone(eastOfUTC, func() {
+			clock := libtime.NewCurrentDateTime()
+			job := &SessionExitDailyJob{Dir: dir, Now: clock, Logf: func(string) {}}
+			// A restart just after local midnight reports the UTC day before
+			// yesterday and must not consume the slot of the day the evening fire
+			// reports. Pinned east of UTC because that is where the two differ.
+			clock.SetNow(libtime.DateTime(
+				time.Date(2026, 11, 17, 0, 10, 0, 0, eastOfUTC)))
+			_, firstFired, err := job.Tick(ginkgo.GinkgoT().Context())
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(firstFired).To(gomega.BeTrue())
 
-		clock.SetNow(libtime.DateTime(time.Date(2026, 11, 17, 23, 50, 0, 0, time.Local)))
-		line, secondFired, err := job.Tick(ginkgo.GinkgoT().Context())
-		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-		gomega.Expect(secondFired).To(gomega.BeTrue())
-		gomega.Expect(line).To(gomega.ContainSubstring("day=2026-11-16 "))
+			clock.SetNow(libtime.DateTime(
+				time.Date(2026, 11, 17, 23, 50, 0, 0, eastOfUTC)))
+			line, secondFired, err := job.Tick(ginkgo.GinkgoT().Context())
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(secondFired).To(gomega.BeTrue())
+			gomega.Expect(line).To(gomega.ContainSubstring("day=2026-11-16 "))
+		})
 	})
 
 	ginkgo.It("fires a baseline on the first run whatever the hour", func() {
@@ -143,18 +159,17 @@ var _ = ginkgo.Describe("SessionExitDailyJob", func() {
 	})
 
 	ginkgo.It("buckets by UTC, which is a different date from local at local midnight", func() {
-		if _, offset := time.Now().Zone(); offset == 0 {
-			ginkgo.Skip("host runs in UTC, so the local and UTC dates cannot differ")
-		}
 		dir := ginkgo.GinkgoT().TempDir()
-		now := time.Date(2026, 11, 17, 0, 30, 0, 0, time.Local)
-		line, fired, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
-		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-		gomega.Expect(fired).To(gomega.BeTrue())
-		// A local bucket would report 2026-11-16 here; the UTC one reports 2026-11-15
-		// east of UTC, which is the whole point of the pin.
-		gomega.Expect(line).To(gomega.ContainSubstring(
-			"day=" + now.UTC().AddDate(0, 0, -1).Format("2006-01-02")))
+		withZone(eastOfUTC, func() {
+			// 00:30 east of UTC is the previous UTC day, so a local bucket would
+			// report 2026-11-16 here and the UTC one reports 2026-11-15. Pinned to a
+			// fixed zone so the spec runs on a UTC runner instead of skipping.
+			now := time.Date(2026, 11, 17, 0, 30, 0, 0, eastOfUTC)
+			line, fired, err := newJob(dir, now).Tick(ginkgo.GinkgoT().Context())
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(fired).To(gomega.BeTrue())
+			gomega.Expect(line).To(gomega.ContainSubstring("day=2026-11-15 "))
+		})
 	})
 
 	ginkgo.It("zero-fills a day with no records, so a quiet day is not a missing line", func() {

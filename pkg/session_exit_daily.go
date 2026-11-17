@@ -178,7 +178,7 @@ func (j *SessionExitDailyJob) Tick(ctx context.Context) (string, bool, error) {
 	// The state is written before the line is returned: a line emitted without a
 	// recorded date would be re-emitted on the next poll, and a duplicate reading
 	// is worse than a missed one — a missed one shows up as a gap.
-	if stateErr := j.markFired(day); stateErr != nil {
+	if stateErr := j.markFired(ctx, day); stateErr != nil {
 		return "", false, errors.Wrapf(ctx, stateErr, "write %s failed", j.statePath())
 	}
 	return JobLine(
@@ -200,6 +200,15 @@ func (j *SessionExitDailyJob) Tick(ctx context.Context) (string, bool, error) {
 // collapses none of them. The pane record is the better evidence (it carries the
 // wait status and the signal), so a session that has a pane record on the day
 // has its daemon record dropped rather than added.
+//
+// ⚠️ **Residual undercount, deliberate.** The drop is session-wide for the day,
+// so a session that dies twice — one death the trap saw, the second recorded
+// only by the daemon because the trap missed it — counts once. Keying the drop
+// on the pane-recorded pid instead would keep that second death, but the two
+// writers disagree about the pid for the *same* death (that is the whole reason
+// the key is not a pid), so a pid-scoped rule would re-count the overlap it
+// exists to remove. One certain double count against a rare missed death is the
+// trade; the alternative is a metric that is wrong every night.
 func (j *SessionExitDailyJob) counts(ctx context.Context, day string) (int, int, error) {
 	dir := expandedDir(j.dir())
 	entries, err := os.ReadDir(dir)
@@ -224,7 +233,8 @@ func (j *SessionExitDailyJob) counts(ctx context.Context, day string) (int, int,
 			scanSessionExitFile(filepath.Join(dir, entry.Name()), day, tally)
 		}
 	}
-	return tally.counts()
+	ends, unknown := tally.counts()
+	return ends, unknown, nil
 }
 
 // sessionExitFamily names the writer a store file belongs to: `pane` for the
@@ -263,14 +273,14 @@ type sessionExitTally struct {
 }
 
 // counts returns the day's totals once every file has been read.
-func (t *sessionExitTally) counts() (int, int, error) {
+func (t *sessionExitTally) counts() (int, int) {
 	unknown := 0
 	for _, isUnknown := range t.ends {
 		if isUnknown {
 			unknown++
 		}
 	}
-	return len(t.ends), unknown, nil
+	return len(t.ends), unknown
 }
 
 // scanSessionExitFile adds one record file's ends for `day` to the tally.
@@ -420,7 +430,9 @@ func parseSessionExitClock(ctx context.Context, value string) (int, error) {
 	return hour*60 + minute, nil
 }
 
-// lastFired is the last local date emitted, or empty when the job has not run.
+// lastFired is the last day REPORTED, or empty when the job has not run. The
+// value is a UTC calendar day (the one the line carries), not the fire's local
+// date — see the state-file constant for why that distinction is load-bearing.
 //
 // ⚠️ Only a missing file means "never fired". Any other read error is returned,
 // because treating it as a first run re-emits a day that was already emitted —
@@ -436,32 +448,57 @@ func (j *SessionExitDailyJob) lastFired(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(raw)), nil
 }
 
-// markFired records the local date, so a restart cannot re-emit it.
+// markFired records the reported day, so a restart cannot re-emit it.
 //
 // The write is a temp file plus a rename: `os.WriteFile` truncates before it
-// writes, so a crash in between leaves an empty file that reads as "never
-// fired" and re-emits the day.
-func (j *SessionExitDailyJob) markFired(date string) error {
+// writes, so a process crash in between leaves an empty file that reads as
+// "never fired" and re-emits the day. ⚠️ This is crash-safety, not durability:
+// nothing is fsynced, so a host or power loss can still lose the last write (the
+// job then re-reports one day, which the next fire corrects). A temp file left
+// by such a loss is inert — no reader globs it — and is swept below.
+func (j *SessionExitDailyJob) markFired(ctx context.Context, date string) error {
 	path := j.statePath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return err
+		return errors.Wrapf(ctx, err, "create %s failed", dir)
 	}
+	j.sweepStaleState(dir)
 	temp, err := os.CreateTemp(dir, SessionExitDailyStateFile+".*")
 	if err != nil {
-		return err
+		return errors.Wrapf(ctx, err, "create state temp in %s failed", dir)
 	}
 	name := temp.Name()
 	if _, writeErr := temp.WriteString(date + "\n"); writeErr != nil {
 		_ = temp.Close()
 		_ = os.Remove(name)
-		return writeErr
+		return errors.Wrapf(ctx, writeErr, "write state temp %s failed", name)
 	}
 	if closeErr := temp.Close(); closeErr != nil {
 		_ = os.Remove(name)
-		return closeErr
+		return errors.Wrapf(ctx, closeErr, "close state temp %s failed", name)
 	}
-	return os.Rename(name, path)
+	if renameErr := os.Rename(name, path); renameErr != nil {
+		_ = os.Remove(name)
+		return errors.Wrapf(ctx, renameErr, "rename state temp to %s failed", path)
+	}
+	return nil
+}
+
+// sweepStaleState removes temp files a previous crash left beside the state file.
+//
+// A temp is only ever written here, so one older than this run is debris. The
+// sweep is best-effort: failing to clean up must never cost the day's line.
+func (j *SessionExitDailyJob) sweepStaleState(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), SessionExitDailyStateFile+".") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
 }
 
 func (j *SessionExitDailyJob) statePath() string {
