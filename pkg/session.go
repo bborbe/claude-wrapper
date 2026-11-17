@@ -254,6 +254,10 @@ type Stall struct {
 	PendingHooks []string `json:"pending_hooks,omitempty"`
 	// Phase is where the child was waiting: "hook" when a hook is pending,
 	// "no-event" when it emitted nothing, and "awaiting-init" otherwise.
+	//
+	// Derived, not stored: the stored value on the child is empty and the
+	// snapshot fills it. The exit recorder recomputes it from the same fields,
+	// so the two readers cannot disagree.
 	Phase string `json:"phase,omitempty"`
 }
 

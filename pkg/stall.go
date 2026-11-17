@@ -10,9 +10,13 @@ import "slices"
 // waiting, so the startup deadline's kill diagnoses itself from the session's
 // exit record instead of a post-mortem.
 //
-// It lives beside the deadline rather than inside the supervisor because the
-// deadline is the only reader: the supervisor calls these while it applies
-// events, and `SessionExitFileRecorder` renders the result.
+// Two readers: `SessionExitFileRecorder`, which writes it into the exit line,
+// and the session snapshot, which reports it over the API while a child is
+// starting.
+//
+// The point is allocated when the child is spawned, not on its first event, so
+// a child that emitted nothing at all is still diagnosable — that is the worst
+// case, and it has no event to hang the record on.
 
 // recordStallLocked keeps the stall point current while the child is still
 // starting, so a kill at the startup deadline reports where it waited instead
@@ -36,12 +40,18 @@ func (c *child) recordStallLocked(event map[string]any) {
 	name, _ := event["hook_name"].(string)
 	switch event["subtype"] {
 	case "hook_started":
-		if name != "" && !slices.Contains(stall.PendingHooks, name) {
+		// One entry per start, never deduped by name: several SessionStart
+		// hooks share a name, so a name-keyed set would drop the second start
+		// and then clear the phase when the first one returned.
+		if name != "" {
 			stall.PendingHooks = append(stall.PendingHooks, name)
 		}
 	case "hook_response":
-		stall.PendingHooks = slices.DeleteFunc(stall.PendingHooks,
-			func(pending string) bool { return pending == name })
+		// Remove exactly one entry: two same-named hooks that both started must
+		// both return before the phase leaves "hook".
+		if index := slices.Index(stall.PendingHooks, name); index >= 0 {
+			stall.PendingHooks = slices.Delete(stall.PendingHooks, index, index+1)
+		}
 	}
 }
 
@@ -62,13 +72,11 @@ func eventLabel(event map[string]any) string {
 // stallPhase names where a starting child was waiting.
 //
 // "hook" is a hook that never returned, "no-event" is a child that emitted
-// nothing at all, and "awaiting-init" is everything else — which in practice is
-// the MCP-connect phase, because the child emits init only after every server
-// has been tried.
+// nothing at all, and "awaiting-init" is everything else — which is likely the
+// MCP-connect phase, since the child emits init only after every server has
+// been tried.
 func stallPhase(stall *Stall) string {
 	switch {
-	case stall == nil:
-		return ""
 	case len(stall.PendingHooks) > 0:
 		return "hook"
 	case stall.LastEvent == "":

@@ -433,6 +433,7 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			session: Session{
 				ID:       record.ID,
 				State:    StateStarting,
+				Stall:    &Stall{},
 				Controls: []Control{ControlMessage},
 				Cwd:      record.Cwd,
 				// Mode is what a board answer is checked against: a permission gate
@@ -961,6 +962,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 		session: Session{
 			ID:        id,
 			State:     StateStarting,
+			Stall:     &Stall{},
 			Controls:  []Control{ControlMessage},
 			Cwd:       options.Cwd,
 			Mode:      sessionMode(options.Mode),
@@ -1799,6 +1801,14 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 			c.checkTerminalTask()
 		}
 	}
+	// The stall point describes a child that is still starting. Any event that
+	// moves the state on — init, an assistant message, a result — is proof the
+	// child got somewhere, so the point is dropped here rather than only in
+	// applyInit: a session that leaves StateStarting by any other route must not
+	// carry "awaiting-init" into its exit record.
+	if c.session.State != StateStarting {
+		c.session.Stall = nil
+	}
 	c.publish(seq, Event(event))
 }
 
@@ -1928,9 +1938,9 @@ func (c *child) applyInit(event map[string]any) {
 	if c.session.State == StateStarting {
 		c.session.State = StateIdle
 	}
-	// The child initialised, so it is no longer a stall candidate: clearing the
-	// point here is what keeps a long-running session from carrying a stale
-	// "awaiting-init" into its exit record.
+	// init is re-emitted for every turn, so this clear runs more than once on a
+	// running child; it is idempotent, and the first one is what removes the
+	// point before the deadline could act on it.
 	c.session.Stall = nil
 }
 

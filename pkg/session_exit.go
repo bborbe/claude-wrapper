@@ -129,15 +129,15 @@ func (r *SessionExitFileRecorder) line(session Session, pid int, status ExitStat
 	return strings.Join(fields, "\t") + "\n"
 }
 
-// stallFields reports where a child that never initialised was waiting when it
-// was killed.
+// stallFields reports where a child that never left the starting state was
+// waiting when it was killed.
 //
-// They are written only for a session carrying a stall point — one the startup
-// deadline killed before its init event — so their presence in the record is
-// itself the finding. An initialised session's line stays byte-identical to
-// what it was before this field existed, which is what keeps every existing
-// reader working: the daily job parses the fields as a name→value map, and an
-// absent name reads as absent rather than as a shifted column.
+// They are written only for a session carrying a stall point — one that never
+// initialised — so their presence in the record is itself the finding. An
+// initialised session's line stays byte-identical to what it was before this
+// field existed, which is what keeps every existing reader working: the daily
+// job parses the fields as a name→value map, and an absent name reads as absent
+// rather than as a shifted column.
 func stallFields(stall *Stall) []string {
 	if stall == nil {
 		return nil

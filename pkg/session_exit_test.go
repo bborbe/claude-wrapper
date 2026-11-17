@@ -74,6 +74,24 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 		gomega.Expect(line).NotTo(gomega.ContainSubstring("stall_"))
 	})
 
+	// The worst case has no event to hang the point on: a child that emitted
+	// nothing at all still reports where it was waiting.
+	ginkgo.It("records a child that emitted no event at all", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		recorder := &SessionExitFileRecorder{Dir: dir}
+		recorder.Record(Session{ID: "sid-3", Stall: &Stall{}}, 4444, ExitStatus{
+			Code:   code(-1),
+			Signal: syscall.SIGKILL,
+			Sender: "startup-deadline",
+		})
+		raw, err := os.ReadFile(filepath.Join(dir, "session-sid-3.log"))
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		line := string(raw)
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_phase=no-event"))
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_last_event=-"))
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_hooks=-"))
+	})
+
 	// SC5: the full field set AND ORDER for a signalled record with a named
 	// sender. The order is pinned because `session-exit-record.py` already emits
 	// `signal`/`sender` in this position, and one reader parses both families.
