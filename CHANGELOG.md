@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.34.0
 
 - feat: **a spawned child now carries `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, so its compaction bound no longer rests on a model marker alone.** The daemon inherits only the six keys `de.bborbe.claude-wrapper`'s plist declares, and the `cc-*` launcher's `export CLAUDE_CODE_AUTO_COMPACT_WINDOW=900000` never reaches a child this daemon starts — `childEnv` merges over the daemon's own `os.Environ()`, not the launcher's. A session therefore took its window from the model's `[1m]` marker, and a manager that could not read its own fill level inferred exhaustion at 42% of a 967k window (measured 2026-11-17). `spawnEnv` fills the key when neither the inherited environment nor the caller supplies it; **900000 is the launcher's own value**, so this makes the daemon agree with the launcher rather than choose a new bound, and a value set by the plist or the caller always wins. ⚠️ **`CLAUDE_CODE_MAX_OUTPUT_TOKENS` is deliberately not defaulted** — no source in this fleet names a value, and a wrong output cap truncates a turn where a wrong window only compacts early. Change set: `pkg/supervisor.go`, `pkg/supervisor_test.go`, `CHANGELOG.md`.
 
