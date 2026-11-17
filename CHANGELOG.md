@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.29.4
 
 - fix: **a signalled session-exit record now names the signal and the job that sent it, so a killed session can be attributed.** The wrapper wrote `ts kind pane session pid rc writer` and collapsed every negative exit code to `kind=signalled`: `exec.ExitCode()` returns `-1` for a signal kill, so the signal was destroyed before `Record` saw it, and no kill site had a path to the record at all — `Record`'s only caller is `reap`, on the watcher goroutine. `Record` now takes an `ExitStatus` carrying the code, the signal recovered from the reaped `WaitStatus`, and the sender; `line()` emits `signal=` and `sender=` before `writer=`, the position `session-exit-record.py` already uses. Every in-process kill records the job that sent it (`idle-reaper`, `close-on-terminal-task`, `headless-turn-end`, `startup-deadline`); a signal from outside the process records `sender=unavailable(external-signal)`, and an adopted child — never `Wait`ed, so it holds no `WaitStatus` — records `signal=unavailable(no-wait-status)` rather than an invented value. Additive fields only: the reader parses `key=value` by name, so old and new lines both parse.
 
