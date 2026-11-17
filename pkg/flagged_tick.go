@@ -271,6 +271,11 @@ type flaggedRowCache struct {
 	mutex   sync.RWMutex
 	rows    []FlaggedRow
 	lastErr error
+	// readFor is how long the most recent read attempt took, successful or not.
+	// It is carried here rather than in the result because the read happens off
+	// the tick's goroutine: the tick reports the cost of the read it is serving,
+	// which is the number the read-cost measurement is about.
+	readFor time.Duration
 	set     bool
 }
 
@@ -287,9 +292,10 @@ type flaggedRowCache struct {
 //
 // A failed FIRST read leaves set=false on purpose: there is no good row set yet, so
 // the tick keeps logging `skipped` rather than fabricating an empty one.
-func (c *flaggedRowCache) store(rows []FlaggedRow, err error) {
+func (c *flaggedRowCache) store(rows []FlaggedRow, err error, took time.Duration) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	c.readFor = took
 	if err != nil {
 		c.lastErr = err
 		return
@@ -297,12 +303,15 @@ func (c *flaggedRowCache) store(rows []FlaggedRow, err error) {
 	c.rows, c.lastErr, c.set = rows, nil, true
 }
 
-// snapshot returns the row set the tick should serve, plus the last read's error
-// when the rows are stale.
-func (c *flaggedRowCache) snapshot() (rows []FlaggedRow, stale error, ok bool) {
+// snapshot returns the row set the tick should serve, how long the read behind it
+// took, whether there is a row set at all, and the last read's error when the rows
+// are stale (the error is last because ST1008 requires it).
+func (c *flaggedRowCache) snapshot() (
+	rows []FlaggedRow, readFor time.Duration, ok bool, stale error,
+) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
-	return c.rows, c.lastErr, c.set
+	return c.rows, c.readFor, c.set, c.lastErr
 }
 
 // Run ticks until the context ends.
@@ -335,8 +344,12 @@ func (t *FlaggedTick) refreshLoop(
 	ctx context.Context, cache *flaggedRowCache, interval time.Duration,
 ) {
 	for {
+		started := t.now()
 		rows, err := t.readRows(ctx)
-		cache.store(rows, err)
+		// Measure even a failed read: a kill at predicateTimeout is the worst case
+		// the cost measurement exists to catch, so dropping it would bias the p95
+		// down exactly on the slow reads.
+		cache.store(rows, err, t.now().Sub(started))
 		select {
 		case <-ctx.Done():
 			return
@@ -347,13 +360,14 @@ func (t *FlaggedTick) refreshLoop(
 
 // tickAndLog runs one tick against the cached row set and writes its line.
 func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
-	rows, stale, ok := cache.snapshot()
+	rows, readFor, ok, stale := cache.snapshot()
 	if !ok {
 		// No good row set yet. Name the failure when there was one — a first read
 		// that always fails would otherwise log `skipped: predicate has not
 		// returned yet` forever and hide its own error.
 		if stale != nil {
-			t.logf("flagged-tick read failed: %v (no good row set yet — skipping)", stale)
+			t.logf("flagged-tick read failed: %v (%s, no good row set yet — skipping)",
+				stale, readFor)
 		}
 		t.logf("flagged-tick skipped: predicate has not returned yet")
 		return
@@ -364,11 +378,16 @@ func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
 		// failed` (which means no tick ran): a stale tick must be visible in the
 		// log without being counted as a dead one, or a 24 h measurement cannot
 		// tell "served stale rows" from "opened nothing".
-		t.logf("flagged-tick read failed: %v (serving %d rows from the last good read)",
-			stale, len(rows))
+		t.logf("flagged-tick read failed: %v (%s, serving %d rows from the last good read)",
+			stale, readFor, len(rows))
 	}
 	result := t.tickFromRows(ctx, rows)
-	t.logf("%s", result.Line())
+	// read_duration= is the read-cost measurement: the cost of the most recent read
+	// ATTEMPT, including a failed one — a read killed at the bound is the slow case
+	// this exists to catch, so reporting only successful reads would bias the p95
+	// down exactly where it matters. It is emitted on the tick line, not the detail
+	// line, so a grep for it counts ticks.
+	t.logf("%s read_duration=%s", result.Line(), readFor.Round(time.Second))
 	// The detail line is logged separately so it carries its own timestamp: a
 	// newline embedded in one Printf would leave the second line unprefixed and
 	// harder to pair with the tick it belongs to.
