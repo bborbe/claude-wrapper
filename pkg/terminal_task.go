@@ -254,6 +254,50 @@ func (c *child) resetCardRetry() {
 	c.cardRetries = 0
 }
 
+// cardRetryDelay is the re-check interval, overridable so a test can exercise
+// the stop-after-budget path without waiting a real minute.
+func (c *child) cardRetryDelay() time.Duration {
+	if c.cardRetryDelayValue > 0 {
+		return c.cardRetryDelayValue
+	}
+	return headlessCardRetryDelay
+}
+
+// scheduleCardRetry arms ONE re-check for this child and reports whether it
+// armed. The handle is kept so `reap` can cancel it: an uncancelled timer fires
+// against a pid that may already be REUSED, and this path ends in a SIGKILL —
+// so a stray timer is not a wasted wakeup, it is a signal aimed at a stranger.
+func (c *child) scheduleCardRetry(ctx context.Context) bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.cardRetryTimer != nil {
+		return false
+	}
+	c.cardRetryTimer = time.AfterFunc(c.cardRetryDelay(), func() { c.fireCardRetry(ctx) })
+	return true
+}
+
+// fireCardRetry runs one armed re-check. It clears the handle first so a later
+// failure can arm a fresh one, and it refuses to act on a child that has gone.
+func (c *child) fireCardRetry(ctx context.Context) {
+	c.mutex.Lock()
+	c.cardRetryTimer = nil
+	c.mutex.Unlock()
+	if c.procGone.Load() {
+		return
+	}
+	c.closeHeadlessTurnEnd(ctx)
+}
+
+// stopCardRetryLocked cancels an armed re-check. The caller must hold c.mutex —
+// `reap` calls it from inside its own critical section.
+func (c *child) stopCardRetryLocked() {
+	if c.cardRetryTimer != nil {
+		c.cardRetryTimer.Stop()
+		c.cardRetryTimer = nil
+	}
+}
+
 // cardVerdict is what one attention-store read decided for a turn end.
 type cardVerdict int
 
@@ -296,6 +340,14 @@ func (c *child) cardVerdict(ctx context.Context) (cardVerdict, error) {
 // ⚠️ EVERY keep arm is logged. A silent keep would make a stop line
 // indistinguishable from a keep.
 func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
+	// A retry timer can outlive the child by up to one delay. Acting on a dead
+	// child is not merely wasteful: the pid may already be REUSED, and this path
+	// ends in a SIGKILL. The gate is the process-gone flag rather than the state,
+	// because the flag is set by the watcher before `reap` settles the record —
+	// the window where state still reads idle on a child that has already exited.
+	if c.procGone.Load() {
+		return
+	}
 	// The card check runs BEFORE the decision is committed, and before the lock
 	// is taken: it is I/O, and holding c.mutex across a store round trip would
 	// stall every event on the child. An open card means the worker is waiting on
@@ -315,16 +367,20 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 			log.Printf("agent %s: keeping worker — open-card", c.id)
 			return
 		case cardKeepRetry:
+			if !c.scheduleCardRetry(ctx) {
+				// A re-check is already armed for this child: this turn end is a
+				// duplicate, not a new attempt. The armed timer owns the next step.
+				return
+			}
 			log.Printf(
-				"WARNING: could not read the attention store for %s; keeping the session and re-checking in %s (attempt %d/%d): %v",
-				c.id, headlessCardRetryDelay, c.cardRetryCount(), headlessCardRetryBudget, err,
+				"WARNING: could not read the attention store for %s; keeping the session and re-checking in %s (attempt %d of %d): %v",
+				c.id, c.cardRetryDelay(), c.cardRetryCount()+1, headlessCardRetryBudget+1, err,
 			)
-			time.AfterFunc(headlessCardRetryDelay, func() { c.closeHeadlessTurnEnd(ctx) })
 			return
 		case cardBudgetSpent:
 			log.Printf(
-				"WARNING: attention store still unreadable for %s after %d attempts — stopping the session anyway; an open card, if any, is orphaned: %v",
-				c.id, headlessCardRetryBudget, err,
+				"WARNING: attention store still unreadable for %s after %d reads — stopping the session anyway; an open card, if any, is orphaned: %v",
+				c.id, headlessCardRetryBudget+1, err,
 			)
 			// Fall through to the stop: the budget is spent, and a worker that can
 			// never be stopped because a store is down is the leak this path exists

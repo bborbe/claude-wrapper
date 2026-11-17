@@ -1306,6 +1306,13 @@ type child struct {
 	// with no re-check turns a transient outage into a permanent leak, so the
 	// budget is finite and the last attempt stops the child anyway.
 	cardRetries int
+	// cardRetryTimer is the armed re-check, or nil. Kept so `reap` can cancel it:
+	// an uncancelled timer fires against a pid that may already be reused, and
+	// this path ends in a SIGKILL.
+	cardRetryTimer *time.Timer
+	// cardRetryDelayValue overrides the re-check interval. Zero uses the package
+	// default; a test sets it so the stop-after-budget path runs without waiting.
+	cardRetryDelayValue time.Duration
 	// exitRecorder is the daemon's exit store; nil means the record is disabled.
 	exitRecorder SessionExitRecorder
 }
@@ -1628,6 +1635,9 @@ func (c *child) watch() {
 func (c *child) reap(exitCode *int) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	// Cancel any armed attention-store re-check: the child is gone, and the
+	// retry's kill would land on a pid that may already be reused.
+	c.stopCardRetryLocked()
 	// A child that leaves mid-turn closes nothing, so its turn's verdict has to be
 	// written here or it is never written at all. Read BEFORE the counter is
 	// cleared, and only for a turn that was actually open: a worker that finished
