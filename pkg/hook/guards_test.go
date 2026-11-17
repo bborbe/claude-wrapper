@@ -398,3 +398,41 @@ var _ = Describe("SecretReadGuard", func() {
 		Expect(guard.Applies(bashInput("ls -la"))).To(BeFalse())
 	})
 })
+
+var _ = Describe("CredentialTraceGuard", func() {
+	guard := hook.NewCredentialTraceGuard()
+
+	secretScript := tempRepo(map[string]string{
+		"fetch.sh": "#!/bin/bash\nPASSWORD=$(teamvault-cli password team/app)\n",
+		"plain.sh": "#!/bin/bash\necho hello\n",
+	})
+
+	DescribeTable("denies a spliced lookup and a trace of a secret-reading script",
+		func(command string, denied bool) {
+			Expect(guard.Evaluate(bashInput(command)).Deny).To(Equal(denied))
+		},
+		Entry("a lookup spliced into argv",
+			`echo "$(teamvault-cli password team/app)"`, true),
+		Entry("a lookup piped onward",
+			"teamvault-cli password team/app | shasum -a 256", false),
+		Entry("a trace of a secret-reading script",
+			"bash -x "+secretScript+"/fetch.sh", true),
+		Entry("a trace of a plain script",
+			"bash -x "+secretScript+"/plain.sh", false),
+		Entry("an untraced run of the secret-reading script",
+			"bash "+secretScript+"/fetch.sh", false),
+		Entry("set -x before a secret-reading script",
+			"set -x && bash "+secretScript+"/fetch.sh", true),
+		Entry("an unrelated command", "ls -la", false),
+	)
+
+	It("names the resolved script path in the trace denial", func() {
+		decision := guard.Evaluate(bashInput("bash -x " + secretScript + "/fetch.sh"))
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: a shell trace (`-x`) on " + secretScript + "/fetch.sh"))
+	})
+
+	It("names the script it replaces", func() {
+		Expect(guard.Name()).To(Equal("deny-credential-trace.sh"))
+	})
+})
