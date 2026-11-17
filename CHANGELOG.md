@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.29.5
 
 - fix: **a killed predicate read no longer disables every later tick.** `refreshLoop` stored whatever the read returned — error included — and `tickAndLog` returned early on it, so one read killed by `predicateTimeout` (25 min) left the cache carrying that error and **every** subsequent tick logged `failed` and opened nothing until a read succeeded. Measured 2026-11-16: 18 consecutive dead ticks 08:15–12:23 and four operator-flagged `seibert-brogrammers` rows opening **2 h 01 m** late, while the kill itself is an expected outcome of the bound (`exec.CommandContext` reports an expired context as `signal: killed`, reproduced). The cache now keeps the last good row set across a failed read and logs `flagged-tick read failed: … (serving N rows from the last good read)` — deliberately distinct from `flagged-tick failed`, which still means no tick ran — so a kill costs freshness rather than the tick. A failed **first** read still logs `skipped`: there is no good set to serve, and fabricating an empty one would hide the read entirely. `predicateTimeout` is unchanged; raising it was tried twice and the failure returned both times.
 ## v0.29.4
