@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: `run_slash_command` roster tool runs an allowlisted `/compact` or `/reload-plugins` in a local worker — a headless worker gets it as a user turn on its stdin, a tab worker has it typed into its pane; anything else is refused with `not allowlisted`, and A2A/cluster workers are refused by name
+
 ## v0.30.1
 
 - fix: tabClient.SendText no longer runs wezterm activate-pane, so fleet wakes and roster sends stop switching the operator's tab
