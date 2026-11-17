@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -233,9 +234,13 @@ type FlaggedTick struct {
 	Reopener FlaggedReopener
 	Caps     SpawnCaps
 	// Ledger supplies the spawn times the recently-spawned guard reads. A nil
-	// ledger disables that guard rather than refusing every row.
+	// ledger disables that half of the guard rather than refusing every row.
 	Ledger LedgerReader
-	Now    libtime.CurrentDateTimeGetter
+	// Sessions is the wrapper's own durable child table — the half of the
+	// recently-spawned guard that still answers while the attention-controller is
+	// down. Nil resolves it from the state directory per call.
+	Sessions SessionStore
+	Now      libtime.CurrentDateTimeGetter
 	// Interval defaults to DefaultFlaggedTickInterval.
 	Interval time.Duration
 	// ReadTimeout bounds one predicate read, defaulting to predicateTimeout.
@@ -531,15 +536,57 @@ func (t *FlaggedTick) readRows(ctx context.Context) ([]FlaggedRow, error) {
 // margin, and refusing every row because the store was down would turn a store
 // outage into a fleet-wide stall.
 func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time {
+	out := make(map[string]time.Time)
+	t.mergeLedgerSpawnTimes(ctx, out)
+	t.mergeChildSpawnTimes(ctx, out)
+	return out
+}
+
+// mergeChildSpawnTimes adds the spawn times of the wrapper's own live children.
+//
+// This is what keeps the double-open guard alive while the attention-controller
+// is down: the durable per-session `record.json` is on disk, so it answers when
+// the ledger cannot. A record whose child pid is gone is not a spawn to stay away
+// from, and a record with no pid check would suppress a row forever.
+func (t *FlaggedTick) mergeChildSpawnTimes(ctx context.Context, out map[string]time.Time) {
+	store := t.Sessions
+	if store == nil {
+		dir, err := SupervisorStateDir(ctx, "", os.Getenv)
+		if err != nil {
+			return
+		}
+		store = NewSessionStore(dir)
+	}
+	records, err := store.List(ctx)
+	if err != nil {
+		t.logf("flagged-tick: child table read failed, recently-spawned guard is ledger-only: %v", err)
+		return
+	}
+	for _, record := range records {
+		if record.ID == "" || !pidAlive(record.ChildPID) {
+			continue
+		}
+		if prev, ok := out[record.ID]; !ok || record.StartedAt.After(prev) {
+			out[record.ID] = record.StartedAt
+		}
+	}
+}
+
+// mergeLedgerSpawnTimes adds the ledger's spawn times, keyed by session id and by
+// label for a never-opened row.
+//
+// A failed read leaves the map as it was rather than returning empty: the child
+// table still answers, and refusing every row because the store was down would
+// turn a store outage into a fleet-wide stall.
+func (t *FlaggedTick) mergeLedgerSpawnTimes(ctx context.Context, out map[string]time.Time) {
 	if t.Ledger == nil {
-		return map[string]time.Time{}
+		return
 	}
 	rows, err := t.Ledger.Rows(ctx)
 	if err != nil {
-		t.logf("flagged-tick: ledger read failed, recently-spawned guard inactive: %v", err)
-		return map[string]time.Time{}
+		t.logf("flagged-tick: ledger read failed, recently-spawned guard degraded to the child table: %v", err)
+		return
 	}
-	out := make(map[string]time.Time, len(rows))
 	for _, row := range rows {
 		// A spawn the ledger has CLOSED is not a spawn to stay away from.
 		//
@@ -573,7 +620,6 @@ func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time 
 			}
 		}
 	}
-	return out
 }
 
 // labelKey is the recently-spawned map's key for a spawn found by label.

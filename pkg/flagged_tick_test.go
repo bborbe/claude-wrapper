@@ -8,6 +8,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -225,6 +226,50 @@ func (s *countingSource) count() int {
 	defer s.mutex.Unlock()
 	return s.calls
 }
+
+// The guard must survive the attention-controller being down: the durable child
+// table is on disk, so a ledger outage no longer disables the double-open guard.
+var _ = ginkgo.Describe("flagged tick: recently-spawned guard without the ledger", func() {
+	ginkgo.It("still suppresses a row whose child record is live", func() {
+		ctx := context.Background()
+		store := NewSessionStore(ginkgo.GinkgoT().TempDir())
+		gomega.Expect(store.Create(ctx, SessionRecord{
+			ID:        "child-1",
+			ChildPID:  os.Getpid(),
+			StartedAt: time.Now(),
+		})).Error().NotTo(gomega.HaveOccurred())
+		tick := &FlaggedTick{
+			Ledger:   ledgerWith{err: stderrors.New("connection refused")},
+			Sessions: store,
+			Now:      fixedClock(time.Now()),
+			Logf:     func(string, ...any) {},
+		}
+
+		got := tick.recentlySpawned(ctx)
+
+		gomega.Expect(got).To(gomega.HaveKey("child-1"))
+	})
+
+	ginkgo.It("ignores a child record whose pid is gone", func() {
+		ctx := context.Background()
+		store := NewSessionStore(ginkgo.GinkgoT().TempDir())
+		gomega.Expect(store.Create(ctx, SessionRecord{
+			ID:        "child-dead",
+			ChildPID:  0,
+			StartedAt: time.Now(),
+		})).Error().NotTo(gomega.HaveOccurred())
+		tick := &FlaggedTick{
+			Ledger:   ledgerWith{err: stderrors.New("connection refused")},
+			Sessions: store,
+			Now:      fixedClock(time.Now()),
+			Logf:     func(string, ...any) {},
+		}
+
+		got := tick.recentlySpawned(ctx)
+
+		gomega.Expect(got).NotTo(gomega.HaveKey("child-dead"))
+	})
+})
 
 // ledgerWith supplies spawn times to the recently-spawned guard.
 type ledgerWith struct {
