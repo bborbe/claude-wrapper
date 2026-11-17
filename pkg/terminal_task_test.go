@@ -5,16 +5,38 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	stderrors "errors"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
+
+// syncBuffer is a race-free log sink. The stop path logs from its own goroutine
+// while the spec reads what was captured, so a bare bytes.Buffer would race.
+type syncBuffer struct {
+	mutex  sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.buffer.String()
+}
 
 type fakeAnchoredTaskResolver struct {
 	result AnchoredTask
@@ -31,6 +53,24 @@ type fakeOpenCards struct {
 
 func (f *fakeOpenCards) OpenSessionIDs(_ context.Context) (map[string]struct{}, error) {
 	return f.ids, f.err
+}
+
+// flipOpenCards is a store that fails the first `fail` reads and then answers, so
+// a spec can exercise the re-check recovering rather than only the give-up.
+type flipOpenCards struct {
+	mutex sync.Mutex
+	fail  int
+	ids   map[string]struct{}
+}
+
+func (f *flipOpenCards) OpenSessionIDs(context.Context) (map[string]struct{}, error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if f.fail > 0 {
+		f.fail--
+		return nil, stderrors.New("store down")
+	}
+	return f.ids, nil
 }
 
 func (f *fakeAnchoredTaskResolver) Resolve(
@@ -309,6 +349,9 @@ var _ = ginkgo.Describe("headless turn end", func() {
 			pid:     cmd.Process.Pid,
 			ctx:     ctx,
 			session: Session{ID: "sid", State: StateIdle, Mode: SpawnModeHeadless, Role: RoleAgent},
+			// A short interval so the stop-after-budget path is exercised without
+			// waiting a real minute per attempt.
+			cardRetryDelayValue: 20 * time.Millisecond,
 		}
 	})
 	ginkgo.AfterEach(func() {
@@ -322,6 +365,13 @@ var _ = ginkgo.Describe("headless turn end", func() {
 	}
 	expectKilled := func() { gomega.Eventually(exited, 5*time.Second).Should(gomega.BeClosed()) }
 	expectAlive := func() { gomega.Consistently(exited, 200*time.Millisecond).ShouldNot(gomega.BeClosed()) }
+	captureLog := func() *syncBuffer {
+		sink := &syncBuffer{}
+		previous := log.Writer()
+		log.SetOutput(sink)
+		ginkgo.DeferCleanup(func() { log.SetOutput(previous) })
+		return sink
+	}
 
 	ginkgo.It("stops a headless agent whose turn closed with nothing pending", func() {
 		checkTurnEnd()
@@ -363,9 +413,121 @@ var _ = ginkgo.Describe("headless turn end", func() {
 		expectAlive()
 	})
 	ginkgo.It("keeps a headless agent when the attention store cannot be read", func() {
+		sink := captureLog()
+		// The re-check must be armed but never fire: this spec asserts the child is
+		// KEPT. At the suite's 20ms delay the whole budget elapses inside the
+		// assertion window and the child is stopped instead.
+		c.mutex.Lock()
+		c.cardRetryDelayValue = time.Hour
+		c.mutex.Unlock()
 		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
 		checkTurnEnd()
 		expectAlive()
+		gomega.Eventually(func() int {
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			return c.cardRetries
+		}, "2s").Should(gomega.Equal(1))
+		// The retry must be observable, not inferred: a reader has to be able to
+		// tell "the store was unreadable and it is retrying" from a silent keep.
+		gomega.Eventually(sink.String, "2s").Should(gomega.And(
+			gomega.ContainSubstring("keeping the session and re-checking in"),
+			gomega.ContainSubstring("(attempt 1 of 5)"),
+		))
+	})
+	ginkgo.It("stops anyway once the store-error retry budget is spent", func() {
+		sink := captureLog()
+		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
+		c.mutex.Lock()
+		c.cardRetries = headlessCardRetryBudget
+		c.mutex.Unlock()
+		checkTurnEnd()
+		expectKilled()
+		// The bound being applied is the fix's whole point, and both halves of it
+		// are asserted: the give-up warning, and the stop line itself.
+		gomega.Eventually(sink.String, "2s").Should(gomega.And(
+			gomega.ContainSubstring("stopping the session anyway"),
+			gomega.ContainSubstring("turn closed with nothing pending — stopping the session"),
+		))
+	})
+	ginkgo.It("stops once the store-error retry budget is exhausted", func() {
+		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
+		checkTurnEnd()
+		// The budget is 5 retries; each armed re-check re-reads the store and
+		// re-arms, so the sixth read exhausts it and the child is stopped. The
+		// stop is the assertion — asserting "still alive" first would race the
+		// 20ms re-check interval this suite runs with.
+		gomega.Eventually(exited, 10*time.Second).Should(gomega.BeClosed())
+	})
+	ginkgo.It("cancels an armed re-check when the child is reaped", func() {
+		// A long interval keeps the timer ARMED: at the suite's 20ms delay it fires
+		// and clears its own handle before the assertion reads it.
+		c.mutex.Lock()
+		c.cardRetryDelayValue = time.Hour
+		c.mutex.Unlock()
+		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
+		checkTurnEnd()
+		// closeHeadlessTurnEnd runs on its own goroutine, so the handle is nil until
+		// that goroutine arms it — poll for the armed state instead of reading it
+		// once, which races the goroutine and fails intermittently.
+		gomega.Eventually(func() bool {
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			return c.cardRetryTimer != nil
+		}, "2s").Should(gomega.BeTrue())
+		c.reap(nil)
+		c.mutex.Lock()
+		defer c.mutex.Unlock()
+		gomega.Expect(c.cardRetryTimer).To(gomega.BeNil())
+	})
+	ginkgo.It("does not arm a second re-check while one is pending", func() {
+		c.openCards = &fakeOpenCards{err: stderrors.New("store down")}
+		c.mutex.Lock()
+		c.cardRetryDelayValue = time.Hour
+		c.mutex.Unlock()
+		checkTurnEnd()
+		checkTurnEnd()
+		// A duplicate turn end inside the retry window must NOT charge a second
+		// budget slot: the kept worker stays sendable, so a handful of turns would
+		// otherwise spend the whole budget without a single re-check firing.
+		// closeHeadlessTurnEnd runs on its own goroutine, so poll for the count.
+		gomega.Eventually(func() int {
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			return c.cardRetries
+		}, "2s").Should(gomega.Equal(1))
+		c.mutex.Lock()
+		defer c.mutex.Unlock()
+		gomega.Expect(c.cardRetryTimer).NotTo(gomega.BeNil())
+	})
+	ginkgo.It("stops on the re-check once the store recovers", func() {
+		// The defect this row exists for: a store unreadable at turn end and
+		// readable a moment later must still end with a stopped worker.
+		c.openCards = &flipOpenCards{fail: 1, ids: map[string]struct{}{}}
+		c.mutex.Lock()
+		c.cardRetryDelayValue = 10 * time.Millisecond
+		c.mutex.Unlock()
+		checkTurnEnd()
+		expectKilled()
+	})
+	ginkgo.It("refuses to stop a child whose process is already gone", func() {
+		// The pid may already be REUSED, and this path ends in a SIGKILL — so a
+		// child the watcher has already seen exit must never be signalled.
+		c.openCards = &fakeOpenCards{ids: map[string]struct{}{}}
+		c.procGone.Store(true)
+		checkTurnEnd()
+		expectAlive()
+	})
+	ginkgo.It("resets the store-error budget after a successful read", func() {
+		c.openCards = &fakeOpenCards{ids: map[string]struct{}{}}
+		c.mutex.Lock()
+		c.cardRetries = 3
+		c.mutex.Unlock()
+		checkTurnEnd()
+		expectKilled()
+		c.mutex.Lock()
+		defer c.mutex.Unlock()
+		gomega.Expect(c.cardRetries).To(gomega.Equal(0))
 	})
 	ginkgo.It("stops when the attention store holds no card for it", func() {
 		c.openCards = &fakeOpenCards{ids: map[string]struct{}{"other": {}}}

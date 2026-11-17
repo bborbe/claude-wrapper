@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 )
@@ -194,6 +195,22 @@ const (
 	reasonQuestionPending = "a question is pending"
 )
 
+// A store error keeps the session — not orphaning a card is the right instinct —
+// but a keep with NO re-check converts a transient outage into a permanent leak.
+// Measured 2026-11-16: the attention store was unreachable at 20:48:57, a
+// finished headless worker was kept, nothing retried it, and it heartbeated for
+// nine minutes until an external signal killed it. The store also flapped five
+// times between 16:09 and 16:14, so this is a recurring shape, not a one-off.
+//
+// The budget is deliberately finite: after it, the session is stopped and the
+// warning says an open card may be orphaned. A worker that can never be stopped
+// because a store is down is worse than a card whose producer is gone — the
+// card still reads, and the operator can still see it.
+const (
+	headlessCardRetryDelay  = 60 * time.Second
+	headlessCardRetryBudget = 5
+)
+
 // keepReasonLocked reports why the child must not be stopped, or ok=false when
 // it is idle and unparked. The caller must hold c.mutex.
 func (c *child) keepReasonLocked() (string, bool) {
@@ -208,6 +225,114 @@ func (c *child) keepReasonLocked() (string, bool) {
 	return "", false
 }
 
+// armOutcome is what arming a re-check decided.
+type armOutcome int
+
+const (
+	// armArmed: a re-check is now pending, and this attempt consumed a slot.
+	armArmed armOutcome = iota
+	// armAlreadyPending: a re-check is already armed for this child.
+	armAlreadyPending
+	// armBudgetSpent: no slot is left, so the caller stops the child.
+	armBudgetSpent
+)
+
+// armCardRetry arms one re-check and reports the attempt number it consumed and
+// the interval it waits.
+//
+// ⚠️ **The budget is charged HERE, and only when a timer is actually armed.** It
+// used to be charged in the read path, before the "is one already pending?" test —
+// and a kept worker stays sendable, so every turn end re-runs this check. A
+// duplicate turn end inside the retry window therefore burned a slot without
+// arming anything, and a handful of turns could spend the whole `60s × 5` budget
+// in seconds, stopping the worker far earlier than the bound promises.
+func (c *child) armCardRetry(ctx context.Context) (int, time.Duration, armOutcome) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.cardRetryTimer != nil {
+		return 0, 0, armAlreadyPending
+	}
+	if c.cardRetries >= headlessCardRetryBudget {
+		return 0, 0, armBudgetSpent
+	}
+	c.cardRetries++
+	// Read under the same lock the tests write it under, and hand the value back
+	// so the log line cannot disagree with the interval actually armed.
+	delay := c.cardRetryDelay()
+	c.cardRetryTimer = time.AfterFunc(delay, func() { c.fireCardRetry(ctx) })
+	return c.cardRetries, delay, armArmed
+}
+
+// resetCardRetry clears the budget after a successful store read, so a later
+// outage on the same child starts from a full budget rather than a spent one.
+func (c *child) resetCardRetry() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.cardRetries = 0
+}
+
+// cardRetryDelay is the re-check interval, overridable so a test can exercise
+// the stop-after-budget path without waiting a real minute.
+func (c *child) cardRetryDelay() time.Duration {
+	if c.cardRetryDelayValue > 0 {
+		return c.cardRetryDelayValue
+	}
+	return headlessCardRetryDelay
+}
+
+// fireCardRetry runs one armed re-check. It clears the handle first so a later
+// failure can arm a fresh one, and it refuses to act on a child that has gone.
+func (c *child) fireCardRetry(ctx context.Context) {
+	c.mutex.Lock()
+	c.cardRetryTimer = nil
+	c.mutex.Unlock()
+	// A cancelled context means the daemon is going away, so re-reading the store
+	// for up to five more minutes would outlive the process it is meant to serve.
+	if c.procGone.Load() || ctx.Err() != nil {
+		return
+	}
+	c.closeHeadlessTurnEnd(ctx)
+}
+
+// stopCardRetryLocked cancels an armed re-check. The caller must hold c.mutex —
+// `reap` calls it from inside its own critical section.
+func (c *child) stopCardRetryLocked() {
+	if c.cardRetryTimer != nil {
+		c.cardRetryTimer.Stop()
+		c.cardRetryTimer = nil
+	}
+}
+
+// cardVerdict is what one attention-store read decided for a turn end.
+type cardVerdict int
+
+const (
+	// cardProceed: no card names the child, or no store is configured — stop it.
+	cardProceed cardVerdict = iota
+	// cardKeepOpen: an open card names the child — keep it.
+	cardKeepOpen
+	// cardStoreUnreadable: the store could not be read. Arming the bounded
+	// re-check — or stopping once its budget is spent — is the caller's call,
+	// because the budget is charged when a timer arms, not when a read fails.
+	cardStoreUnreadable
+)
+
+// cardVerdict reads the attention store once and reports what it decided. It is
+// split out of closeHeadlessTurnEnd to keep that function readable: the store
+// error, the retry budget and the card test nested inline produced a branch tree
+// the linter refused, and the split names each outcome instead of nesting it.
+func (c *child) cardVerdict(ctx context.Context) (cardVerdict, error) {
+	cards, err := c.openCards.OpenSessionIDs(ctx)
+	if err != nil {
+		return cardStoreUnreadable, err
+	}
+	c.resetCardRetry()
+	if _, open := cards[c.id]; open {
+		return cardKeepOpen, nil
+	}
+	return cardProceed, nil
+}
+
 // closeHeadlessTurnEnd stops a headless worker whose turn has closed with
 // nothing pending — the Go daemon's end of life for the headless spawn path.
 // It is the daemon-side counterpart of the node server's `endWorkerIfIdle`,
@@ -217,11 +342,21 @@ func (c *child) keepReasonLocked() (string, bool) {
 // ⚠️ EVERY keep arm is logged. A silent keep would make a stop line
 // indistinguishable from a keep.
 func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
+	// A retry timer can outlive the child by up to one delay. Acting on a dead
+	// child is not merely wasteful: the pid may already be REUSED, and this path
+	// ends in a SIGKILL. The gate is the process-gone flag rather than the state,
+	// because the flag is set by the watcher before `reap` settles the record —
+	// the window where state still reads idle on a child that has already exited.
+	if c.procGone.Load() {
+		log.Printf("agent %s: turn closed — the process is already gone", c.id)
+		return
+	}
 	// The card check runs BEFORE the decision is committed, and before the lock
 	// is taken: it is I/O, and holding c.mutex across a store round trip would
 	// stall every event on the child. An open card means the worker is waiting on
 	// the operator; stopping it would orphan exactly that card. A store that
-	// cannot be read fails closed for the same reason.
+	// cannot be read is retried on a bounded schedule and then stopped anyway —
+	// see armCardRetry, which owns both the budget and the timer.
 	//
 	// ⚠️ **Accepted TOCTOU, and it is the store's own latency wide.** A card that
 	// opens between this read and the kill is not seen. Closing it would mean
@@ -231,14 +366,33 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	// as late as it can be — after the cheap in-process checks would have kept the
 	// child anyway — so the window is only ever as long as one store call.
 	if c.openCards != nil {
-		cards, err := c.openCards.OpenSessionIDs(ctx)
-		if err != nil {
-			log.Printf("WARNING: could not read the attention store for %s; keeping the session: %v", c.id, err)
-			return
-		}
-		if _, open := cards[c.id]; open {
+		switch verdict, err := c.cardVerdict(ctx); verdict {
+		case cardKeepOpen:
 			log.Printf("agent %s: keeping worker — open-card", c.id)
 			return
+		case cardStoreUnreadable:
+			attempt, delay, outcome := c.armCardRetry(ctx)
+			switch outcome {
+			case armAlreadyPending:
+				// A re-check is already armed for this child: this turn end is a
+				// duplicate, not a new attempt. The armed timer owns the next step,
+				// and no budget slot is charged for this one.
+				return
+			case armArmed:
+				log.Printf(
+					"WARNING: could not read the attention store for %s; keeping the session and re-checking in %s (attempt %d of %d): %v",
+					c.id, delay, attempt, headlessCardRetryBudget, err,
+				)
+				return
+			case armBudgetSpent:
+				log.Printf(
+					"WARNING: attention store still unreadable for %s after %d attempts — stopping the session anyway; an open card, if any, is orphaned: %v",
+					c.id, headlessCardRetryBudget, err,
+				)
+				// Fall through to the stop: the budget is spent, and a worker that
+				// can never be stopped because a store is down is the leak this path
+				// exists to remove.
+			}
 		}
 	}
 
@@ -252,6 +406,16 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 			return
 		}
 		log.Printf("agent %s: keeping worker — %s", c.id, reason)
+		return
+	}
+	// ⚠️ The entry gate is NOT enough. A store read sits between it and this point,
+	// and the watcher sets `procGone` before `reap` settles the record — so a child
+	// that exited during that read still reads StateIdle here, while its pid may
+	// already be REUSED. This path ends in a SIGKILL, so the gate is re-read inside
+	// the critical section, immediately before the kill.
+	if c.procGone.Load() {
+		c.mutex.Unlock()
+		log.Printf("agent %s: turn closed — the process is already gone", c.id)
 		return
 	}
 	// Commit: from here `send` refuses a new turn, so the kill cannot lose one.
