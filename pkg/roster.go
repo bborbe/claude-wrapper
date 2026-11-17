@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -323,30 +324,148 @@ func (r *roster) rowForForeign(record LedgerRow) AgentRow {
 	}
 }
 
+// Enrichment bounds.
+//
+// The sweep is file I/O: one registry snapshot for the whole call, then one
+// bounded transcript read per row. Measured 2026-11-17 over 62 live sessions and
+// 126 registry files, the unbounded form took 20.0 s — past the MCP client's
+// timeout, which is how a manager lost the ability to list and message its
+// workers. These two constants are what keep it finite.
+const (
+	// rosterEnrichConcurrency bounds how many rows are read at once.
+	//
+	// Eight is enough to turn that 20.0 s sweep into well under a second on a
+	// local disk without opening a file descriptor per session: the fleet carries
+	// hundreds of sessions, and one descriptor each would exhaust the default
+	// limit on the machines that run the largest fleets.
+	rosterEnrichConcurrency = 8
+
+	// rosterEnrichRowTimeout bounds how long the sweep WAITS for one row.
+	//
+	// A transcript read is local file I/O, so a deadline cannot interrupt it
+	// mid-parse; what this bounds is the row's share of the sweep when the file is
+	// pathological — a multi-megabyte line, or a path on a stalled network mount.
+	// The row is then served with its static fields and null read-time fields,
+	// which AgentRow already documents as "not measured" rather than "nothing
+	// there". Two seconds is an order of magnitude above the measured per-row cost
+	// (~50 ms warm), so it only ever fires on a genuine outlier.
+	rosterEnrichRowTimeout = 2 * time.Second
+)
+
 // enrich fills the read-time fields every row shares.
+//
+// The registry is read ONCE for the whole sweep and the transcript once per row,
+// with bounded concurrency and a per-row deadline — see the constants above. The
+// earlier form asked the registry three times per row and parsed each transcript
+// tail twice, sequentially.
 func (r *roster) enrich(ctx context.Context, rows []AgentRow) []AgentRow {
+	entries := r.registrySnapshot(ctx)
 	for i := range rows {
-		row := &rows[i]
-		if r.registry != nil {
-			if status, err := r.registry.Status(ctx, row.SessionID); err == nil {
-				row.SessionStatus = status
-				if status != nil {
-					awaiting := *status == "waiting"
-					row.AwaitingInput = &awaiting
-				}
+		applyRegistryStatus(&rows[i], entries)
+	}
+	if r.transcripts == nil {
+		return rows
+	}
+	sem := make(chan struct{}, rosterEnrichConcurrency)
+	var wg sync.WaitGroup
+	for i := range rows {
+		wg.Add(1)
+		go func(row *AgentRow) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
 			}
-		}
-		if r.transcripts == nil {
+			enrichFromTranscript(ctx, r.transcripts, row, entries)
+		}(&rows[i])
+	}
+	wg.Wait()
+	return rows
+}
+
+// registrySnapshot reads the registry once and indexes it by session id.
+//
+// nil means the registry could not be read, or none is wired: every row then
+// carries a null status, which is the honest reading of "not measured".
+func (r *roster) registrySnapshot(ctx context.Context) map[string]RegistryEntry {
+	if r.registry == nil {
+		return nil
+	}
+	all, err := r.registry.Entries(ctx)
+	if err != nil {
+		log.Printf(
+			"WARNING: the session registry could not be read (%v) — rows carry no session status and no transcript read-time fields",
+			err,
+		)
+		return nil
+	}
+	bySession := make(map[string]RegistryEntry, len(all))
+	for _, entry := range all {
+		if _, ok := bySession[entry.SessionID]; ok {
+			// First wins, matching what Status returned when it scanned the same
+			// entries in directory order.
 			continue
 		}
-		if text, err := r.transcripts.LastAssistantText(ctx, row.SessionID); err == nil {
-			row.LastMessage = text
-		}
-		if call, err := r.transcripts.CurrentToolCall(ctx, row.SessionID); err == nil {
-			row.CurrentToolCall = call
-		}
+		bySession[entry.SessionID] = entry
 	}
-	return rows
+	return bySession
+}
+
+// applyRegistryStatus fills a row's status half from the snapshot.
+func applyRegistryStatus(row *AgentRow, entries map[string]RegistryEntry) {
+	entry, ok := entries[row.SessionID]
+	if !ok {
+		// Unlisted is a different fact from not-waiting, so both fields stay null.
+		return
+	}
+	status := entry.Status
+	row.SessionStatus = &status
+	awaiting := status == "waiting"
+	row.AwaitingInput = &awaiting
+}
+
+// enrichFromTranscript fills a row's read-time half, bounded by the row deadline.
+func enrichFromTranscript(
+	ctx context.Context,
+	reader TranscriptReader,
+	row *AgentRow,
+	entries map[string]RegistryEntry,
+) {
+	entry, listed := entries[row.SessionID]
+	if !listed || entry.Cwd == "" {
+		// No registry entry means no cwd, hence no transcript path to derive.
+		return
+	}
+	cwd := entry.Cwd
+
+	rowCtx, cancel := context.WithTimeout(ctx, rosterEnrichRowTimeout)
+	defer cancel()
+
+	// The read runs in its own goroutine so the deadline can abandon it: a
+	// blocking file read does not observe a context, and the sweep must not wait
+	// on one row longer than the bound above.
+	state := make(chan *TranscriptState, 1)
+	go func() {
+		result, err := reader.State(rowCtx, row.SessionID, &cwd)
+		if err != nil {
+			state <- nil
+			return
+		}
+		state <- result
+	}()
+
+	select {
+	case result := <-state:
+		if result == nil {
+			return
+		}
+		row.LastMessage = result.LastMessage
+		row.CurrentToolCall = result.CurrentToolCall
+	case <-rowCtx.Done():
+		// The row keeps its static fields; the read-time ones stay null.
+	}
 }
 
 // shortSessionID is the addressing suffix of a foreign row's agent id.

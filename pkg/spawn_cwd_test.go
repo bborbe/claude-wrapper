@@ -38,6 +38,9 @@ func (f *fakeRegistry) Cwd(context.Context, string) (*string, error) { return ni
 
 func (f *fakeRegistry) Live(context.Context) ([]RegistryEntry, error) { return f.live, nil }
 
+// Entries answers the bulk read with the same fixed set Live does.
+func (f *fakeRegistry) Entries(context.Context) ([]RegistryEntry, error) { return f.live, nil }
+
 func (f *fakeRegistry) Named(_ context.Context, name string) ([]string, error) {
 	if f.err != nil {
 		return nil, f.err
