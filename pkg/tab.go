@@ -113,15 +113,13 @@ func (t *tabClient) Activate(ctx context.Context, paneID string) error {
 // a terminal's Enter is a carriage return, and a bare `\n` types a line break
 // without submitting.
 //
-// The pane is ACTIVATED first, always. Measured 2026-09-14: two `send-text`
-// calls against a running worker did nothing and left its transcript unchanged
-// for three minutes; `activate-pane` first made the identical call land
-// immediately. A send that reports success without activating is a message that
-// may never have arrived.
+// The pane is NOT activated. Measured 2026-11-09: `send-text` reaches a pane in
+// a background tab — 6/6 bytes arrived, and `focused_pane_id` was unchanged
+// before and after the send. Activating pulled the operator's WezTerm tab away
+// on every fleet wake, so it is not done here. Callers confirm delivery from the
+// pane's output (see SendWhenReady), not from focus; the send's exit code only
+// says the keystrokes reached the pty.
 func (t *tabClient) SendText(ctx context.Context, paneID string, text string) error {
-	if err := t.Activate(ctx, paneID); err != nil {
-		return err
-	}
 	framed := text
 	if !strings.HasSuffix(framed, "\r") {
 		framed += "\r"
@@ -349,12 +347,11 @@ const (
 	panePollInterval = 100 * time.Millisecond
 )
 
-// SendWhenReady activates a pane, waits for an empty composer, types text and
-// confirms the submit landed.
+// SendWhenReady waits for an empty composer, types text and confirms the submit
+// landed.
 //
-// Every stage is a measured requirement, not caution: a send without
-// `activate-pane` reaches nothing (2026-09-14), a submit into a drawn-but-
-// occupied composer is swallowed (2026-09-20, 81 ms and 137 ms after a
+// Every stage is a measured requirement, not caution: a submit into a
+// drawn-but-occupied composer is swallowed (2026-09-20, 81 ms and 137 ms after a
 // placeholder sample), and the send's exit code reports only that keystrokes
 // reached the pty — true whether or not anything submitted. So the verdict is
 // the pane's own output, and an unconfirmed submit is retried once with a bare
