@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the live-worker count no longer depends on the attention-controller, so a controller outage stops silencing the flagged tick.** Measured 2026-11-17 from `~/Library/Logs/claude-wrapper/stderr.log`: the controller was unreachable 12 times in one day and every tick in those windows logged `opened=0 refused=46`, each refusal reading "the live-worker count could not be taken". `ledgerAndLive` treated an unreadable ledger or heartbeat store as fatal, so one degraded channel refused every spawn even though the pid-checked session registry — read from disk, controller-independent — was answering the whole time. `census` now reads all three channels plus the wrapper's own durable child table and reports which of them answered; the ledger still leads when it is readable, so the healthy path is byte-for-byte unchanged, and the degraded path counts live sessions from the registry with mode and role taken from the child table. A failed ledger is logged as a degraded input rather than refused, and the flagged tick prints `live_count_source=` on its line. The fail-closed guarantee survives where it belongs: when **no** liveness channel answers, the count is still unknown and the cap still refuses. The manager axes stay fail-closed on an unreadable ledger, because a manager's identity and kind come from the ledger row itself.
+
 ## v0.30.1
 
 - fix: tabClient.SendText no longer runs wezterm activate-pane, so fleet wakes and roster sends stop switching the operator's tab

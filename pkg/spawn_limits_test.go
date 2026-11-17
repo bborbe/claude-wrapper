@@ -597,24 +597,23 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`axis "session"`))
 	})
 
-	ginkgo.It("refuses when the ledger cannot be read, rather than reading zero", func() {
+	ginkgo.It("counts from the heartbeat store when the ledger cannot be read", func() {
 		caps := testCaps(
 			&rosterLedger{err: errors.New("boom")},
-			&stubHeartbeats{},
+			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("w1")}},
 			writeSpawnConfig(workerAxisConfig(2, 50)),
 			ginkgo.GinkgoT().TempDir(),
 		)
 
 		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
 
-		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the session-ledger endpoint could not be read: boom"))
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("The limit is not the failure — the count is."))
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(caps.LiveCountSource(ctx)).To(gomega.Equal("heartbeat"))
 	})
 
-	ginkgo.It("refuses when the heartbeat store cannot be read, rather than reading zero", func() {
+	ginkgo.It("counts from the ledger alone when the heartbeat store cannot be read", func() {
 		caps := testCaps(
-			&rosterLedger{rows: []LedgerRow{{SessionID: "a"}}},
+			&rosterLedger{rows: []LedgerRow{{SessionID: "a", Mode: SpawnModeHeadless}}},
 			&stubHeartbeats{err: errors.New("boom")},
 			writeSpawnConfig(workerAxisConfig(2, 50)),
 			ginkgo.GinkgoT().TempDir(),
@@ -622,8 +621,8 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 
 		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
 
-		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("the session-heartbeat endpoint could not be read"))
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(caps.LiveCountSource(ctx)).To(gomega.Equal("ledger"))
 	})
 
 	ginkgo.It("refuses a manager past spawn.maxManagers, quoting the count and the limit", func() {
@@ -724,6 +723,87 @@ var _ = ginkgo.Describe("spawn start rate", func() {
 })
 
 // fakeSpawnCaps records which caps were consulted and returns a fixed error.
+// The degraded count: the attention-controller is down, so the ledger refuses.
+//
+// Measured 2026-11-17 — 12 controller outages in one day, every flagged tick
+// opening nothing because the cap could not take a count it did not need the
+// controller for. The registry answers from disk, so the cap must count from it.
+var _ = ginkgo.Describe("spawn caps: degraded count sources", func() {
+	var ctx context.Context
+
+	ginkgo.BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	ginkgo.It("counts from the registry when the ledger is refused", func() {
+		caps := testCaps(
+			ledgerWith{err: errors.New("connection refused")},
+			&stubHeartbeats{err: errors.New("connection refused")},
+			"",
+			ginkgo.GinkgoT().TempDir(),
+		)
+		caps.registry = &capsRegistry{live: []RegistryEntry{
+			{SessionID: "s1"}, {SessionID: "s2"}, {SessionID: "s3"},
+		}}
+
+		counts, err := caps.countWorkersByMode(ctx)
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(counts.total()).To(gomega.Equal(3))
+		gomega.Expect(caps.LiveCountSource(ctx)).To(gomega.Equal("registry"))
+	})
+
+	ginkgo.It("takes mode and role from the wrapper's own child table", func() {
+		caps := testCaps(
+			ledgerWith{err: errors.New("connection refused")},
+			&stubHeartbeats{err: errors.New("connection refused")},
+			"",
+			ginkgo.GinkgoT().TempDir(),
+		)
+		stateDir, dirErr := SupervisorStateDir(ctx, caps.home, caps.getenv)
+		gomega.Expect(dirErr).To(gomega.BeNil())
+		store := NewSessionStore(stateDir)
+		gomega.Expect(store.Create(ctx, SessionRecord{
+			ID:       "s1",
+			ChildPID: os.Getpid(),
+			Options:  SpawnOptions{Mode: SpawnModeHeadless},
+		})).Error().NotTo(gomega.HaveOccurred())
+		gomega.Expect(store.Create(ctx, SessionRecord{
+			ID:       "s2",
+			ChildPID: os.Getpid(),
+			Options:  SpawnOptions{Role: RoleManager},
+		})).Error().NotTo(gomega.HaveOccurred())
+		caps.registry = &capsRegistry{live: []RegistryEntry{
+			{SessionID: "s1"}, {SessionID: "s2"},
+		}}
+
+		counts, err := caps.countWorkersByMode(ctx)
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(counts.Headless).To(gomega.Equal(1))
+		gomega.Expect(counts.Managers).To(gomega.Equal(1))
+		gomega.Expect(counts.total()).To(gomega.Equal(1))
+	})
+
+	ginkgo.It("refuses when no liveness source can be read", func() {
+		caps := testCaps(
+			ledgerWith{err: errors.New("down")},
+			&stubHeartbeats{err: errors.New("down")},
+			"",
+			ginkgo.GinkgoT().TempDir(),
+		)
+		caps.registry = &capsRegistry{err: errors.New("down")}
+
+		_, err := caps.countWorkersByMode(ctx)
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(
+			gomega.ContainSubstring("no liveness source could be read"),
+		)
+		gomega.Expect(caps.LiveCountSource(ctx)).To(gomega.Equal("none"))
+	})
+})
+
 type fakeSpawnCaps struct {
 	workerErr    error
 	managerErr   error

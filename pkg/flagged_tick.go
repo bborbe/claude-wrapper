@@ -109,6 +109,24 @@ type FlaggedTickResult struct {
 	// Considered is how many rows the tick was handed. It is the number the
 	// three buckets must add up to; without it a dropped row is invisible.
 	Considered int
+	// LiveCountSource names the channel the spawn caps counted from this tick
+	// (`ledger`, `registry`, `heartbeat` or `none`). Empty when the caps cannot
+	// report one.
+	//
+	// It exists because a `caps refused` row is only diagnosable if the line says
+	// WHICH channel was asked: measured 2026-11-17, 46 rows refused across 12
+	// controller outages, every one reading "the live-worker count could not be
+	// taken" with no way to tell whether a fallback was even attempted.
+	LiveCountSource string
+}
+
+// liveCountSourceReporter is the narrow half of SpawnCaps the tick logs.
+//
+// Optional on purpose: a test fake that only enforces caps must not have to
+// implement a reporting method it does not care about, and a caps value that does
+// not report one simply leaves the field off the line.
+type liveCountSourceReporter interface {
+	LiveCountSource(ctx context.Context) string
 }
 
 // Line renders the summary line a tick writes.
@@ -140,6 +158,9 @@ func (r FlaggedTickResult) Line() string {
 	}
 	if counts := formatCounts(r.Skipped); counts != "" {
 		line += " skipped_by_reason=" + counts
+	}
+	if r.LiveCountSource != "" {
+		line += " live_count_source=" + r.LiveCountSource
 	}
 	return line
 }
@@ -425,6 +446,11 @@ func (t *FlaggedTick) tickFromRows(
 	var result FlaggedTickResult
 	ordered := orderFlaggedRows(rows)
 	result.Considered = len(ordered)
+	// Named once per tick, before any refusal: a `caps refused` row is
+	// undiagnosable without it.
+	if reporter, ok := t.Caps.(liveCountSourceReporter); ok {
+		result.LiveCountSource = reporter.LiveCountSource(ctx)
+	}
 	recent := t.recentlySpawned(ctx)
 	t.mergeOpened(recent)
 	now := t.now()
