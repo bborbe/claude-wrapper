@@ -12,10 +12,9 @@ import (
 	"sync"
 	"syscall"
 
+	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-
-	libtime "github.com/bborbe/time"
 )
 
 // capturingRecorder keeps every ExitStatus the supervisor hands it, so a spec
