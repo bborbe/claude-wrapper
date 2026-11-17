@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.29.7
 
 - fix: **a transient attention-store outage no longer turns a finished headless worker into a permanent leak.** The open-card keep (shipped in `v0.27.0`) failed closed on a store read error and then returned with **no re-check**, so the worker was kept forever. Measured 2026-11-16 on a ten-worker batch: at 20:48:57 the store refused the connection (`dial tcp [::1]:18080: connect: connection refused`), the finished worker was kept, and it heartbeated for nine minutes until an external signal killed it — nine of ten workers stopped, the tenth did not. The store flaps: the same warning appears five times between 16:09 and 16:14. The keep now schedules a bounded re-check (`60s × 5`); when the budget is spent the worker is stopped anyway with a `WARNING` naming the orphan risk, because a worker that can never be stopped while a store is down is the leak this path exists to remove, while an orphaned card still reads. A successful read resets the budget. A budget slot is charged only when a re-check actually arms, so a duplicate turn end inside the retry window cannot spend the budget without one firing. The armed re-check is cancelled when the child is reaped, and the process-gone gate is re-read immediately before the kill, so a stray timer cannot send a `SIGKILL` to a pid the OS has already reused.
 
