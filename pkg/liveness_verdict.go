@@ -1,0 +1,183 @@
+// Copyright (c) 2026 Benjamin Borbe All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package pkg
+
+import (
+	"context"
+	"sort"
+
+	"github.com/bborbe/errors"
+)
+
+// LivenessState is a session's binary liveness verdict.
+//
+// It is deliberately BINARY: `live` or `not-live`. There is no `unknown` value,
+// because an unknown is the defect this type exists to remove — every caller
+// that had to interpret one derived its own answer, and the answers disagreed. A
+// probe that cannot run is an error (HTTP 500), never a third verdict.
+type LivenessState string
+
+const (
+	// LivenessLive means a primary source proves the session is running.
+	LivenessLive LivenessState = "live"
+	// LivenessNotLive means no primary source proves the session is running.
+	LivenessNotLive LivenessState = "not-live"
+)
+
+// LivenessVerdict is one session's authoritative liveness answer.
+//
+// Source names WHICH primary source produced the verdict — `registry`,
+// `child-table`, or `none` when only a heartbeat row named the session. The
+// heartbeat is CORROBORATION only: it is reported alongside a verdict and never
+// creates one, so a session present only in the heartbeat store reads not-live.
+type LivenessVerdict struct {
+	SessionID string        `json:"session_id"`
+	Liveness  LivenessState `json:"liveness"`
+	Source    string        `json:"source"`
+	PID       int           `json:"pid,omitempty"`
+	Heartbeat *bool         `json:"heartbeat_live,omitempty"`
+}
+
+// LivenessVerdicts derives one verdict per session from the two primary sources,
+// with the heartbeat store as corroboration only.
+//
+// A session is live when the registry lists it with a live pid (source
+// `registry`) or its child row has no exit code (source `child-table`). Every
+// other session — a child that exited, or one named only by a heartbeat row —
+// reads not-live. The heartbeat's own Live flag is copied onto the verdict when
+// a row exists and never consulted to decide liveness: a store outage must not
+// hide a live worker, and a store that is behind must not resurrect a dead one.
+//
+// A registry read failure returns the error with no verdicts: an empty or
+// partial set would read as "nothing is live", which is the direction that
+// silently hides running sessions.
+func LivenessVerdicts(
+	ctx context.Context,
+	registry SessionRegistry,
+	children []Session,
+	heartbeats []HeartbeatRow,
+) ([]LivenessVerdict, error) {
+	if registry == nil {
+		return nil, errors.Errorf(ctx, "session registry is required")
+	}
+	live, err := registry.Live(ctx)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "read live registry entries failed")
+	}
+
+	registryByID := registryEntriesByID(live)
+	childrenByID := sessionsByID(children)
+	heartbeatByID := heartbeatsByID(heartbeats)
+
+	ids := unionIDs(registryByID, childrenByID, heartbeatByID)
+	verdicts := make([]LivenessVerdict, 0, len(ids))
+	for id := range ids {
+		verdicts = append(verdicts, verdictFor(id, registryByID, childrenByID, heartbeatByID))
+	}
+
+	sort.Slice(verdicts, func(i, j int) bool {
+		return verdicts[i].SessionID < verdicts[j].SessionID
+	})
+	return verdicts, nil
+}
+
+// verdictFor derives one session's verdict from the three source maps.
+//
+// The registry is the only source that supplies a pid, and it wins when it lists
+// the session. Otherwise a child with no exit code is live; a child that exited
+// is not-live; and an id named only by a heartbeat row is not-live with source
+// `none` — corroboration never creates a live verdict.
+func verdictFor(
+	id string,
+	registryByID map[string]RegistryEntry,
+	childrenByID map[string]Session,
+	heartbeatByID map[string]HeartbeatRow,
+) LivenessVerdict {
+	verdict := LivenessVerdict{SessionID: id}
+	if entry, ok := registryByID[id]; ok {
+		verdict.Liveness = LivenessLive
+		verdict.Source = "registry"
+		verdict.PID = entry.PID
+	} else {
+		child, ok := childrenByID[id]
+		verdict.Liveness, verdict.Source = childVerdict(child, ok)
+	}
+	if row, ok := heartbeatByID[id]; ok {
+		live := row.Live
+		verdict.Heartbeat = &live
+	}
+	return verdict
+}
+
+// childVerdict answers a session the registry did not list from its child row.
+//
+// The child's ExitCode is the whole question: nil means still running, non-nil
+// means it exited. A missing child row means nothing primary proves the session
+// is running, so it reads not-live with source `none`.
+func childVerdict(child Session, ok bool) (LivenessState, string) {
+	if !ok {
+		return LivenessNotLive, "none"
+	}
+	if child.ExitCode == nil {
+		return LivenessLive, "child-table"
+	}
+	return LivenessNotLive, "child-table"
+}
+
+// registryEntriesByID indexes live registry entries by session id, dropping
+// empty ids.
+func registryEntriesByID(entries []RegistryEntry) map[string]RegistryEntry {
+	byID := make(map[string]RegistryEntry, len(entries))
+	for _, entry := range entries {
+		if entry.SessionID == "" {
+			continue
+		}
+		byID[entry.SessionID] = entry
+	}
+	return byID
+}
+
+// sessionsByID indexes child rows by session id, dropping empty ids.
+func sessionsByID(children []Session) map[string]Session {
+	byID := make(map[string]Session, len(children))
+	for _, child := range children {
+		if child.ID == "" {
+			continue
+		}
+		byID[child.ID] = child
+	}
+	return byID
+}
+
+// heartbeatsByID indexes heartbeat rows by session id, dropping empty ids.
+func heartbeatsByID(rows []HeartbeatRow) map[string]HeartbeatRow {
+	byID := make(map[string]HeartbeatRow, len(rows))
+	for _, row := range rows {
+		if row.SessionID == "" {
+			continue
+		}
+		byID[row.SessionID] = row
+	}
+	return byID
+}
+
+// unionIDs returns every session id any source names.
+func unionIDs(
+	registryByID map[string]RegistryEntry,
+	childrenByID map[string]Session,
+	heartbeatByID map[string]HeartbeatRow,
+) map[string]struct{} {
+	ids := make(map[string]struct{}, len(registryByID)+len(childrenByID))
+	for id := range registryByID {
+		ids[id] = struct{}{}
+	}
+	for id := range childrenByID {
+		ids[id] = struct{}{}
+	}
+	for id := range heartbeatByID {
+		ids[id] = struct{}{}
+	}
+	return ids
+}
