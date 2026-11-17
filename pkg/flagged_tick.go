@@ -554,7 +554,12 @@ func (t *FlaggedTick) ledgerRows(ctx context.Context) []LedgerRow {
 	}
 	rows, err := t.Ledger.Rows(ctx)
 	if err != nil {
-		t.logf("flagged-tick: ledger read failed, recently-spawned guard inactive: %v", err)
+		// ⚠️ Both consumers go dark on this failure, not just the guard: a tick
+		// that opened rows while the store was down logs no `resume_delay=` at
+		// all. Naming only the guard would leave an operator reading this line
+		// during an outage with no idea the metric is dark too.
+		t.logf("flagged-tick: ledger read failed, recently-spawned guard and "+
+			"resume_delay measurement inactive: %v", err)
 		return nil
 	}
 	return rows
@@ -562,6 +567,14 @@ func (t *FlaggedTick) ledgerRows(ctx context.Context) []LedgerRow {
 
 // endedAtBySession maps a session id to the instant its last turn ended, which
 // is the start of clock for the resume-delay measurement.
+//
+// It is a package function rather than a method, and `recentlySpawned` lost its
+// receiver in the same change, so that ONE ledger read can feed both. That shape
+// matches the rest of this file (`formatCounts`, `reasonClass`, `orderFlaggedRows`,
+// `labelKey`, `neverOpened` are all package-level), and neither function holds
+// state: the alternative is two reads of the same store in one tick, which could
+// disagree and leave the measurement describing a fleet state the decision never
+// saw.
 //
 // ⚠️ It must NOT skip terminal ledger rows, unlike recentlySpawned below. A
 // closed row is precisely the one being resumed: `ended_at` is written by the
