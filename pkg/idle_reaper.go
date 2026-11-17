@@ -41,6 +41,13 @@ const (
 	IdleReaperJobName = "idle-reaper"
 )
 
+// SenderNamer is implemented by a supervisor that can name the job closing a
+// session, so the exit record attributes the kill instead of reporting an
+// anonymous one.
+type SenderNamer interface {
+	StopAs(ctx context.Context, id string, sender string) error
+}
+
 // IdleReaperResult is what one tick did, so the caller can log and a test can
 // assert without reading the log.
 type IdleReaperResult struct {
@@ -132,7 +139,7 @@ func (j *IdleReaperJob) Tick(ctx context.Context) (IdleReaperResult, error) {
 			result.Skipped["changed-since-list"]++
 			continue
 		}
-		if stopErr := j.Supervisor.Stop(ctx, session.ID); stopErr != nil {
+		if stopErr := j.stop(ctx, session.ID); stopErr != nil {
 			j.logf(JobLine(IdleReaperJobName, "stop-failed",
 				"sid", session.ID, "error", stopErr.Error()))
 			result.Skipped["stop-failed"]++
@@ -146,6 +153,16 @@ func (j *IdleReaperJob) Tick(ctx context.Context) (IdleReaperResult, error) {
 		result.Closed = append(result.Closed, session.ID)
 	}
 	return result, nil
+}
+
+// stop closes one session, naming this job when the supervisor supports it, so
+// the exit record says which job ended the session rather than reporting an
+// anonymous kill.
+func (j *IdleReaperJob) stop(ctx context.Context, id string) error {
+	if namer, ok := j.Supervisor.(SenderNamer); ok {
+		return namer.StopAs(ctx, id, IdleReaperJobName)
+	}
+	return j.Supervisor.Stop(ctx, id)
 }
 
 // stillReapable re-reads one session and re-applies the floor.
