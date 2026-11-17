@@ -1360,20 +1360,35 @@ func (c *child) stopWithSender(ctx context.Context, sender string) error {
 	// Signalled by pid rather than through *exec.Cmd: an adopted child was started
 	// by a daemon that no longer exists, so this process holds no Cmd for it and
 	// Process would be nil.
-	if err := c.killLocked(sender, syscall.SIGKILL); err != nil {
+	if err := c.killLocked(sender); err != nil {
 		return errors.Wrapf(ctx, err, "kill session %q failed", c.id)
 	}
 	return nil
 }
 
-// killLocked delivers sig to the child and records who sent it, so reap can
-// attribute the exit. The caller must hold c.mutex: the sender and the signal
-// must be set in the same critical section that delivers the signal, or a
-// concurrent reap reads a stale name.
-func (c *child) killLocked(sender string, sig syscall.Signal) error {
+// killLocked signals the child with SIGKILL and records who sent it, so reap
+// can attribute the exit. The caller must hold c.mutex: the sender and the
+// signal must be set in the same critical section that delivers the signal, or
+// a concurrent reap reads a stale name.
+func (c *child) killLocked(sender string) error {
 	c.lastKillSender = sender
-	c.lastKillSignal = sig
-	return syscall.Kill(c.pid, sig)
+	c.lastKillSignal = syscall.SIGKILL
+	return syscall.Kill(c.pid, syscall.SIGKILL)
+}
+
+// signalFromExitErr recovers the signal that killed a child from the reaped
+// process state. It returns 0 when the child exited on its own, and for an
+// error that is not an *exec.ExitError.
+func signalFromExitErr(err error) syscall.Signal {
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		return 0
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() {
+		return 0
+	}
+	return ws.Signal()
 }
 
 // stopIfStillStarting kills the child only if, at the instant the signal is
@@ -1398,7 +1413,7 @@ func (c *child) stopIfStillStarting(
 	// Signalled by pid rather than through *exec.Cmd: an adopted child was started
 	// by a daemon that no longer exists, so this process holds no Cmd for it and
 	// Process would be nil.
-	if err := c.killLocked("startup-deadline", syscall.SIGKILL); err != nil {
+	if err := c.killLocked("startup-deadline"); err != nil {
 		return false, errors.Wrapf(ctx, err, "kill session %q failed", c.id)
 	}
 	return true, nil
@@ -1638,15 +1653,15 @@ func (c *child) watch() {
 		code := 0
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
-			// ⚠️ ExitCode() collapses a signal kill to -1. The signal itself lives
-			// only in the WaitStatus, and this is the only place that holds it.
-			if ws, ok := exitErr.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-				c.mutex.Lock()
-				c.exitSignal = ws.Signal()
-				c.mutex.Unlock()
-			}
 		}
 		exitCode = &code
+		// ⚠️ ExitCode() collapses a signal kill to -1. The signal itself lives only
+		// in the WaitStatus, and this is the only place that holds it.
+		if sig := signalFromExitErr(err); sig != 0 {
+			c.mutex.Lock()
+			c.exitSignal = sig
+			c.mutex.Unlock()
+		}
 	} else {
 		// An adopted child is not this process's child, so there is no exit status
 		// to collect — only a pid that stops existing. Reporting a code here would
