@@ -436,3 +436,73 @@ var _ = Describe("CredentialTraceGuard", func() {
 		Expect(guard.Name()).To(Equal("deny-credential-trace.sh"))
 	})
 })
+
+// tempGitRepo writes a minimal git repository with HEAD on branch and returns it.
+func tempGitRepo(files map[string]string, branch string) string {
+	dir := tempRepo(files)
+	Expect(os.MkdirAll(dir+"/.git", 0o700)).To(Succeed())
+	Expect(os.WriteFile(
+		dir+"/.git/HEAD", []byte("ref: refs/heads/"+branch+"\n"), 0o600,
+	)).To(Succeed())
+	return dir
+}
+
+var _ = Describe("PushGateGuard", func() {
+	guard := hook.NewPushGateGuard()
+
+	withMaintainer := tempGitRepo(map[string]string{".maintainer.yaml": "release:\n"}, "master")
+	withoutMaintainer := tempGitRepo(map[string]string{}, "master")
+
+	DescribeTable("gates a push on what it does",
+		func(command string, cwd string, denied bool, allow bool) {
+			input := bashInput(command)
+			input.Cwd = cwd
+			decision := guard.Evaluate(input)
+			Expect(decision.Deny).To(Equal(denied))
+			Expect(decision.Allow).To(Equal(allow))
+		},
+		Entry("master in a maintainer repo", "git push origin master", withMaintainer, true, false),
+		Entry("master in a repo with no maintainer file",
+			"git push origin master", withoutMaintainer, false, false),
+		Entry("a feature branch", "git push -u origin feat/x", withMaintainer, false, true),
+		Entry("a fix branch", "git push origin fix/x", withMaintainer, false, true),
+		Entry("a Seibert ticket branch", "git push origin BRO-21462-fix", withMaintainer, false, true),
+		Entry("an environment branch", "git push origin dev", withMaintainer, false, true),
+		Entry("a force push", "git push --force origin feat/x", withMaintainer, true, false),
+		Entry("a ref deletion", "git push origin :feat/x", withMaintainer, true, false),
+		Entry("a tag", "git push origin v1.2.3", withMaintainer, true, false),
+		Entry("no arguments", "git push", withMaintainer, true, false),
+		Entry("no refspec", "git push origin", withMaintainer, true, false),
+		Entry("an unknown branch shape",
+			"git push origin scratch/verify", withMaintainer, true, false),
+		Entry("HEAD", "git push origin HEAD", withMaintainer, true, false),
+		Entry("a task title that merely names git push",
+			`vault-cli task get "The git push Ask-Rule Fires on Feature Branches"`,
+			withMaintainer, false, false),
+	)
+
+	It("substitutes the current-branch idiom before gating", func() {
+		repo := tempGitRepo(map[string]string{}, "feat/live")
+		input := bashInput(`git push origin "$(git branch --show-current)"`)
+		input.Cwd = repo
+		Expect(guard.Evaluate(input).Allow).To(BeTrue())
+	})
+
+	It("keeps the default suffix byte-identical", func() {
+		input := bashInput("git push --force origin feat/x")
+		input.Cwd = withMaintainer
+		Expect(guard.Evaluate(input).Reason).To(Equal(
+			"Refused: force-push (--force/-f/--force-with-lease/--mirror) is gated. " +
+				"The operator must approve this push explicitly. Hand it over as " +
+				"`python3 ~/.claude/scripts/approve-run.py --cmd '<the same git push>' --cwd <repo>` " +
+				"— that posts an approval card and runs the push once they answer `run it`. " +
+				"Retrying cannot clear this: the gate evaluates the command, not the conversation."))
+	})
+
+	It("gives an under-specified push an agent-clearable remedy, not the operator suffix", func() {
+		input := bashInput("git push origin")
+		input.Cwd = withMaintainer
+		Expect(guard.Evaluate(input).Reason).To(ContainSubstring(
+			"No operator approval is needed for this."))
+	})
+})
