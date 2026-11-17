@@ -1,5 +1,5 @@
 ---
-status: committing
+status: completed
 spec: [003-parked-observable-reopen-gate]
 summary: Added LastCloser (bounded 256 KB tail reader) and ClassifyParked (card/pr/host/until classifier with security rejections) plus five focused ginkgo specs and a changelog entry; make precommit exited 0.
 execution_id: claude-wrapper-parked-observable-exec-001-spec-003-closer-reader
@@ -7,7 +7,7 @@ dark-factory-version: v0.199.1
 created: "2026-11-17T12:00:00Z"
 queued: "2026-11-17T20:40:50Z"
 started: "2026-11-17T21:23:27Z"
-completed: "2026-11-17T21:30:12Z"
+completed: "2026-11-17T23:21:45Z"
 ---
 
 # Read the last closer and classify what it waits on
