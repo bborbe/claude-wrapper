@@ -859,8 +859,11 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 			tick.tickAndLog(context.Background(), cache)
 
 			// No good row set yet, so there is nothing to serve: `skipped` stays
-			// honest rather than fabricating an empty set.
+			// honest rather than fabricating an empty set — but the read's own
+			// error is still named, or a first read that always fails would hide
+			// behind `skipped` forever.
 			gomega.Expect(strings.Join(lines, "\n")).To(gomega.ContainSubstring("skipped"))
+			gomega.Expect(strings.Join(lines, "\n")).To(gomega.ContainSubstring("read failed"))
 			gomega.Expect(strings.Join(lines, "\n")).NotTo(gomega.ContainSubstring("opened="))
 		})
 	})

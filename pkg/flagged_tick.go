@@ -349,6 +349,12 @@ func (t *FlaggedTick) refreshLoop(
 func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
 	rows, stale, ok := cache.snapshot()
 	if !ok {
+		// No good row set yet. Name the failure when there was one — a first read
+		// that always fails would otherwise log `skipped: predicate has not
+		// returned yet` forever and hide its own error.
+		if stale != nil {
+			t.logf("flagged-tick read failed: %v (no good row set yet — skipping)", stale)
+		}
 		t.logf("flagged-tick skipped: predicate has not returned yet")
 		return
 	}
