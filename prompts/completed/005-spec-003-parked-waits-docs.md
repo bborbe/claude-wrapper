@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-parked-observable-reopen-gate]
+summary: Added docs/parked-waits.md documenting the four park classes, the Ends-only rule, the Next exclusion, MAX_AGE_S and the shared vocabulary, and linked it from docs/eligibility-predicate.md; CHANGELOG left untouched because the unreleased entry is already present.
+execution_id: claude-wrapper-parked-observable-exec-005-spec-003-parked-waits-docs
+dark-factory-version: v0.198.17
 created: "2026-11-17T12:00:00Z"
 queued: "2026-11-17T20:40:53Z"
+started: "2026-11-17T23:46:37Z"
+completed: "2026-11-17T23:50:00Z"
 ---
 
 # Document the four park classes
