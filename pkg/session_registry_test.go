@@ -88,7 +88,6 @@ var _ = ginkgo.Describe("SessionRegistry", func() {
 var _ = ginkgo.Describe("TranscriptReader", func() {
 	var (
 		projectsDir string
-		registryDir string
 		reader      TranscriptReader
 		ctx         context.Context
 	)
@@ -96,12 +95,7 @@ var _ = ginkgo.Describe("TranscriptReader", func() {
 	ginkgo.BeforeEach(func() {
 		ctx = context.Background()
 		projectsDir = ginkgo.GinkgoT().TempDir()
-		registryDir = ginkgo.GinkgoT().TempDir()
-		writeRegistryEntry(registryDir, registryFile{
-			PID: os.Getpid(), SessionID: "sess-1", Status: "busy", Cwd: "/work/dir",
-		})
 		reader = NewTranscriptReaderInDir(
-			NewSessionRegistry(registryDir),
 			libtime.NewCurrentDateTime(),
 			projectsDir,
 		)
@@ -117,11 +111,11 @@ var _ = ginkgo.Describe("TranscriptReader", func() {
 			`{"type":"assistant","timestamp":"2026-11-07T10:06:00Z","message":{"content":[{"type":"tool_use","id":"newest-call","name":"Grep","input":{"pattern":"x"}}]}}`,
 		})
 
-		call, err := reader.CurrentToolCall(ctx, "sess-1")
+		state, err := reader.State(ctx, "sess-1", ptrTo("/work/dir"))
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(call).NotTo(gomega.BeNil())
-		gomega.Expect(call.Name).To(gomega.Equal("Grep"))
-		gomega.Expect(call.InputSummary).To(gomega.ContainSubstring("pattern"))
+		gomega.Expect(state.CurrentToolCall).NotTo(gomega.BeNil())
+		gomega.Expect(state.CurrentToolCall.Name).To(gomega.Equal("Grep"))
+		gomega.Expect(state.CurrentToolCall.InputSummary).To(gomega.ContainSubstring("pattern"))
 	})
 
 	ginkgo.It("reports null when the last tool_use is already answered", func() {
@@ -130,9 +124,9 @@ var _ = ginkgo.Describe("TranscriptReader", func() {
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"done"}]}}`,
 		})
 
-		call, err := reader.CurrentToolCall(ctx, "sess-1")
+		state, err := reader.State(ctx, "sess-1", ptrTo("/work/dir"))
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(call).To(gomega.BeNil())
+		gomega.Expect(state.CurrentToolCall).To(gomega.BeNil())
 	})
 
 	ginkgo.It("returns the last assistant text and skips tool-only records", func() {
@@ -143,15 +137,43 @@ var _ = ginkgo.Describe("TranscriptReader", func() {
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t"}]}}`,
 		})
 
-		text, err := reader.LastAssistantText(ctx, "sess-1")
+		state, err := reader.State(ctx, "sess-1", ptrTo("/work/dir"))
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(text).NotTo(gomega.BeNil())
-		gomega.Expect(*text).To(gomega.Equal("second"))
+		gomega.Expect(state.LastMessage).NotTo(gomega.BeNil())
+		gomega.Expect(*state.LastMessage).To(gomega.Equal("second"))
+	})
+
+	ginkgo.It("answers both fields from one read of the same window", func() {
+		// The pair is one pass over one file read. Two methods read the same tail
+		// twice, which measured 6.5 s of a 20 s roster sweep over 62 sessions.
+		writeTranscript(projectsDir, "/work/dir", "sess-1", []string{
+			`{"type":"assistant","timestamp":"2026-11-07T10:00:00Z","message":{"content":[{"type":"text","text":"working"},{"type":"tool_use","id":"live","name":"Read","input":{}}]}}`,
+		})
+
+		state, err := reader.State(ctx, "sess-1", ptrTo("/work/dir"))
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(state.LastMessage).NotTo(gomega.BeNil())
+		gomega.Expect(*state.LastMessage).To(gomega.Equal("working"))
+		gomega.Expect(state.CurrentToolCall).NotTo(gomega.BeNil())
+		gomega.Expect(state.CurrentToolCall.Name).To(gomega.Equal("Read"))
 	})
 
 	ginkgo.It("returns null rather than an error when the session has no transcript", func() {
-		text, err := reader.LastAssistantText(ctx, "no-transcript")
+		state, err := reader.State(ctx, "no-transcript", ptrTo("/work/dir"))
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(text).To(gomega.BeNil())
+		gomega.Expect(state.LastMessage).To(gomega.BeNil())
+		gomega.Expect(state.CurrentToolCall).To(gomega.BeNil())
+	})
+
+	ginkgo.It("reads nothing when the registry listed no cwd for the session", func() {
+		// No cwd means no path to derive. The empty path must come back as an
+		// unread row, never as a read of some guessed file.
+		state, err := reader.State(ctx, "sess-1", nil)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(state.LastMessage).To(gomega.BeNil())
+		gomega.Expect(state.CurrentToolCall).To(gomega.BeNil())
 	})
 })
+
+// ptrTo returns a pointer to a copy of value.
+func ptrTo(value string) *string { return &value }

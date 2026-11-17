@@ -67,6 +67,10 @@ func (s *scriptedRegistry) Cwd(context.Context, string) (*string, error) { retur
 
 func (s *scriptedRegistry) Live(context.Context) ([]RegistryEntry, error) { return nil, nil }
 
+// Entries is unused by the tab-spawn scenarios this fake serves; the roster's
+// bulk read has its own tests in roster_bound_test.go.
+func (s *scriptedRegistry) Entries(context.Context) ([]RegistryEntry, error) { return nil, nil }
+
 func (s *scriptedRegistry) Named(_ context.Context, _ string) ([]string, error) {
 	if s.index >= len(s.responses) {
 		return nil, nil
