@@ -197,3 +197,123 @@ var _ = Describe("AttributionGuard", func() {
 		Expect(guard.Name()).To(Equal("deny-attribution.sh"))
 	})
 })
+
+// tempRepo writes files into a fresh directory and returns it.
+func tempRepo(files map[string]string) string {
+	dir, err := os.MkdirTemp("", "hook-repo-*")
+	Expect(err).NotTo(HaveOccurred())
+	for name, content := range files {
+		Expect(os.WriteFile(dir+"/"+name, []byte(content), 0o600)).To(Succeed())
+	}
+	return dir
+}
+
+var _ = Describe("ProdDeployGuard", func() {
+	guard := hook.NewProdDeployGuard()
+
+	prodRepo := tempRepo(map[string]string{
+		"Makefile.env": "ifeq ($(BRANCH),master)\nSTAGE := prod\ninclude prod.env\nendif\n",
+	})
+	devRepo := tempRepo(map[string]string{
+		"Makefile.env": "ifeq ($(BRANCH),dev)\nSTAGE := dev\ninclude dev.env\nendif\n",
+	})
+	plainRepo := tempRepo(map[string]string{"Makefile.env": "STAGE := dev\n"})
+
+	It("denies BRANCH=prod make apply", func() {
+		decision := guard.Evaluate(bashInput("BRANCH=prod make apply"))
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: production deploy (BRANCH=prod make buca/apply/deploy). "))
+	})
+
+	It("denies a make inside a *-prod worktree", func() {
+		decision := guard.Evaluate(bashInput("cd ../trading-prod && make buca"))
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: make buca/apply/deploy inside a *-prod worktree. "))
+	})
+
+	It("denies a make whose session cwd is a *-prod worktree", func() {
+		input := bashInput("make apply")
+		input.Cwd = "/Users/bborbe/Documents/workspaces/trading-prod"
+		decision := guard.Evaluate(input)
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(ContainSubstring("trading-prod"))
+	})
+
+	It("lets a make with its own cd through the cwd arm", func() {
+		input := bashInput("cd /tmp && make apply")
+		input.Cwd = "/Users/bborbe/Documents/workspaces/trading-prod"
+		Expect(guard.Evaluate(input).Deny).To(BeFalse())
+	})
+
+	It("lets a dev deploy through when the repo maps dev onto a dev stage", func() {
+		input := bashInput("BRANCH=dev make apply")
+		input.Cwd = devRepo
+		Expect(guard.Evaluate(input).Deny).To(BeFalse())
+	})
+
+	It("denies a dev deploy whose repo maps no dev stage", func() {
+		input := bashInput("BRANCH=dev make apply")
+		input.Cwd = plainRepo
+		decision := guard.Evaluate(input)
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: dev deploy whose target repo does not map BRANCH=dev onto a dev stage"))
+	})
+
+	It("denies BRANCH=master make apply where master maps to prod", func() {
+		input := bashInput("BRANCH=master make apply")
+		input.Cwd = prodRepo
+		decision := guard.Evaluate(input)
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: production deploy (BRANCH=master maps to prod in "))
+	})
+
+	It("denies BRANCH=master make upgrade where master maps to prod", func() {
+		input := bashInput("BRANCH=master make upgrade")
+		input.Cwd = prodRepo
+		decision := guard.Evaluate(input)
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: production deploy (BRANCH=master make install/upgrade maps to prod in "))
+	})
+
+	It("does not read BRANCH=master as prod where the repo does not map it", func() {
+		input := bashInput("BRANCH=master make apply")
+		input.Cwd = plainRepo
+		Expect(guard.Evaluate(input).Deny).To(BeFalse())
+	})
+
+	It("denies a destructive verb on a prod kubectl wrapper", func() {
+		decision := guard.Evaluate(bashInput("kubectlnukeprod -n prod delete pod x"))
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(HavePrefix(
+			"Refused: destructive kubectl verb on a production target."))
+	})
+
+	It("lets a read-only verb on a prod wrapper through", func() {
+		Expect(guard.Evaluate(bashInput("kubectlprod -n prod get pods")).Deny).To(BeFalse())
+	})
+
+	It("lets an approve-run hand-over through", func() {
+		command := "python3 ~/.claude/scripts/approve-run.py --cmd 'BRANCH=prod make apply'"
+		Expect(guard.Evaluate(bashInput(command)).Deny).To(BeFalse())
+	})
+
+	It("does not read a commit message that mentions a prod deploy as one", func() {
+		command := `git commit -m "BRANCH=prod make apply is now gated"`
+		Expect(guard.Evaluate(bashInput(command)).Deny).To(BeFalse())
+	})
+
+	It("keeps the shared hand-over tail byte-identical", func() {
+		decision := guard.Evaluate(bashInput("BRANCH=prod make apply"))
+		Expect(decision.Reason).To(Equal(
+			"Refused: production deploy (BRANCH=prod make buca/apply/deploy). " +
+				"Prod deploys are operator-gated — hand it over as " +
+				"`python3 ~/.claude/scripts/approve-run.py --cmd '<the same command>' --cwd <dir>`: " +
+				"that posts an approval card and runs the command once they answer `run it`. " +
+				"Never ask the operator to type it."))
+	})
+})

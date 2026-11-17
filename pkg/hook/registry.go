@@ -13,6 +13,7 @@ func NewDefaultRegistry() *Registry {
 	return NewRegistry(
 		NewTypoGuard(),
 		NewSleepGuard(),
+		NewProdDeployGuard(),
 		NewAttributionGuard(),
 	)
 }
