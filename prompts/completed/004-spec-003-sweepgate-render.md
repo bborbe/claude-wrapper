@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-sweep-gate-port]
+summary: Ported the sweep gate's rendering half into pkg/sweepgate — byte-identical box-table renderer, grouped frame, action lines, closer contract, and the tick mode — with golden and hand-derived parity tests passing and make precommit exiting 0
+execution_id: claude-wrapper-sweep-gate-exec-004-spec-003-sweepgate-render
+dark-factory-version: v0.198.17
 created: "2026-11-18T00:35:03Z"
 queued: "2026-11-18T01:08:39Z"
+started: "2026-11-18T01:24:09Z"
+completed: "2026-11-18T01:29:51Z"
 ---
 
 # sweepgate render: box table, frame, action lines, tick mode
