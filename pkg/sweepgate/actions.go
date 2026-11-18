@@ -59,6 +59,19 @@ func scriptsDir() string {
 	return filepath.Join(home, supervisorScriptsRel)
 }
 
+// pythonBin is the interpreter both plugin scripts are run through.
+//
+// ⚠️ They are invoked as `python3 <script>`, never exec'd directly.
+// `close-line.py` is tracked **100644** in the supervisor repo, so a direct exec
+// fails with EACCES — and that failure propagates all the way out: CloseLine
+// errors, ActionLines errors, Frame errors, Tick exits 2 and writes no tick
+// file, no state and no card. Any subject carrying a done row whose owner is
+// live or parked therefore breaks the entire frame on every tick, permanently.
+// The reference always goes through `sys.executable` (`sweep-gate.py:2885`,
+// `:2918`); `reap-closer.py` happens to be 755, so a direct exec of that one
+// works only by accident.
+const pythonBin = "python3"
+
 // CloserOf returns the session's newest-closer read in close-line.py's
 // vocabulary: closed / open / unreadable.
 //
@@ -66,7 +79,7 @@ func scriptsDir() string {
 // withhold a reap, so a broken read must not suppress a notice.
 func CloserOf(ctx context.Context, runner ExitRunner, cfg Config, sessionID string) string {
 	_, exitCode, err := runner.Run(ctx,
-		filepath.Join(scriptsDir(), "reap-closer.py"), sessionID)
+		pythonBin, filepath.Join(scriptsDir(), "reap-closer.py"), sessionID)
 	if err != nil {
 		return "unreadable"
 	}
@@ -92,7 +105,7 @@ func CloseLine(
 	task, session, liveness, closer string,
 ) (string, error) {
 	stdout, exitCode, err := runner.Run(ctx,
-		filepath.Join(scriptsDir(), "close-line.py"),
+		pythonBin, filepath.Join(scriptsDir(), "close-line.py"),
 		"--task", task,
 		"--session", session,
 		"--liveness", liveness,

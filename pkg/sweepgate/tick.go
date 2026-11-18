@@ -81,9 +81,13 @@ func Tick(
 	}
 
 	state := State{
-		Topic:      cfg.Subject,
-		Digest:     prepared.Digest,
-		Members:    len(prepared.Snapshot.Members),
+		Topic:  cfg.Subject,
+		Digest: prepared.Digest,
+		// len(Tasks), not len(Members): the reference writes the TRACKED task
+		// count here (`sweep-gate.py:1839` `"members": len(tracked)`). The field
+		// name is misleading but the state file is shared with the Python that
+		// owns its format, so a different number is a silent format divergence.
+		Members:    len(prepared.Tasks),
 		BusySince:  prepared.Busy,
 		RecordedAt: cfg.Now.Now().Time().Format("2006-01-02T15:04:05-07:00"),
 	}
