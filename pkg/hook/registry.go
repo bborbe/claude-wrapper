@@ -20,6 +20,7 @@ func NewDefaultRegistry() *Registry {
 		NewPushGateGuard(),
 		NewCdGitChainGuard(),
 		NewBranchSwitchGuard(),
+		NewMergeLabelGuard(),
 		NewAttributionGuard(),
 		NewToolLogGuard(),
 		NewBlockedLogGuard(),

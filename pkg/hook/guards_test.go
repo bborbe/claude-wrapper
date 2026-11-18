@@ -6,6 +6,7 @@ package hook_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 
@@ -744,5 +745,55 @@ var _ = Describe("BlockedLogGuard", func() {
 	It("does not apply to a PreToolUse payload", func() {
 		Expect(guard.Applies(hook.Input{HookEventName: hook.EventPreToolUse, ToolName: "Bash"})).
 			To(BeFalse())
+	})
+})
+
+var _ = Describe("MergeLabelGuard", func() {
+	var labels string
+	var runnerErr error
+	guard := hook.NewMergeLabelGuardWithRunner(func(args ...string) (string, error) {
+		if runnerErr != nil {
+			return "", runnerErr
+		}
+		return labels, nil
+	})
+
+	BeforeEach(func() {
+		labels = ""
+		runnerErr = nil
+	})
+
+	It("denies a merge while the do-not-merge label is on", func() {
+		labels = "do-not-merge\nenhancement\n"
+		decision := guard.Evaluate(bashInput("gh pr merge 42 --repo o/r"))
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(HavePrefix(
+			"Blocked by block-do-not-merge-merge: PR carries the do-not-merge label"))
+	})
+
+	It("allows a merge with other labels", func() {
+		labels = "enhancement\n"
+		Expect(guard.Evaluate(bashInput("gh pr merge 42 --repo o/r")).Deny).To(BeFalse())
+	})
+
+	It("denies two merge targets in one command", func() {
+		command := "gh pr merge 1 --repo o/r && gh pr merge 2 --repo o/r"
+		Expect(guard.Evaluate(bashInput(command)).Reason).To(Equal(
+			"Blocked by block-do-not-merge-merge: more than one gh pr merge target in one " +
+				"command — run each merge as its own call."))
+	})
+
+	It("does not read a quoted mention as a merge", func() {
+		command := `gh pr comment 1 --body "gh pr merge 2"`
+		Expect(guard.Evaluate(bashInput(command)).Deny).To(BeFalse())
+	})
+
+	It("fails open when the label lookup errors", func() {
+		runnerErr = errors.New("network down")
+		Expect(guard.Evaluate(bashInput("gh pr merge 42 --repo o/r")).Deny).To(BeFalse())
+	})
+
+	It("names the script it replaces", func() {
+		Expect(guard.Name()).To(Equal("block-do-not-merge-merge.sh"))
 	})
 })
