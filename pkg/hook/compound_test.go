@@ -259,6 +259,46 @@ var _ = Describe("CompoundBashGuard", func() {
 	})
 })
 
+// Regression tests for the five bypasses the first review round found.
+var _ = Describe("Review regressions", func() {
+	It("refuses an if body, not just its condition", func() {
+		rules := hook.CompoundRules{Allow: []string{"pwd", "ls"}}
+		Expect(hook.CompoundTreeAllows(
+			"if pwd; then curl example.com; fi", rules, "/tmp", nil,
+		)).To(BeFalse())
+	})
+
+	It("refuses a shape-guarded call carrying an expansion", func() {
+		rules := hook.CompoundRules{Allow: []string{"pwd"}}
+		guard := hook.NewCompoundBashGuardWithRules(
+			func(string) (hook.CompoundRules, error) { return rules, nil },
+		)
+		input := bashInput("pwd && git log $X")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeFalse())
+	})
+
+	It("unwraps a shell wrapper split on any whitespace run", func() {
+		guard := hook.NewCdGitChainGuard()
+		Expect(guard.Evaluate(bashInput("bash  -c 'cd /x && git status'")).Deny).To(BeTrue())
+	})
+
+	It("refuses a revision expression as a branch switch", func() {
+		repo := tempGitRepo(map[string]string{}, "master")
+		input := bashInput("git checkout origin/master")
+		input.Cwd = repo
+		Expect(hook.NewBranchSwitchGuard().Evaluate(input).Deny).To(BeTrue())
+	})
+
+	It("reads a quoted repo, so the do-not-merge gate still fires", func() {
+		guard := hook.NewMergeLabelGuardWithRunner(
+			func(...string) (string, error) { return "do-not-merge\n", nil },
+		)
+		Expect(guard.Evaluate(bashInput(`gh pr merge 42 --repo "bborbe/x"`)).Deny).To(BeTrue())
+		Expect(guard.Evaluate(bashInput(`gh -R "bborbe/x" pr merge 42`)).Deny).To(BeTrue())
+	})
+})
+
 var _ = Describe("SedFilterAllows", func() {
 	root := tempRepo(map[string]string{"a.txt": "x\n"})
 	roots := []string{root}

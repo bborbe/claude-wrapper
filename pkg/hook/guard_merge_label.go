@@ -81,7 +81,7 @@ func (g *MergeLabelGuard) Evaluate(input Input) Decision {
 	command, _ := input.BashCommand()
 	// Real invocations only: a heredoc body or quoted string that merely mentions a
 	// merge is not a target.
-	invocations := mergeLabelTargets(scanText(command))
+	invocations := mergeLabelTargets(command)
 	if len(invocations) == 0 {
 		return Decision{}
 	}
@@ -101,11 +101,30 @@ func (g *MergeLabelGuard) Evaluate(input Input) Decision {
 	return Decision{}
 }
 
-// mergeLabelTargets returns the distinct gh-pr-merge invocations in a scanned command.
-func mergeLabelTargets(scan string) []string {
+// mergeLabelTargets returns the distinct gh-pr-merge invocations in a command.
+//
+// The quote-stripped scan is preferred, because it drops prose that merely mentions
+// a merge. When it finds nothing, the command is retried with the quote CHARACTERS
+// removed rather than their spans: `gh -R "bborbe/x" pr merge 42` is a real
+// invocation whose repo the span-strip would delete, and gh-merge-targets.py
+// unquoted the same way.
+func mergeLabelTargets(command string) []string {
+	if targets := distinctInvocations(scanText(command)); len(targets) > 0 {
+		return targets
+	}
+	return distinctInvocations(unquoteAll(command))
+}
+
+// unquoteAll removes quote characters while keeping their contents.
+func unquoteAll(command string) string {
+	return strings.NewReplacer(`"`, "", `'`, "").Replace(command)
+}
+
+// distinctInvocations returns the distinct invocation matches in text.
+func distinctInvocations(text string) []string {
 	seen := map[string]bool{}
 	var targets []string
-	for _, match := range mergeLabelInvocation.FindAllString(scan, -1) {
+	for _, match := range mergeLabelInvocation.FindAllString(text, -1) {
 		if !seen[match] {
 			seen[match] = true
 			targets = append(targets, match)

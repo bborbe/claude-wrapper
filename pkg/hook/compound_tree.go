@@ -82,7 +82,19 @@ func (w *compoundWalker) command(cmd syntax.Command) error {
 		}
 		return w.stmt(node.Y)
 	case *syntax.IfClause:
-		return w.stmts(node.Cond)
+		// Every branch is a command the shell runs, so all three must be walked.
+		// Walking only Cond let `if git status; then rm -rf /x; fi` through with the
+		// body unchecked.
+		if err := w.stmts(node.Cond); err != nil {
+			return err
+		}
+		if err := w.stmts(node.Then); err != nil {
+			return err
+		}
+		if node.Else != nil {
+			return w.command(node.Else)
+		}
+		return nil
 	case *syntax.ForClause:
 		// A word-list `for` is bounded; a C-style loop is not.
 		if _, ok := node.Loop.(*syntax.WordIter); !ok {

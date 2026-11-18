@@ -78,6 +78,18 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	return Decision{}
 }
 
+// staticWords reports whether every word is a plain literal. The shape guards were
+// written against the syntax-tree path, which only ever hands them literal words;
+// feeding them a raw `Fields` split lets `git log $X` or a quoted operand through.
+func staticWords(words []string) bool {
+	for _, word := range words {
+		if strings.ContainsAny(word, "$`'\"\\") {
+			return false
+		}
+	}
+	return true
+}
+
 // compoundTextAllows reports whether every segment is permitted on its own.
 func compoundTextAllows(
 	segments []string,
@@ -93,7 +105,7 @@ func compoundTextAllows(
 		if matchesAnyPattern(segment, rules.Gated) {
 			return false
 		}
-		if compoundShapeAllows(words, cwd, roots) {
+		if compoundShapeAllows(words, cwd, roots) && staticWords(words) {
 			continue
 		}
 		if wrapperProgram(words[0]) {

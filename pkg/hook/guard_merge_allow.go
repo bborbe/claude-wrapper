@@ -85,7 +85,7 @@ func (g *MergeAllowGuard) Evaluate(input Input) Decision {
 	if strings.Contains(command, "--admin") {
 		return DenyDecision(mergeAllowAdmin)
 	}
-	targets := mergeAllowTargets(scanText(command))
+	targets := mergeAllowTargets(command)
 	if len(targets) == 0 {
 		return Decision{}
 	}

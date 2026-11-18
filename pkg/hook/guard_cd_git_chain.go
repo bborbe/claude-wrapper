@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // cdGitChainReason is the denial text of deny-cd-git-chain.py, kept
@@ -167,19 +168,43 @@ func program(segment string) string {
 }
 
 // unwrapShellC returns the inner command of a `bash -c '…'` wrapper.
+//
+// The split is on ANY whitespace run, not one literal space: `bash  -c '…'` and a
+// tab between the words are the same command, and a single-space split missed them
+// so the chain inside was never seen.
 func unwrapShellC(command string) (string, bool) {
-	fields := strings.SplitN(strings.TrimSpace(command), " ", 3)
-	if len(fields) < 3 {
+	program, flag, inner, ok := splitFirstTwo(strings.TrimSpace(command))
+	if !ok || !cdChainShells[filepath.Base(program)] || flag != "-c" {
 		return "", false
 	}
-	if !cdChainShells[filepath.Base(fields[0])] || fields[1] != "-c" {
-		return "", false
-	}
-	inner := strings.TrimSpace(fields[2])
+	inner = strings.TrimSpace(inner)
 	if len(inner) >= 2 && inner[0] == inner[len(inner)-1] && (inner[0] == '"' || inner[0] == '\'') {
 		inner = inner[1 : len(inner)-1]
 	}
 	return inner, true
+}
+
+// splitFirstTwo splits on whitespace into the first two words and the verbatim
+// remainder.
+func splitFirstTwo(text string) (string, string, string, bool) {
+	first, rest, ok := cutWhitespace(text)
+	if !ok {
+		return "", "", "", false
+	}
+	second, remainder, ok := cutWhitespace(rest)
+	if !ok {
+		return "", "", "", false
+	}
+	return first, second, remainder, true
+}
+
+// cutWhitespace returns the text before the first whitespace run and the rest.
+func cutWhitespace(text string) (string, string, bool) {
+	index := strings.IndexFunc(text, unicode.IsSpace)
+	if index < 0 {
+		return text, "", false
+	}
+	return text[:index], strings.TrimLeftFunc(text[index:], unicode.IsSpace), true
 }
 
 // stripAllHeredocBodies drops every heredoc body: they are data, not shell text.

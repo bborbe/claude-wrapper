@@ -196,6 +196,13 @@ func judgeTarget(span string, verb string, target string, dir string) (Decision,
 	case "-":
 		return branchSwitchRefusal(span, dir), true
 	}
+	// A revision expression is a branch switch even when no literal ref file names
+	// it: `origin/master`, `HEAD~1` and `@{-1}` all detach the shared checkout, and
+	// `rev-parse --verify` resolved them where a file probe cannot. Treating any
+	// such shape as a ref is stricter than the script, which is the safe direction.
+	if strings.ContainsAny(target, "/~^@:") {
+		return branchSwitchRefusal(span, dir), true
+	}
 	if verb == "switch" || refExists(dir, target) {
 		return branchSwitchRefusal(span, dir), true
 	}
