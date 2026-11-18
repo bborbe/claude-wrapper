@@ -56,6 +56,8 @@ type fakeTabs struct {
 	before string
 	after  string
 	sent   map[string]int
+	// sendErr makes SendText fail, for the send-failure branch.
+	sendErr error
 }
 
 func (f *fakeTabs) Spawn(context.Context, TabSpawnOptions) (string, error) {
@@ -67,6 +69,9 @@ func (f *fakeTabs) Activate(context.Context, string) error { return nil }
 func (f *fakeTabs) SendText(_ context.Context, pane string, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sendErr != nil {
+		return f.sendErr
+	}
 	if f.sent == nil {
 		f.sent = map[string]int{}
 	}
@@ -247,6 +252,48 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 			gomega.Expect(result.Delivered).To(gomega.Equal(1))
 			gomega.Expect(result.Skipped).To(gomega.Equal(0))
 			gomega.Expect(tabs.sent["11"]).To(gomega.BeNumerically(">", 0))
+		})
+
+		// The send half's failure branch. The keystrokes reach the pty but the pane
+		// never shows the wake as submitted; SendWhenReadyWith reports that as an
+		// error, and the dispatcher must surface it as `failed:<err>` rather than
+		// counting a message that never ran as delivered.
+		ginkgo.It("reports failed when the submit is never confirmed on the screen", func() {
+			tabs := &fakeTabs{before: "❯ \n", after: "❯ \n"}
+			pusher := pusherFor(
+				&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+				&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+			)
+			pusher.Send = true
+			// The two 8 s confirmation windows must expire without sleeping 16 s.
+			pusher.Now = steppingClock()
+			result := pusher.Tick(context.Background())
+			row := result.Rows[0]
+			gomega.Expect(row.Outcome).To(gomega.HavePrefix("failed:"))
+			gomega.Expect(row.Outcome).To(gomega.ContainSubstring(
+				"pane 11 never showed the message as submitted",
+			))
+			gomega.Expect(result.Delivered).To(gomega.Equal(0))
+			gomega.Expect(result.Skipped).To(gomega.Equal(1))
+		})
+
+		// The send call itself can fail. Its reason must survive into the outcome
+		// token: an assertion on `failed:` alone would also pass for a hard-coded
+		// reason that discards the error.
+		ginkgo.It("carries the send error's own text into the failed outcome", func() {
+			sendErr := errors.New("wezterm send-text refused the pane")
+			tabs := &fakeTabs{before: "❯ \n", sendErr: sendErr}
+			pusher := pusherFor(
+				&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+				&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+			)
+			pusher.Send = true
+			result := pusher.Tick(context.Background())
+			row := result.Rows[0]
+			gomega.Expect(row.Outcome).To(gomega.Equal("failed:" + sendErr.Error()))
+			gomega.Expect(row.Outcome).To(gomega.ContainSubstring(sendErr.Error()))
+			gomega.Expect(result.Delivered).To(gomega.Equal(0))
+			gomega.Expect(result.Skipped).To(gomega.Equal(1))
 		})
 
 		// The guard's wake:suggestion verdict must be deliverable. A long-idle pane
