@@ -97,12 +97,18 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 		// A single command is approved by a shape guard or not at all; matching it
 		// against the allow rules is Claude Code's own job, and a second matcher
 		// that disagrees with it is a bypass.
-		words := unquoteStaticWords(strings.Fields(segments[0]))
-		if matchesAnyPattern(segments[0], rules.Gated) || !staticWords(words) ||
-			!compoundShapeAllows(words, input.Cwd, roots) {
+		if matchesAnyPattern(segments[0], rules.Gated) {
 			return Decision{}
 		}
-		return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
+		words := unquoteStaticWords(strings.Fields(segments[0]))
+		if staticWords(words) && compoundShapeAllows(words, input.Cwd, roots) {
+			return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
+		}
+		// A quoted word with a space (`grep 'a b'`) only parses right as a tree.
+		if CompoundTreeAllows(command, rules, input.Cwd, roots) {
+			return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
+		}
+		return Decision{}
 	}
 	if compoundTextAllows(segments, rules, input.Cwd, roots) {
 		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
@@ -204,6 +210,12 @@ func unquoteStaticWords(words []string) []string {
 			out[i] = inner
 			continue
 		}
+		// `'x'` passes x verbatim; a word with a second quote inside is left as is.
+		if len(word) >= 2 && word[0] == '\'' && word[len(word)-1] == '\'' &&
+			!strings.ContainsAny(word[1:len(word)-1], "'\"") {
+			out[i] = word[1 : len(word)-1]
+			continue
+		}
 		out[i] = word
 	}
 	return out
@@ -228,11 +240,11 @@ func compoundTextAllows(
 			continue
 		}
 		if singleShapeHeads[words[0]] {
-		// git / sed / gh are approved by their shape guard or not at all: a broad
-		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
-		return false
-	}
-	if wrapperProgram(words[0]) {
+			// git / sed / gh are approved by their shape guard or not at all: a broad
+			// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
+			return false
+		}
+		if wrapperProgram(words[0]) {
 			return false
 		}
 		if !matchesAnyPattern(segment, rules.Allow) {
