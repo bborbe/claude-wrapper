@@ -8,6 +8,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	golang.org/x/text v0.44.0
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
