@@ -43,6 +43,22 @@ var _ = Describe("Sweep", func() {
 		Expect(rec.Code).To(Equal(http.StatusBadRequest))
 	})
 
+	// A traversal attempt is a bad request, refused before it reaches a path
+	// join. Regression guard for the defect this route shipped with: the subject
+	// went straight into filepath.Join(vault, "24 Goals", subject+".md"), which
+	// reads files outside the vault.
+	DescribeTable("answers 400 for a subject that would traverse a path",
+		func(subject string) {
+			rec := serveSweep(http.MethodGet, "/api/1.0/sweep?subject="+subject, sweepgate.Config{})
+
+			Expect(rec.Code).To(Equal(http.StatusBadRequest))
+		},
+		Entry("parent reference", "../../../etc/passwd"),
+		Entry("embedded parent reference", "foo/../../bar"),
+		Entry("forward slash", "a/b"),
+		Entry("backslash", `a\b`),
+	)
+
 	It("answers 500 when the rows cannot be prepared", func() {
 		// An empty vault cannot resolve a tracked set, so Prepare fails.
 		rec := serveSweep(http.MethodGet, "/api/1.0/sweep?subject=S", sweepgate.Config{})

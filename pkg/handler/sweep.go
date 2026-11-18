@@ -40,6 +40,14 @@ func Sweep(base sweepgate.Config) http.Handler {
 				errors.Errorf(ctx, "query parameter %q is required", "subject"))
 			return
 		}
+		// Refuse a traversal at the BOUNDARY, before it reaches a path join. The
+		// gate also refuses it internally, but a client sending `../../x` is
+		// making a bad request, not triggering a server fault — and answering 400
+		// here keeps the reason legible instead of surfacing as a 500.
+		if err := sweepgate.RefuseUnsafeSubject(ctx, subject); err != nil {
+			writeError(resp, http.StatusBadRequest, err)
+			return
+		}
 		// Resolve defaults HERE rather than trusting the caller's config: the
 		// clock is one of them, and Prepare dereferences it. A config that skipped
 		// WithDefaults (the flag builder returns its unresolved value when that

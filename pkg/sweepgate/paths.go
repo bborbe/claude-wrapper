@@ -23,13 +23,27 @@ var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 // result that is empty, is `.` or `..`, or contains a path separator. This is the
 // only thing between a vault-authored subject and a path, so a refusal here is a
 // caller error rather than a silent fallback.
+// RefuseUnsafeSubject refuses a subject that would traverse a path.
+//
+// It is the SINGLE HOME for this rule. Two functions join a subject into a path —
+// Slug (state-dir files) and ResolveSubject (vault pages) — and validating in one
+// only leaves the other open. That asymmetry was a real defect: Slug refused
+// `../../x` while ResolveSubject joined it straight into `24 Goals/`, so a
+// subject reaching ResolveSubject could read a file outside the vault.
+func RefuseUnsafeSubject(ctx context.Context, subject string) error {
+	if strings.Contains(subject, "..") || strings.ContainsAny(subject, `/\`) {
+		return errors.Errorf(ctx, "subject %q contains a path traversal", subject)
+	}
+	return nil
+}
+
 func Slug(ctx context.Context, subject string) (string, error) {
 	// Refuse a traversal attempt before slugging. The reference's slug would
 	// flatten `../../etc/x` to `etc-x` and produce a safe name, but a subject that
 	// carries a separator or a parent reference is a caller error, not a name to
 	// normalise.
-	if strings.Contains(subject, "..") || strings.ContainsAny(subject, `/\`) {
-		return "", errors.Errorf(ctx, "subject %q contains a path traversal", subject)
+	if err := RefuseUnsafeSubject(ctx, subject); err != nil {
+		return "", err
 	}
 	slug := strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(subject), "-"), "-")
 	if slug == "" || slug == "." || slug == ".." {
