@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -59,18 +60,40 @@ func scriptsDir() string {
 	return filepath.Join(home, supervisorScriptsRel)
 }
 
-// pythonBin is the interpreter both plugin scripts are run through.
+// pythonBin resolves the interpreter both plugin scripts are run through.
 //
-// ⚠️ They are invoked as `python3 <script>`, never exec'd directly.
+// ⚠️ Two failure modes meet here, and both are fatal to a whole tick.
+//
+// First, the scripts are run as `python3 <script>` and never exec'd directly:
 // `close-line.py` is tracked **100644** in the supervisor repo, so a direct exec
-// fails with EACCES — and that failure propagates all the way out: CloseLine
-// errors, ActionLines errors, Frame errors, Tick exits 2 and writes no tick
-// file, no state and no card. Any subject carrying a done row whose owner is
-// live or parked therefore breaks the entire frame on every tick, permanently.
-// The reference always goes through `sys.executable` (`sweep-gate.py:2885`,
+// fails with EACCES. Second, the interpreter must not be a bare `python3` looked
+// up in PATH: the daemon runs under launchd, whose PATH is not the shell's —
+// `which python3` here is a pyenv shim launchd does not have.
+//
+// Either failure surfaces as a spawn error that propagates CloseLine →
+// ActionLines → Frame → Tick, so the tick returns ExitFailed before writing its
+// tick file or its state, and every subject carrying a done row with a live
+// owner writes nothing, every tick. The reference has neither failure mode
+// because `sys.executable` is absolute by construction (`sweep-gate.py:2885`,
 // `:2918`); `reap-closer.py` happens to be 755, so a direct exec of that one
 // works only by accident.
-const pythonBin = "python3"
+//
+// Resolved once, preferring the system interpreter over any PATH entry.
+var pythonBin = sync.OnceValue(func() string {
+	for _, candidate := range []string{
+		"/usr/bin/python3",
+		"/opt/homebrew/bin/python3",
+		"/usr/local/bin/python3",
+	} {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	if resolved, err := exec.LookPath("python3"); err == nil {
+		return resolved
+	}
+	return "python3"
+})
 
 // CloserOf returns the session's newest-closer read in close-line.py's
 // vocabulary: closed / open / unreadable.
@@ -79,7 +102,7 @@ const pythonBin = "python3"
 // withhold a reap, so a broken read must not suppress a notice.
 func CloserOf(ctx context.Context, runner ExitRunner, cfg Config, sessionID string) string {
 	_, exitCode, err := runner.Run(ctx,
-		pythonBin, filepath.Join(scriptsDir(), "reap-closer.py"), sessionID)
+		pythonBin(), filepath.Join(scriptsDir(), "reap-closer.py"), sessionID)
 	if err != nil {
 		return "unreadable"
 	}
@@ -105,7 +128,7 @@ func CloseLine(
 	task, session, liveness, closer string,
 ) (string, error) {
 	stdout, exitCode, err := runner.Run(ctx,
-		pythonBin, filepath.Join(scriptsDir(), "close-line.py"),
+		pythonBin(), filepath.Join(scriptsDir(), "close-line.py"),
 		"--task", task,
 		"--session", session,
 		"--liveness", liveness,

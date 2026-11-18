@@ -199,27 +199,43 @@ func StatusLabel(now time.Time, t Task) string {
 // The clock is a parameter, never time.Now(): the reference's date.today() is the
 // only non-injected clock in this port. An unparseable or absent date is false.
 func IsDeferred(now time.Time, t Task) bool {
-	day, ok := parseDeferDate(t.DeferDate)
+	year, month, date, ok := parseDeferDate(t.DeferDate)
 	if !ok {
 		return false
 	}
-	year, month, date := now.Local().Date()
-	today := time.Date(year, month, date, 0, 0, 0, 0, time.Local)
-	return day.After(today)
+	// ⚠️ Compare calendar dates, never instants. `defer_date` is a bare date with
+	// no zone; parsed as UTC and compared against a LOCAL midnight it reads as
+	// "after" on every UTC+ host, so a task whose defer expires TODAY stays
+	// deferred for the whole day — no action line, stuck suppressed — which is
+	// exactly the dead park the defer rule exists to avoid. The reference compares
+	// date to date (`sweep-gate.py:2004`, `day > date.today()`), and so does this.
+	todayYear, todayMonth, todayDate := now.Local().Date()
+	if year != todayYear {
+		return year > todayYear
+	}
+	if month != todayMonth {
+		return month > todayMonth
+	}
+	return date > todayDate
 }
 
-// parseDeferDate parses the date prefix of either stored defer_date shape.
-func parseDeferDate(raw string) (time.Time, bool) {
+// parseDeferDate parses the date prefix of either stored defer_date shape and
+// returns its calendar parts.
+//
+// It returns Y/M/D rather than a time.Time on purpose: a time.Time carries a zone
+// this value does not have, and every zone choice is a bug waiting to compare
+// against the wrong midnight. See IsDeferred.
+func parseDeferDate(raw string) (int, time.Month, int, bool) {
 	trimmed := strings.Trim(strings.TrimSpace(raw), `'"`)
 	match := deferDateRe.FindStringSubmatch(trimmed)
 	if match == nil {
-		return time.Time{}, false
+		return 0, 0, 0, false
 	}
 	day, err := time.Parse("2006-01-02", match[0])
 	if err != nil {
-		return time.Time{}, false
+		return 0, 0, 0, false
 	}
-	return day, true
+	return day.Year(), day.Month(), day.Day(), true
 }
 
 // IsWaiting reports whether something outside the worker holds the row.
