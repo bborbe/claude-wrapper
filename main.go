@@ -167,19 +167,9 @@ func main() {
 	ctx, stop := shutdownContext()
 	defer stop()
 
-	// The sweep gate's one-shot modes run before the supervisor is built, so they
-	// never bind the listener and can be invoked beside the live daemon — the same
-	// reason the fleet-pusher probe runs here.
-	if *sweepGate.mode != "" {
-		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
-	}
-
-	// The scoped probe: one wake tick, then exit. It runs before the supervisor is
-	// built, so it never binds the listener and can be invoked beside the live
-	// daemon. It also never writes the heartbeat — a probe must not make the
-	// watchdog believe the production cadence is alive.
-	if *fleetPusher.once {
-		runFleetPusherOnce(ctx, *attentionURL, *fleetPusher.sessions, *fleetPusher.send)
+	// Both one-shot modes run before the supervisor is built, so they never bind
+	// the listener and can be invoked beside the live daemon.
+	if runOneShotMode(ctx, sweepGate, fleetPusher, *attentionURL) {
 		return
 	}
 
@@ -782,6 +772,30 @@ func newFleetPusher(
 // It is the probe entry point: `--sessions A,B --send` types only into A and B, so
 // the operator's live sessions are untouched, and the default without `--send` is
 // a dry run that types nothing at all.
+// runOneShotMode runs the sweep-gate and fleet-pusher probe modes, both of which
+// must run before the supervisor is built so they never bind the listener and can
+// be invoked beside the live daemon.
+//
+// It reports whether one ran, in which case the caller must stop: the sweep-gate
+// mode exits the process itself with its own status, and the fleet-pusher probe
+// is a single wake tick with no daemon behind it. Neither writes a heartbeat — a
+// probe must not make the watchdog believe the production cadence is alive.
+func runOneShotMode(
+	ctx context.Context,
+	sweepGate sweepGateFlags,
+	fleetPusher fleetPusherFlags,
+	attentionURL string,
+) bool {
+	if *sweepGate.mode != "" {
+		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
+	}
+	if !*fleetPusher.once {
+		return false
+	}
+	runFleetPusherOnce(ctx, attentionURL, *fleetPusher.sessions, *fleetPusher.send)
+	return true
+}
+
 func runFleetPusherOnce(
 	ctx context.Context,
 	attentionURL string,
