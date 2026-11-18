@@ -203,6 +203,11 @@ func literalWord(word *syntax.Word) (string, bool) {
 	}
 	switch part := word.Parts[0].(type) {
 	case *syntax.Lit:
+		// The parser keeps an escape in Value (`\-o`) while the shell strips it, so
+		// a word carrying one is not the literal the shape guards would judge.
+		if strings.Contains(part.Value, "\\") {
+			return "", false
+		}
 		return part.Value, true
 	case *syntax.DblQuoted:
 		// `"/x/y"` with no expansion inside is the same single word as `/x/y`.
@@ -210,10 +215,18 @@ func literalWord(word *syntax.Word) (string, bool) {
 			return "", false
 		}
 		lit, ok := part.Parts[0].(*syntax.Lit)
-		if !ok || strings.ContainsAny(lit.Value, "\\$`") {
+		if !ok || strings.ContainsAny(lit.Value, "\\$`") || strings.HasPrefix(lit.Value, "~") {
 			return "", false
 		}
 		return lit.Value, true
+	case *syntax.SglQuoted:
+		// `'150,158p'` never expands: the shell passes the inside verbatim, and the
+		// shape guards still judge that value exactly as they judge a bare word.
+		// A quoted `~` is not expanded by the shell, while UnderRoots would expand it.
+		if part.Dollar || strings.HasPrefix(part.Value, "~") {
+			return "", false
+		}
+		return part.Value, true
 	}
 	return "", false
 }

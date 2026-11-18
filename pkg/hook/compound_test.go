@@ -634,6 +634,22 @@ var _ = Describe("git -C through the registry", func() {
 		Entry("a substitution in the value", "W=$(pwd); git -C $W status", false),
 	)
 
+	DescribeTable("reads a single-quoted word as the literal the shell passes",
+		func(command string, allow bool) {
+			Expect(evaluate(command).Allow).To(Equal(allow))
+		},
+		Entry("a quoted sed range after a git show", "git -C "+vault+" show HEAD:x | sed -n '150,158p'", true),
+		Entry("a quoted git grep pattern", "git -C "+vault+" grep -n 'machine half' HEAD", true),
+		Entry("a quoted -o is still refused", "git -C "+vault+" log '-o/tmp/x'", false),
+		Entry("a quoted sed write is still refused", "git -C "+vault+" status | sed -n '1w/tmp/x'", false),
+		Entry("a quoted sed in-place is still refused", "git -C "+vault+" status && sed -n -i '1p' x", false),
+		Entry("an ANSI-C quote is refused", "git -C "+vault+" log $'-o/tmp/x'", false),
+		Entry("a single-quoted ~ in -C is refused", "git -C '~/Documents/Obsidian/private-personal' log", false),
+		Entry("a double-quoted ~ in -C is refused", "git -C \"~/Documents/Obsidian/private-personal\" status", false),
+		Entry("an escaped -o is refused", "git -C "+vault+" log \\-o/tmp/x", false),
+		Entry("an escaped -o in a compound is refused", "git -C "+vault+" status | git -C "+vault+" log -\\o/tmp/x", false),
+	)
+
 	It("allows a compound of approved parts", func() {
 		Expect(evaluate("git -C " + vault + " status; echo \"--- exit: $?\"").Allow).
 			To(BeTrue())

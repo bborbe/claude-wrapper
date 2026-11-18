@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **a single-quoted argument no longer pushes a read-only `git -C` compound back to the prompt.** `… | sed -n '150,158p'` and `git grep -n 'a b'` prompted after v0.38.2 because the syntax tree accepted only bare and double-quoted words; a `'…'` word is now the literal the shell passes, and a single shape-head command with a quoted space falls back to the tree. A tree literal carrying a backslash is refused, since the parser keeps `\-o` while the shell passes `-o`; and a quoted word starting with `~` is refused, since the shell does not expand it while `UnderRoots` would.
+
 ## v0.38.3
 
 - fix: **the readiness gate now comes before the work command and forbids it below the bar, so a below-bar row posts its card instead of only stopping.** Measured 2026-11-18 on a 6.5/10 fixture: with the gate appended after `/vault-cli:work-on-task`, the row opened, the worker ran the command, and its chained `plan-task` stopped at `phase: planning` and *printed* the gaps. The stop was delivered; the card never was, because the command consumed the turn first. The gate is now the first thing the worker reads, names the exact `attention-ask.py post` invocation, and says explicitly not to run the command below the bar. Tests pin the ordering (gate index < command index), not just presence.
