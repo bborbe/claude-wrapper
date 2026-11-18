@@ -76,6 +76,10 @@ var _ = ginkgo.Describe("parked closer", func() {
 			{"the bot posts a review on bborbe/nuke#88 or CI goes red", ParkedOnPR},
 			{"sun:22 answers", ParkedOnHost},
 			{"192.168.178.38:22 accepts a connection", ParkedOnHost},
+			// ⚠️ An out-of-range octet with a port must NOT become a host: a
+			// parked-on-host row is never released by MAX_AGE_S, so accepting it pins
+			// the row forever instead of falling through to parked-until.
+			{"999.1.1.1:80 accepts a connection", ParkedUntil},
 			{"192.168.178.38 answers", ParkedOnHost},
 			// ⚠️ A declaration carrying BOTH a host token and a clock must bound at the
 			// clock, because ClassifyParked checks the clock before the host. The class

@@ -257,6 +257,15 @@ func parkedPRRef(text string) (PullRequestRef, bool) {
 func parkedHost(text string) (string, int, bool) {
 	for _, token := range strings.Fields(text) {
 		if match := parkedHostPortPattern.FindStringSubmatch(token); match != nil {
+			// ⚠️ A dotted-numeric name must pass the SAME octet range check the bare
+			// IPv4 form does. Without it `999.1.1.1:80` classifies as parked-on-host,
+			// which is never released by MAX_AGE_S — so the row is pinned forever
+			// instead of falling through to parked-until. The name pattern accepts it
+			// because it contains dots. Measured 2026-11-18 by the PR reviewer.
+			if ipv4 := parkedIPv4Pattern.FindStringSubmatch(match[1]); ipv4 != nil &&
+				!octetsValid(ipv4[1:]) {
+				continue
+			}
 			port, err := strconv.Atoi(match[2])
 			if err == nil && port >= 1 && port <= 65535 {
 				return match[1], port, true
