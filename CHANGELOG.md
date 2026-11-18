@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - fix: tab SendText types the text and presses Enter as two separate send-text calls 1 s apart — a single `text\r` call left `/color` unsubmitted in a freshly spawned Claude Code composer (0/5 submitted vs 5/5 split, measured 2026-11-18)
 
+## v0.35.1
+
+- fix: **a reopened task row now runs the readiness gate before it starts work, so a below-bar row can no longer open ungated.** The flagged reopen tick is model-free by construction, so it cannot score a row; the readiness ladder (>= 9 opens, >= 7 after one improvement pass, < 7 refuses) is an agent call. The gate therefore runs where the model already is — in the worker the tick just spawned — and `reopenPrompt` appends it to the task branch's first turn. Measured 2026-11-18: a row scored 5/10 and its worker got the row anyway. The `/supervisor:open` branch is unchanged because it reaches Gate 2 itself and would run the audit twice.
+
 ## v0.35.0
 
 - feat: pkg/sweepgate ports the manager sweep gate's task parsing, tracked-set resolution and digest to Go, with a checked-in parity fixture and Python-generated goldens
