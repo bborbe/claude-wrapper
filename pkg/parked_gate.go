@@ -188,7 +188,7 @@ func (g *parkedGate) holdOrRecord(
 			})
 			return "", false
 		}
-		return g.holdRecorded(declaration, observation, baseline)
+		return g.holdRecorded(declaration, baseline)
 	}
 	g.record(ctx, key, row.SessionID, declaration, observation, hash)
 	return string(declaration.Class), true
@@ -197,7 +197,6 @@ func (g *parkedGate) holdOrRecord(
 // holdRecorded applies the expiry rule to a matching, unmoved baseline.
 func (g *parkedGate) holdRecorded(
 	declaration ParkedDeclaration,
-	observation ParkedObservation,
 	baseline *ParkedBaseline,
 ) (string, bool) {
 	if declaration.Class == ParkedUntil && declaration.Deadline == nil &&
