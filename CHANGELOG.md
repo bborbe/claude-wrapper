@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: tab SendText types the text and presses Enter as two separate send-text calls 1 s apart — a single `text\r` call left `/color` unsubmitted in a freshly spawned Claude Code composer (0/5 submitted vs 5/5 split, measured 2026-11-18)
+
 ## v0.37.0
 
 - feat: **compound-command rule composition, foundation only** — `pkg/hook` gains the pieces the last ported guard needs: a top-level splitter that ignores separators inside quotes, the unsafe-syntax refusal, literal-assignment substitution (refusing any value that is not one bare word, because the shell word-splits an unquoted expansion), a settings reader that merges `Bash(...)` allow/ask/deny rules from the user settings and every ancestor project file with Python-`fnmatch` semantics rather than `path.Match`, and the read-only git shape guard (subcommand set, option denylist including unique prefixes, `tag` list mode, `worktree list`, and a root check that resolves symlinks on both sides), the deploy-worktree `git merge <remote>/<branch>` shape guard, the `sed`-as-filter shape guard (only `-n`/`-E`/`-r`, one static `s///` or `p`/`q` script, operands under the roots or in `/tmp`) and the `gh` shape guards (`pr merge` on a `bborbe/*` repo with `--merge` only, `pr create` with literal text and a `/tmp` body file, and read-only `pr view|list|checks|diff` for any owner), plus the syntax-tree pass built on `mvdan.cc/sh/v3` — every command node must match a rule on its own, and any node type, redirect, assignment or expansion the walker does not model is refused. All sixteen guards are now registered in `NewDefaultRegistry`, which completes the port.
@@ -12,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.36.1
 
-- fix: tab SendText types the text and presses Enter as two separate send-text calls 1 s apart — a single `text\r` call left `/color` unsubmitted in a freshly spawned Claude Code composer (0/5 submitted vs 5/5 split, measured 2026-11-18)
 - fix: `make precommit` is green again after the park gate landed — `(*parkedGate).holdRecorded` drops the `observation` parameter it never read (`unparam`), and `main`'s sweep-gate and fleet-pusher one-shot modes move into `runOneShotMode`, which reports whether one ran so `main` keeps its early return and stays inside the 80-line `funlen` budget. Behaviour is unchanged: the sweep-gate mode still exits the process with its own status, and the fleet-pusher probe is still one wake tick writing no heartbeat.
 
 ## v0.36.0
