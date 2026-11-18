@@ -64,10 +64,12 @@ var (
 	optionRow = regexp.MustCompile(`^` + promptGlyph + `\s*1\.`)
 )
 
-// captureHeader prefixes the provenance line a capture wrapper writes above a
-// screen: `# captured <ISO8601> pane=<pane-id>`. `wezterm cli get-text` emits
-// screen text only, so the wrapper that performs the capture writes the line,
-// and the guard skips it rather than reading it as screen content.
+// captureHeader prefixes the provenance line
+// `pkg/testdata/fleetpusher/capture.sh` writes above a screen:
+// `# captured <ISO8601> pane=<pane-id>`. `wezterm cli get-text` emits screen
+// text only, so the wrapper that performs the capture writes the line. The
+// guard skips it here rather than in the test helper, so a fixture reaches the
+// verdict function byte-for-byte as a live pane does.
 const captureHeader = "# captured "
 
 // Guard marker strings, named so a spec asserts on the same literal the
