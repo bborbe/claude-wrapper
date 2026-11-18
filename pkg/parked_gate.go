@@ -117,21 +117,28 @@ func (g *parkedGate) holdOrRecord(
 	hash := sha256hex(closer)
 	baseline := g.Store.Load(ctx, key)
 	if baseline != nil && baseline.SessionID == row.SessionID && baseline.CloserHash == hash {
+		if baseline.Fingerprint != observation.Fingerprint {
+			// ⚠️ The new baseline is recorded on the movement branch, not only on a
+			// first sighting. Without it the stored fingerprint stays at the FIRST
+			// sighting forever, so a resumed session that repeats its closer wording
+			// reopens on every later tick — exactly the churn this gate exists to
+			// remove. Measured 2026-11-18 in review: held, open, then open again on
+			// an unchanged third tick.
+			g.record(ctx, key, row.SessionID, declaration, observation, hash)
+			return "", false
+		}
 		return g.holdRecorded(declaration, observation, baseline)
 	}
 	g.record(ctx, key, row.SessionID, declaration, observation, hash)
 	return string(declaration.Class), true
 }
 
-// holdRecorded applies the movement and expiry rules to a matching baseline.
+// holdRecorded applies the expiry rule to a matching, unmoved baseline.
 func (g *parkedGate) holdRecorded(
 	declaration ParkedDeclaration,
 	observation ParkedObservation,
 	baseline *ParkedBaseline,
 ) (string, bool) {
-	if baseline.Fingerprint != observation.Fingerprint {
-		return "", false
-	}
 	if declaration.Class == ParkedUntil && declaration.Deadline == nil &&
 		g.now().Sub(baseline.FirstSeen) >= MAX_AGE_S {
 		return "", false

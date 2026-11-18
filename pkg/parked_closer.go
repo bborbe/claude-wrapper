@@ -72,9 +72,13 @@ var (
 	parkedPRPattern = regexp.MustCompile(
 		`^([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)#([1-9][0-9]*)$`,
 	)
-	// parkedHostPortPattern matches one name:port token: an alphanumeric name
-	// followed by a numeric port. The port range is checked after parsing.
-	parkedHostPortPattern = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9.-]*):([0-9]+)$`)
+	// parkedHostPortPattern matches one name:port token. The name must either
+	// start with a letter or contain a dot, so a bare numeric token such as
+	// `14:30` — a clock, not a host — cannot match. The port range is checked
+	// after parsing.
+	parkedHostPortPattern = regexp.MustCompile(
+		`^([A-Za-z][A-Za-z0-9.-]*|[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9.-]*):([0-9]+)$`,
+	)
 	// parkedIPv4Pattern matches four numeric octets; the 0-255 range is checked
 	// after parsing, so `v1.2.3` and `999.1.1.1` both fail.
 	parkedIPv4Pattern = regexp.MustCompile(`^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$`)
@@ -197,13 +201,23 @@ func ClassifyParked(closer string) (ParkedDeclaration, bool) {
 		declaration.PR = ref
 		return declaration, true
 	}
+	// ⚠️ The clock is checked BEFORE the host, and the order is load-bearing. A
+	// declaration naming `2026-11-18T14:30` also satisfies the host:port shape
+	// (name `2026-11-18T14`, port `30`), and a `parked-on-host` row is never
+	// bounded by MAX_AGE_S — so classifying it as a host would pin the row past
+	// the very clock it named. Measured 2026-11-18 in review: held at 12:00 and
+	// still held at 15:00.
+	if deadline := parkedDeadline(text); deadline != nil {
+		declaration.Class = ParkedUntil
+		declaration.Deadline = deadline
+		return declaration, true
+	}
 	if host, port, ok := parkedHost(text); ok {
 		declaration.Class = ParkedOnHost
 		declaration.Host = host
 		declaration.Port = port
 		return declaration, true
 	}
-	declaration.Deadline = parkedDeadline(text)
 	return declaration, true
 }
 
