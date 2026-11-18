@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.39.2
 
 - fix: **a resume is no longer refused by a holder whose recorded child is gone.** The resume guard refused any session whose `s.sessions` entry was not `StateExited`, and an adopted child's only exit signal was its recorded pid — which the kernel reuses, so a dead child's number handed to an unrelated process kept the holder "live" until that process exited, and every verb that could clear it refused because of it. The record now carries the child's own start time (`child_started_at`), captured at spawn; adoption prunes a record whose live pid's start time proves the pid was reused, and a resume releases a holder whose recorded process is provably gone before it would refuse. A genuinely live holder, an unknown start time, and a spawned child (settled by `cmd.Wait()`) are unchanged — the guard still refuses two writers on one conversation.
 
