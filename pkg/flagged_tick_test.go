@@ -9,6 +9,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -227,6 +228,79 @@ func (s *countingSource) count() int {
 	return s.calls
 }
 
+// The guard must survive the attention-controller being down: the durable child
+// table is on disk, so a ledger outage no longer disables the double-open guard.
+var _ = ginkgo.Describe("flagged tick: recently-spawned guard without the ledger", func() {
+	ginkgo.It("still suppresses a row whose child record is live", func() {
+		ctx := context.Background()
+		store := NewSessionStore(ginkgo.GinkgoT().TempDir())
+		gomega.Expect(store.Create(ctx, SessionRecord{
+			ID:        "child-1",
+			ChildPID:  os.Getpid(),
+			StartedAt: time.Now(),
+		})).Error().NotTo(gomega.HaveOccurred())
+		tick := &FlaggedTick{
+			Ledger:   ledgerWith{err: stderrors.New("connection refused")},
+			Sessions: store,
+			Now:      fixedClock(time.Now()),
+			Logf:     func(string, ...any) {},
+		}
+
+		recent := recentlySpawned(tick.ledgerRows(ctx))
+		tick.mergeChildSpawnTimes(ctx, recent)
+		got := recent
+
+		gomega.Expect(got).To(gomega.HaveKey("child-1"))
+	})
+
+	ginkgo.It("ignores a child record whose pid is gone", func() {
+		ctx := context.Background()
+		store := NewSessionStore(ginkgo.GinkgoT().TempDir())
+		gomega.Expect(store.Create(ctx, SessionRecord{
+			ID:        "child-dead",
+			ChildPID:  0,
+			StartedAt: time.Now(),
+		})).Error().NotTo(gomega.HaveOccurred())
+		tick := &FlaggedTick{
+			Ledger:   ledgerWith{err: stderrors.New("connection refused")},
+			Sessions: store,
+			Now:      fixedClock(time.Now()),
+			Logf:     func(string, ...any) {},
+		}
+
+		recent := recentlySpawned(tick.ledgerRows(ctx))
+		tick.mergeChildSpawnTimes(ctx, recent)
+		got := recent
+
+		gomega.Expect(got).NotTo(gomega.HaveKey("child-dead"))
+	})
+})
+
+// SC2: a controller outage must not silence the tick. Fault injection — the
+// ledger and heartbeat endpoints refuse, the count source is healthy — and the
+// row must still open, with the line naming where the count came from.
+var _ = ginkgo.Describe("flagged tick: caps during a controller outage", func() {
+	ginkgo.It("opens the row when only the ledger is refused", func() {
+		ctx := context.Background()
+		caps := testCaps(
+			ledgerWith{err: stderrors.New("connection refused")},
+			&stubHeartbeats{err: stderrors.New("connection refused")},
+			"",
+			ginkgo.GinkgoT().TempDir(),
+		)
+		caps.registry = &capsRegistry{live: []RegistryEntry{{SessionID: "s1"}}}
+		row := rowWith("agent", SpawnModeHeadless, "flagged-row")
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, caps)
+
+		result := tick.tickFromRows(ctx, []FlaggedRow{row})
+
+		gomega.Expect(result.Opened).To(gomega.HaveLen(1))
+		gomega.Expect(result.Refused).To(gomega.BeEmpty())
+		gomega.Expect(result.LiveCountSource).To(gomega.Equal("registry"))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("live_count_source=registry"))
+	})
+})
+
 // ledgerWith supplies spawn times to the recently-spawned guard.
 type ledgerWith struct {
 	rows []LedgerRow
@@ -301,6 +375,12 @@ func newTick(source FlaggedRowSource, reopener FlaggedReopener, caps SpawnCaps) 
 		Caps:     caps,
 		Now:      fixedNow(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)),
 		Logf:     func(string, ...any) {},
+		// A spec must never read the host's real child table: `Home` scopes the state
+		// directory to an empty temp dir and `Getenv` answers nothing, so the
+		// per-session `record.json` half of the guard is empty unless a spec opts in
+		// by setting `Sessions`.
+		Home:   ginkgo.GinkgoT().TempDir(),
+		Getenv: func(string) string { return "" },
 	}
 }
 

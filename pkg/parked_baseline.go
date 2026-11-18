@@ -118,7 +118,7 @@ func (s *parkedStore) Save(ctx context.Context, key string, baseline ParkedBasel
 // An empty value follows the same chain NewSessionStore follows, so the two
 // can never disagree about where the daemon's state lives.
 func StateDirs(stateDir string) (sessions string, parked string, err error) {
-	sessions, err = resolveSessionsRoot(context.Background(), stateDir)
+	sessions, err = SessionRoot(context.Background(), stateDir, "", nil)
 	if err != nil {
 		return "", "", errors.Wrapf(context.Background(), err, "resolve sessions directory failed")
 	}

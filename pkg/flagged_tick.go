@@ -118,6 +118,24 @@ type FlaggedTickResult struct {
 	// the delay was not measurable; a zero would read as an instant resume, which
 	// is the one reading this measurement exists to distinguish.
 	ResumeDelays []string
+	// LiveCountSource names the channel the spawn caps counted from this tick
+	// (`ledger`, `registry`, `heartbeat` or `none`). Empty when the caps cannot
+	// report one.
+	//
+	// It exists because a `caps refused` row is only diagnosable if the line says
+	// WHICH channel was asked: measured 2026-11-17, 46 rows refused across 12
+	// controller outages, every one reading "the live-worker count could not be
+	// taken" with no way to tell whether a fallback was even attempted.
+	LiveCountSource string
+}
+
+// liveCountSourceReporter is the narrow half of SpawnCaps the tick logs.
+//
+// Optional on purpose: a test fake that only enforces caps must not have to
+// implement a reporting method it does not care about, and a caps value that does
+// not report one simply leaves the field off the line.
+type liveCountSourceReporter interface {
+	LiveCountSource(ctx context.Context) string
 }
 
 // Line renders the summary line a tick writes.
@@ -149,6 +167,9 @@ func (r FlaggedTickResult) Line() string {
 	}
 	if counts := formatCounts(r.Skipped); counts != "" {
 		line += " skipped_by_reason=" + counts
+	}
+	if r.LiveCountSource != "" {
+		line += " live_count_source=" + r.LiveCountSource
 	}
 	// `resume_delay=` is the per-resume measurement, and it sits on the summary
 	// line for the same reason `rows=` does: a row's dead time has to be readable
@@ -227,12 +248,23 @@ type FlaggedTick struct {
 	Reopener FlaggedReopener
 	Caps     SpawnCaps
 	// Ledger supplies the spawn times the recently-spawned guard reads. A nil
-	// ledger disables that guard rather than refusing every row.
+	// ledger disables that half of the guard rather than refusing every row.
 	Ledger LedgerReader
 	// Parked is the park gate. A nil gate is inactive, which is what a test that
 	// predates it gets and what the daemon gets when the state directories cannot
 	// be resolved.
 	Parked ParkedHold
+	// Sessions is the wrapper's own durable child table — the half of the
+	// recently-spawned guard that still answers while the attention-controller is
+	// down. Nil resolves it from the state directory, which `Home` and `Getenv`
+	// scope: a spec that leaves both zero reads the host's real `~/.local/state`,
+	// so every spec sets them.
+	Sessions SessionStore
+	// Home overrides the home directory the state directory resolves under, and
+	// Getenv overrides the environment lookup (defaulting to os.Getenv). Both exist
+	// so a spec cannot silently read the host's child table.
+	Home   string
+	Getenv func(string) string
 	Now    libtime.CurrentDateTimeGetter
 	// Interval defaults to DefaultFlaggedTickInterval.
 	Interval time.Duration
@@ -486,11 +518,19 @@ func (t *FlaggedTick) tickFromRows(
 	var result FlaggedTickResult
 	ordered := orderFlaggedRows(rows)
 	result.Considered = len(ordered)
+	// Named once per tick, before any refusal: a `caps refused` row is
+	// undiagnosable without it.
+	if reporter, ok := t.Caps.(liveCountSourceReporter); ok {
+		result.LiveCountSource = reporter.LiveCountSource(ctx)
+	}
 	// One ledger read serves both the recently-spawned guard and the resume-delay
 	// measurement: two reads of the same store in one tick could disagree, and the
 	// measurement would then describe a fleet state the decision never saw.
 	ledger := t.ledgerRows(ctx)
 	recent := recentlySpawned(ledger)
+	// The child table answers when the ledger cannot, so a controller outage does
+	// not empty the double-open guard.
+	t.mergeChildSpawnTimes(ctx, recent)
 	t.mergeOpened(recent)
 	ended := endedAtBySession(ledger)
 	now := t.now()
@@ -696,6 +736,37 @@ func recentlySpawned(rows []LedgerRow) map[string]time.Time {
 		}
 	}
 	return out
+}
+
+// mergeChildSpawnTimes adds the spawn times of the wrapper's own live children.
+//
+// This is what keeps the double-open guard alive while the attention-controller
+// is down: the durable per-session `record.json` is on disk, so it answers when
+// the ledger cannot. A record whose child pid is gone is not a spawn to stay away
+// from, and a record with no pid check would suppress a row forever.
+func (t *FlaggedTick) mergeChildSpawnTimes(ctx context.Context, out map[string]time.Time) {
+	store := t.Sessions
+	if store == nil {
+		dir, err := SessionRoot(ctx, "", t.Home, t.Getenv)
+		if err != nil {
+			t.logf("flagged-tick: session state dir unavailable, recently-spawned guard is ledger-only: %v", err)
+			return
+		}
+		store = NewSessionStore(dir)
+	}
+	records, err := store.List(ctx)
+	if err != nil {
+		t.logf("flagged-tick: child table read failed, recently-spawned guard is ledger-only: %v", err)
+		return
+	}
+	for _, record := range records {
+		if record.ID == "" || !pidAlive(record.ChildPID) {
+			continue
+		}
+		if prev, ok := out[record.ID]; !ok || record.StartedAt.After(prev) {
+			out[record.ID] = record.StartedAt
+		}
+	}
 }
 
 // labelKey is the recently-spawned map's key for a spawn found by label.

@@ -114,22 +114,39 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) sessionsRoot(ctx context.Context) (string, error) {
-	return resolveSessionsRoot(ctx, s.root)
+	return SessionRoot(ctx, s.root, "", nil)
 }
 
-// resolveSessionsRoot resolves the sessions directory from dir, then
-// $CLAUDE_WRAPPER_STATE_DIR/sessions, then
-// ~/.claude/state/claude-wrapper/sessions.
-func resolveSessionsRoot(ctx context.Context, dir string) (string, error) {
+// SessionRoot resolves the directory the wrapper's per-session `record.json` files
+// live in — the ONE place that decides it.
+//
+// ⚠️ A reader outside the store must call this rather than compose a path of its
+// own. Two nearby directories look plausible and only one holds records: the
+// store roots at `$CLAUDE_WRAPPER_STATE_DIR/sessions`, then
+// `~/.claude/state/claude-wrapper/sessions`, while the supervisor's config state
+// directory (`SupervisorStateDir`) is `~/.local/state/claude-supervisor`. Reading
+// the latter finds zero records and the caller silently behaves as if no session
+// were ever spawned. Measured 2026-11-18 on review: the default configuration
+// carries 38 session records in the first and none in the second.
+//
+// `home` and `getenv` exist so a spec can scope the resolution; production passes
+// the zero values, which mean "the real home directory" and `os.Getenv`.
+func SessionRoot(ctx context.Context, dir, home string, getenv func(string) string) (string, error) {
 	if dir != "" {
 		return dir, nil
 	}
-	if env := os.Getenv(StateDirEnv); env != "" {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if env := getenv(StateDirEnv); env != "" {
 		return filepath.Join(env, "sessions"), nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", errors.Wrapf(ctx, err, "resolve home dir failed")
+	if home == "" {
+		detected, err := os.UserHomeDir()
+		if err != nil {
+			return "", errors.Wrapf(ctx, err, "resolve home dir failed")
+		}
+		home = detected
 	}
 	return filepath.Join(home, ".claude", "state", "claude-wrapper", "sessions"), nil
 }

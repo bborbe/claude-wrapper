@@ -475,36 +475,79 @@ func (c workerModeCounts) forMode(mode string) int {
 // — the resume used to be skipped, which is what made the cap blind to every
 // session a sweep revived.
 func (c *spawnCaps) countWorkersByMode(ctx context.Context) (workerModeCounts, error) {
-	rows, live, err := c.ledgerAndLive(ctx)
+	cen, err := c.census(ctx)
 	if err != nil {
 		return workerModeCounts{}, err
 	}
 	var counts workerModeCounts
-	for _, row := range rows {
-		if row.SessionID == "" {
-			continue
+	if cen.ledgerOK {
+		for _, row := range cen.rows {
+			if row.SessionID == "" {
+				continue
+			}
+			if _, ok := cen.live[row.SessionID]; !ok {
+				continue
+			}
+			if row.Role == RoleManager {
+				counts.Managers++
+				continue
+			}
+			counts.addMode(row.Mode)
 		}
-		if _, ok := live[row.SessionID]; !ok {
-			continue
-		}
-		if row.Role == RoleManager {
+		return counts, nil
+	}
+	// Degraded: the controller is down, so identity and mode come from the
+	// wrapper's own child table. Counting a session that turns out not to be a
+	// worker refuses MORE, which is the safe direction; reporting zero would open
+	// past the cap, which is not.
+	log.Printf(
+		"claude-wrapper: spawn cap: live_count_source=%s degraded=%s",
+		cen.source(), cen.degraded(),
+	)
+	for sessionID := range cen.live {
+		if cen.childRoles[sessionID] == RoleManager {
 			counts.Managers++
 			continue
 		}
-		switch row.Mode {
-		case SpawnModeHeadless:
-			counts.Headless++
-		case "cluster":
-			counts.Cluster++
-		case "a2a":
-			counts.A2A++
-		default:
-			// An absent mode predates the field and reads as interactive, which is
-			// the node's rule (`record.mode || 'interactive'`).
-			counts.Interactive++
-		}
+		counts.addChildMode(cen.childModes[sessionID])
 	}
 	return counts, nil
+}
+
+// addMode charges one live session to its mode bucket.
+//
+// An unrecognised mode falls to interactive, which is the safe direction for a
+// LEDGER row: charging a session to the interactive bucket counts it against the
+// total worker cap either way, and the ledger is the only source that records a
+// mode at all.
+func (c *workerModeCounts) addMode(mode string) {
+	switch mode {
+	case SpawnModeHeadless:
+		c.Headless++
+	case "cluster":
+		c.Cluster++
+	case "a2a":
+		c.A2A++
+	default:
+		c.Interactive++
+	}
+}
+
+// addChildMode charges one live session using the CHILD TABLE's own default.
+//
+// ⚠️ The child table and the ledger default in OPPOSITE directions, and sharing
+// one bucketing rule silently mis-splits the fleet. `SpawnOptions.Mode` documents
+// "Empty means headless, which is what every wrapper child is today", and every
+// record measured 2026-11-18 on this machine carries an empty mode (38 of 38) —
+// so bucketing an empty child-table mode as interactive charges the entire
+// fleet to the wrong axis, under-counting headless and over-counting interactive
+// during exactly the outage the degraded path exists for.
+func (c *workerModeCounts) addChildMode(mode string) {
+	if mode == "" {
+		c.Headless++
+		return
+	}
+	c.addMode(mode)
 }
 
 // countManagers counts live manager sessions from the spawn ledger.
@@ -545,16 +588,24 @@ func (c *spawnCaps) countManagersByKind(
 	ctx context.Context,
 	roots []string,
 ) (managerKindCounts, error) {
-	rows, live, err := c.ledgerAndLive(ctx)
+	cen, err := c.census(ctx)
 	if err != nil {
 		return managerKindCounts{}, err
 	}
+	if !cen.ledgerOK {
+		// A manager's identity and kind come from the ledger's label and role, so
+		// without it the manager population is genuinely unknown: this axis stays
+		// fail-closed while the worker count degrades.
+		return managerKindCounts{}, errors.Errorf(
+			ctx, "the session-ledger endpoint could not be read: %v", cen.ledgerErr,
+		)
+	}
 	counts := managerKindCounts{byKind: map[string]int{}}
-	for _, row := range rows {
+	for _, row := range cen.rows {
 		if row.SessionID == "" || row.Role != RoleManager {
 			continue
 		}
-		if _, ok := live[row.SessionID]; !ok {
+		if _, ok := cen.live[row.SessionID]; !ok {
 			continue
 		}
 		rowRoots := roots
@@ -568,63 +619,204 @@ func (c *spawnCaps) countManagersByKind(
 	return counts, nil
 }
 
-// ledgerAndLive reads the ledger and the live set, naming the store that failed.
+// liveCensus is one count pass: the ledger's identity rows, the live set, and
+// which sources answered.
 //
-// Liveness is two channels unioned, as the node's count reads it:
+// ⚠️ A source that cannot be read is DEGRADED, never fatal on its own. The cap
+// must still count during an attention-controller outage: refusing every spawn
+// because one of three liveness channels is down turns a store outage into a
+// fleet-wide stall. Measured 2026-11-17 — the controller hung at startup and the
+// flagged tick logged `opened=0 refused=46`, every refusal reading "the
+// live-worker count could not be taken". Fail-closed survives where it belongs:
+// when NO liveness source answers at all.
+type liveCensus struct {
+	// rows is the ledger's identity rows, collapsed one per session. Empty when
+	// the ledger could not be read.
+	rows      []LedgerRow
+	ledgerOK  bool
+	ledgerErr error
+	// live is the union of every liveness channel that answered.
+	live         map[string]struct{}
+	registryOK   bool
+	registryErr  error
+	heartbeatOK  bool
+	heartbeatErr error
+	// childModes and childRoles come from the wrapper's own durable child table,
+	// which is the only source that still knows a session's mode and role while
+	// the controller is down.
+	childModes map[string]string
+	childRoles map[string]string
+	childOK    bool
+	childErr   error
+}
+
+// source names the channel that supplied the count, for the tick's log line.
 //
-//   - a heartbeat row with `live: true` AND a non-empty `state`. A `live: true`
-//     row with no state is a ghost the store keeps stamping after its session
-//     exited; counting it over-counts.
-//   - the session registry's pid check, for a local session that holds no
-//     heartbeat — a headless worker writes a ledger row and holds a live pid but
-//     never stamps one; without this it is invisible and the cap under-counts.
+// ⚠️ Liveness decides first, identity second. A ledger row says who a session is;
+// it never says whether the session is alive. With no liveness channel answering
+// the live set is empty, so a `ledger` here would describe a zero count as a
+// healthy read — the exact fail-open this census exists to prevent.
+func (c liveCensus) source() string {
+	if !c.registryOK && !c.heartbeatOK {
+		return "none"
+	}
+	if c.ledgerOK {
+		return "ledger"
+	}
+	if c.registryOK {
+		return "registry"
+	}
+	return "heartbeat"
+}
+
+// degraded names the channels that could not be read, so an outage is
+// diagnosable from the log rather than inferred from a refusal.
+func (c liveCensus) degraded() string {
+	parts := make([]string, 0, 4)
+	if !c.ledgerOK {
+		parts = append(parts, fmt.Sprintf("ledger(%v)", c.ledgerErr))
+	}
+	if !c.registryOK {
+		parts = append(parts, fmt.Sprintf("registry(%v)", c.registryErr))
+	}
+	if !c.heartbeatOK {
+		parts = append(parts, fmt.Sprintf("heartbeat(%v)", c.heartbeatErr))
+	}
+	if !c.childOK {
+		parts = append(parts, fmt.Sprintf("child(%v)", c.childErr))
+	}
+	return strings.Join(parts, ";")
+}
+
+// census reads every liveness channel once, tolerating any of them being down.
 //
-// An unreadable ledger or heartbeat store is an error, never zero. An unreadable
-// registry adds nothing rather than failing: the heartbeat store already answered,
-// and a missing second channel is not an unknown first one.
-func (c *spawnCaps) ledgerAndLive(
-	ctx context.Context,
-) ([]LedgerRow, map[string]struct{}, error) {
-	if c.ledger == nil || c.heartbeats == nil {
-		return nil, nil, errors.Errorf(
-			ctx, "the session-ledger and session-heartbeat readers are not wired",
+// The registry leads because it is the only channel that is both pid-checked and
+// independent of the attention-controller: a heartbeat row is a store's claim
+// about a session, a registry file is a pid on this machine.
+//
+// ⚠️ The error condition is about LIVENESS, never identity. The ledger says who a
+// session is and which mode it ran in; it never says whether the session is alive,
+// so a readable ledger with no liveness channel yields an empty live set — a zero
+// count that would open the fleet past a cap nobody measured. Measured on review
+// 2026-11-18: an earlier draft ANDed the ledger into this condition, so a
+// controller outage that took the heartbeat store with it (the two fail together)
+// returned `0` with no error and the cap silently stopped refusing.
+//
+// An error is returned only when NO liveness channel could be read — the one case
+// where the count is genuinely unknown and the cap must refuse.
+func (c *spawnCaps) census(ctx context.Context) (liveCensus, error) {
+	cen := liveCensus{live: map[string]struct{}{}}
+	c.readRegistry(ctx, &cen)
+	c.readLedger(ctx, &cen)
+	c.readHeartbeats(ctx, &cen)
+	c.readChildren(ctx, &cen)
+
+	if !cen.registryOK && !cen.heartbeatOK {
+		return cen, errors.Errorf(
+			ctx,
+			"no liveness source could be read: registry: %v; heartbeat: %v",
+			cen.registryErr, cen.heartbeatErr,
 		)
+	}
+	return cen, nil
+}
+
+// readRegistry adds the pid-checked registry's live sessions to the census.
+func (c *spawnCaps) readRegistry(ctx context.Context, cen *liveCensus) {
+	if c.registry == nil {
+		cen.registryErr = errors.Errorf(ctx, "the session registry is not wired")
+		return
+	}
+	entries, err := c.registry.Live(ctx)
+	if err != nil {
+		cen.registryErr = err
+		return
+	}
+	cen.registryOK = true
+	for _, entry := range entries {
+		if entry.SessionID != "" {
+			cen.live[entry.SessionID] = struct{}{}
+		}
+	}
+}
+
+// readLedger adds the ledger's identity rows to the census.
+func (c *spawnCaps) readLedger(ctx context.Context, cen *liveCensus) {
+	if c.ledger == nil {
+		cen.ledgerErr = errors.Errorf(ctx, "the session-ledger reader is not wired")
+		return
 	}
 	rows, err := c.ledger.Rows(ctx)
 	if err != nil {
-		return nil, nil, errors.Errorf(
-			ctx, "the session-ledger endpoint could not be read: %v", err,
-		)
+		cen.ledgerErr = err
+		return
 	}
+	cen.ledgerOK = true
 	// One row per session, the last one winning — the node's `ledgerBySessionId`
 	// collapse. The endpoint serves a LIST, and a session that was spawned,
 	// stopped and re-recorded appears more than once; counting per row would
 	// charge the same worker twice and refuse a fleet that is not full.
-	rows = collapseLedgerRows(rows)
+	cen.rows = collapseLedgerRows(rows)
+}
+
+// readHeartbeats adds the heartbeat store's live sessions to the census.
+func (c *spawnCaps) readHeartbeats(ctx context.Context, cen *liveCensus) {
+	if c.heartbeats == nil {
+		cen.heartbeatErr = errors.Errorf(ctx, "the session-heartbeat reader is not wired")
+		return
+	}
 	beats, err := c.heartbeats.Rows(ctx)
 	if err != nil {
-		return nil, nil, errors.Errorf(
-			ctx, "the session-heartbeat endpoint could not be read: %v", err,
-		)
+		cen.heartbeatErr = err
+		return
 	}
-	live := make(map[string]struct{}, len(beats))
+	cen.heartbeatOK = true
 	for _, beat := range beats {
 		if beat.Live && beat.SessionID != "" && beat.State != "" {
-			live[beat.SessionID] = struct{}{}
+			cen.live[beat.SessionID] = struct{}{}
 		}
 	}
-	if c.registry != nil {
-		entries, regErr := c.registry.Live(ctx)
-		if regErr != nil {
-			log.Printf("WARNING: spawn cap: session registry unreadable (%v) — counting heartbeats only", regErr)
-		}
-		for _, entry := range entries {
-			if entry.SessionID != "" {
-				live[entry.SessionID] = struct{}{}
-			}
-		}
+}
+
+// readChildren records the mode and role the wrapper spawned each session under.
+//
+// Read from the durable child table on disk, so it answers during a controller
+// outage. A store that cannot be listed is degraded like any other channel — it
+// is a cross-check, not a precondition — but the failure is RECORDED rather than
+// swallowed, so `degraded()` can name it on the tick line instead of leaving a
+// count that quietly lost its mode source.
+func (c *spawnCaps) readChildren(ctx context.Context, cen *liveCensus) {
+	dir, err := SessionRoot(ctx, "", c.home, c.getenv)
+	if err != nil {
+		cen.childErr = err
+		return
 	}
-	return rows, live, nil
+	records, err := NewSessionStore(dir).List(ctx)
+	if err != nil {
+		cen.childErr = err
+		return
+	}
+	cen.childOK = true
+	cen.childModes = make(map[string]string, len(records))
+	cen.childRoles = make(map[string]string, len(records))
+	for _, record := range records {
+		cen.childModes[record.ID] = record.Options.Mode
+		cen.childRoles[record.ID] = record.Options.Role
+	}
+}
+
+// LiveCountSource names the channel a count would use right now — `ledger`,
+// `registry`, `heartbeat`, or `none` when no channel answers.
+//
+// It exists so the flagged tick can print `live_count_source=` on its own line:
+// a refusal that says the count failed is only diagnosable if the reader also
+// learns which channel was asked.
+func (c *spawnCaps) LiveCountSource(ctx context.Context) string {
+	cen, err := c.census(ctx)
+	if err != nil {
+		return "none"
+	}
+	return cen.source()
 }
 
 // collapseLedgerRows keeps one row per session id, the last occurrence winning,
