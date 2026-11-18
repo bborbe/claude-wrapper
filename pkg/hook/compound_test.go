@@ -174,3 +174,24 @@ var _ = Describe("GitShapeAllows", func() {
 		Entry("a pathspec after --", []string{"diff", "--", "a:b"}, inside, true),
 	)
 })
+
+var _ = Describe("SedFilterAllows", func() {
+	root := tempRepo(map[string]string{"a.txt": "x\n"})
+	roots := []string{root}
+
+	DescribeTable("approves only a static filter over readable operands",
+		func(values []string, cwd string, allowed bool) {
+			Expect(hook.SedFilterAllows(values, cwd, roots)).To(Equal(allowed))
+		},
+		Entry("a substitution", []string{"s/a/b/", root + "/a.txt"}, root, true),
+		Entry("a substitution with flags", []string{"s/a/b/g", root + "/a.txt"}, root, true),
+		Entry("an escaped delimiter", []string{"s/a\\/b/c/", root + "/a.txt"}, root, true),
+		Entry("a print selector", []string{"-n", "5p", root + "/a.txt"}, root, true),
+		Entry("a quit selector", []string{"1q", root + "/a.txt"}, root, true),
+		Entry("the -e form", []string{"-e", "s/a/b/", root + "/a.txt"}, root, true),
+		Entry("a write command", []string{"w /tmp/out", root + "/a.txt"}, root, false),
+		Entry("an unknown flag", []string{"-i", "s/a/b/", root + "/a.txt"}, root, false),
+		Entry("an operand outside the roots", []string{"s/a/b/", "/etc/passwd"}, root, false),
+		Entry("an empty script", []string{"", root + "/a.txt"}, root, false),
+	)
+})
