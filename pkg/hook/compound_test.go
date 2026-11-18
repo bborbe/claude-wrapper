@@ -350,6 +350,40 @@ var _ = Describe("Review regressions", func() {
 		Expect(guard.Evaluate(bashInput("gh pr merge --repo o/r 42")).Deny).To(BeTrue())
 		Expect(seen).To(ContainElement("42"))
 	})
+
+	It("refuses a merge-allow when the invocation is not the whole command", func() {
+		guard := hook.NewMergeAllowGuardWithRunner(
+			func(...string) (string, error) {
+				return `{"reviewDecision":"APPROVED","mergeable":"MERGEABLE"}`, nil
+			},
+		)
+		for _, command := range []string{
+			"rm -rf ~ gh -R bborbe/x pr merge 42",
+			"./gh -R bborbe/x pr merge 42",
+			`gh -R bborbe/x pr merge 42 --adm""in`,
+		} {
+			Expect(guard.Evaluate(bashInput(command))).To(Equal(hook.Decision{}))
+		}
+	})
+
+	It("takes the last number, so a flag value cannot be read as the PR", func() {
+		var seen []string
+		guard := hook.NewMergeLabelGuardWithRunner(
+			func(args ...string) (string, error) {
+				seen = args
+				return "do-not-merge\n", nil
+			},
+		)
+		Expect(guard.Evaluate(bashInput("gh pr merge --body 7 42")).Deny).To(BeTrue())
+		Expect(seen).To(ContainElement("42"))
+	})
+
+	It("refuses when a quoted cd hides the repo", func() {
+		worktree := tempWorktree(tempGitRepo(map[string]string{}, "master"))
+		input := bashInput(`cd "/main" && git checkout -b feat/x`)
+		input.Cwd = worktree
+		Expect(hook.NewBranchSwitchGuard().Evaluate(input).Deny).To(BeTrue())
+	})
 })
 
 var _ = Describe("SedFilterAllows", func() {

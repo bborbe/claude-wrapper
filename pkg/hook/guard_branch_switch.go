@@ -125,6 +125,10 @@ func judgeSpan(scan string, span string, at int, cwd string) (Decision, bool) {
 		return Decision{}, false
 	}
 	dir := spanRepo(scan, span, at, cwd)
+	if dir == "" {
+		// The repo could not be resolved, so a switch cannot be ruled out.
+		return branchSwitchRefusal(span, "unknown"), true
+	}
 	if _, ok := isMainCheckout(dir); !ok {
 		return Decision{}, false
 	}
@@ -215,9 +219,15 @@ func spanRepo(scan string, span string, at int, cwd string) string {
 	dir := cwd
 	// The `cd` is read from the QUOTE-STRIPPED prefix: a commit message containing
 	// `cd /tmp` otherwise resolves the repo to /tmp and the real switch is never
-	// judged. Losing a quoted `cd "<worktree>"` operand costs a false deny, which is
-	// the safe direction.
-	prefix := scanText(scan[:at])
+	// judged. When stripping removes a `cd` the raw text had, the target is
+	// UNKNOWN — the caller refuses rather than judging it in the session cwd, which
+	// would be a fail-open when the quoted operand names the main checkout.
+	rawPrefix := scan[:at]
+	prefix := scanText(rawPrefix)
+	if len(branchSwitchCd.FindAllString(rawPrefix, -1)) > 0 &&
+		len(branchSwitchCd.FindAllString(prefix, -1)) == 0 {
+		return ""
+	}
 	if matches := branchSwitchCd.FindAllString(prefix, -1); len(matches) > 0 {
 		operand := branchSwitchCdPrefix.ReplaceAllString(matches[len(matches)-1], "")
 		dir = resolvePathOperand(operand, cwd)

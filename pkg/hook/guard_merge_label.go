@@ -175,15 +175,18 @@ func trailingNumber(command string, invocation string) string {
 		return ""
 	}
 	tail := command[index+len(invocation):]
-	if next := strings.IndexAny(tail, ";&|"); next >= 0 {
+	if next := strings.IndexAny(tail, ";&|#\n"); next >= 0 {
 		tail = tail[:next]
 	}
+	// The LAST bare number, not the first: `--body 7 42` carries a flag value
+	// before the PR, and taking 7 would check the wrong PR.
+	number := ""
 	for _, word := range strings.Fields(tail) {
 		if allDigits(word) {
-			return word
+			number = word
 		}
 	}
-	return ""
+	return number
 }
 
 // distinct strips each match down to its value and returns the unique values.

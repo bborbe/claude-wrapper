@@ -85,6 +85,17 @@ func (g *MergeAllowGuard) Evaluate(input Input) Decision {
 	if !WholeCallAllowable(command) {
 		return Decision{}
 	}
+	// The invocation must BE the command. `rm -rf ~ gh -R … pr merge 42` and a
+	// local `./gh …` contain no separator, so without this the Allow covers them.
+	trimmed := strings.TrimSpace(command)
+	if !strings.HasPrefix(trimmed, "gh ") && trimmed != "gh" {
+		return Decision{}
+	}
+	// A quote, backslash or expansion can spell `--admin` in a way the substring
+	// test below cannot see, and can also change what gh resolves.
+	if strings.ContainsAny(trimmed, "\"'\\$") {
+		return Decision{}
+	}
 	// The one path that bypasses branch protection. Refused on the text
 	// deliberately: a false deny costs a prompt, a false allow costs a ruleset.
 	if strings.Contains(command, "--admin") {
