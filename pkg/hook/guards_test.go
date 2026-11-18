@@ -797,3 +797,69 @@ var _ = Describe("MergeLabelGuard", func() {
 		Expect(guard.Name()).To(Equal("block-do-not-merge-merge.sh"))
 	})
 })
+
+var _ = Describe("MergeAllowGuard", func() {
+	var state string
+	var runnerErr error
+	guard := hook.NewMergeAllowGuardWithRunner(func(args ...string) (string, error) {
+		if runnerErr != nil {
+			return "", runnerErr
+		}
+		return state, nil
+	})
+
+	BeforeEach(func() {
+		state = `{"reviewDecision":"APPROVED","mergeable":"MERGEABLE",` +
+			`"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}`
+		runnerErr = nil
+	})
+
+	It("allows a positively green merge", func() {
+		decision := guard.Evaluate(bashInput("gh pr merge 42 --repo o/r"))
+		Expect(decision.Allow).To(BeTrue())
+		Expect(decision.Reason).To(Equal(
+			"bot-APPROVED on head, mergeable, every check completed-passing for: o/r#42"))
+	})
+
+	It("refuses --admin on the text alone", func() {
+		decision := guard.Evaluate(bashInput("gh pr merge 42 --repo o/r --admin"))
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Reason).To(Equal(
+			"gh pr merge --admin bypasses branch protection; this hook refuses it for every " +
+				"repo, including owners no deny rule covers."))
+	})
+
+	DescribeTable("makes no decision when the state is not positively green",
+		func(payload string) {
+			state = payload
+			Expect(guard.Evaluate(bashInput("gh pr merge 42 --repo o/r"))).To(Equal(
+				hook.Decision{}))
+		},
+		Entry("no approval",
+			`{"reviewDecision":"CHANGES_REQUESTED","mergeable":"MERGEABLE"}`),
+		Entry("mergeable unknown",
+			`{"reviewDecision":"APPROVED","mergeable":"UNKNOWN"}`),
+		Entry("a check still running", `{"reviewDecision":"APPROVED","mergeable":"MERGEABLE",`+
+			`"statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":""}]}`),
+		Entry("a failing check", `{"reviewDecision":"APPROVED","mergeable":"MERGEABLE",`+
+			`"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]}`),
+	)
+
+	It("makes no decision for an operator-declined repo", func() {
+		Expect(guard.Evaluate(bashInput("gh pr merge 42 --repo bborbe/vault-cli"))).To(Equal(
+			hook.Decision{}))
+	})
+
+	It("makes no decision when the target repo cannot be read", func() {
+		Expect(guard.Evaluate(bashInput("gh pr merge 42"))).To(Equal(hook.Decision{}))
+	})
+
+	It("makes no decision when the API cannot be read", func() {
+		runnerErr = errors.New("network down")
+		Expect(guard.Evaluate(bashInput("gh pr merge 42 --repo o/r"))).To(Equal(hook.Decision{}))
+	})
+
+	It("names the script it replaces", func() {
+		Expect(guard.Name()).To(Equal("allow-gh-pr-merge.py"))
+	})
+})
