@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.39.1
 
 - test: **the fleet-pusher's `failed:<err>` outcome is pinned by specs.** The in-process wake tick's send-failure branch was unspecced: `delivered` and the six `skip:*` classes were asserted, but nothing covered `pkg/fleet_pusher.go`'s mapping of a `SendWhenReadyWith` error onto `failed:<err>`. Two specs now cover both ways the send half fails — the submit lands but the pane never confirms it (the error names the unsubmitted message), and `SendText` itself returns an error (the token carries that error's own text, not a hard-coded reason). Each spec was probed by inverting its injected condition and watching it fail, so neither passes on a neighbour's branch. No production behaviour changed.
 
