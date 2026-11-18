@@ -391,11 +391,33 @@ var _ = Describe("Review regressions", func() {
 			`git push origin "fix/x"`,
 			`git push origin fix/x\ `,
 			`git push origin $BRANCH`,
+			`git push origin {a:fix/x,HEAD:master}`,
 		} {
 			input := bashInput(command)
 			input.Cwd = repo
 			Expect(hook.NewPushGateGuard().Evaluate(input).Allow).To(BeFalse())
 		}
+	})
+
+	It("never allows a push carrying an unrecognised or combined flag", func() {
+		repo := tempGitRepo(map[string]string{}, "master")
+		for _, command := range []string{
+			"git push -fu origin fix/x",
+			"git push --force-w origin fix/x",
+			"git push --del origin fix/x",
+			"git push --receive-pack=sh origin fix/x",
+		} {
+			input := bashInput(command)
+			input.Cwd = repo
+			Expect(hook.NewPushGateGuard().Evaluate(input).Allow).To(BeFalse())
+		}
+	})
+
+	It("still allows a plain feature push", func() {
+		repo := tempGitRepo(map[string]string{}, "master")
+		input := bashInput("git push -u origin fix/x")
+		input.Cwd = repo
+		Expect(hook.NewPushGateGuard().Evaluate(input).Allow).To(BeTrue())
 	})
 })
 

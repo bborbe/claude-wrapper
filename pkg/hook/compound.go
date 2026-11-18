@@ -53,7 +53,7 @@ type CompoundRules struct {
 // The compound guard is the exception: it verifies every segment itself, so it does
 // not consult this.
 func WholeCallAllowable(command string) bool {
-	if strings.ContainsAny(command, ";&|#\n<>\"'\\$`") {
+	if strings.ContainsAny(command, ";&|#\n<>\"'\\$`{}*?[]~,!") {
 		return false
 	}
 	return !strings.Contains(command, "$(")

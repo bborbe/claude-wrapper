@@ -123,6 +123,12 @@ func (g *PushGateGuard) evaluatePush(segment string, repo string) (Decision, boo
 		), false
 	}
 	flags := parsePushGateFlags(args)
+	if flags.unknown {
+		// An option this guard does not recognise could be a force form (`-fu`), an
+		// abbreviation (`--force-w`, `--del`) or a program runner (`--receive-pack=`).
+		// No decision is safer than an Allow that covers it.
+		return Decision{}, false
+	}
 	if decision, denied := flags.decision(); denied {
 		return decision, false
 	}
@@ -152,7 +158,13 @@ type pushGateFlags struct {
 	force      bool
 	delete     bool
 	tags       bool
+	unknown    bool
 	positional []string
+}
+
+// pushGateSafeFlags are the options that carry no target and change nothing.
+var pushGateSafeFlags = map[string]bool{
+	"-u": true, "--set-upstream": true, "--dry-run": true,
 }
 
 // parsePushGateFlags parses the arguments into flags and positionals.
@@ -166,8 +178,12 @@ func parsePushGateFlags(args []string) pushGateFlags {
 			flags.delete = true
 		case pushGateTagFlags[arg]:
 			flags.tags = true
+		case pushGateSafeFlags[arg]:
+			// carries no target
 		case strings.HasPrefix(arg, "-"):
-			// other flags (-u/--set-upstream, --dry-run, ...) carry no target
+			// Unrecognised: could be a combined short flag, an abbreviation git
+			// resolves, or a program runner. Refuse to compose it.
+			flags.unknown = true
 		default:
 			flags.positional = append(flags.positional, arg)
 		}
