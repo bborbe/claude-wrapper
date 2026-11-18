@@ -93,6 +93,17 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 		return Decision{}
 	}
 	roots := DefaultGitRoots()
+	if len(segments) == 1 {
+		// A single command is approved by a shape guard or not at all; matching it
+		// against the allow rules is Claude Code's own job, and a second matcher
+		// that disagrees with it is a bypass.
+		words := unquoteStaticWords(strings.Fields(segments[0]))
+		if matchesAnyPattern(segments[0], rules.Gated) || !staticWords(words) ||
+			!compoundShapeAllows(words, input.Cwd, roots) {
+			return Decision{}
+		}
+		return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
+	}
 	if compoundTextAllows(segments, rules, input.Cwd, roots) {
 		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
 	}

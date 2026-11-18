@@ -597,6 +597,16 @@ var _ = Describe("git -C through the registry", func() {
 		Entry("a -c config", "git -C "+vault+" -c core.pager=x log"),
 		Entry("an --output", "git -C "+vault+" diff --output=/tmp/x"),
 		Entry("an expansion", "git -C $W status"),
+		Entry("a short -o on log", "git -C "+vault+" log -o/tmp/x"),
+		Entry("a short -o on diff", "git -C "+vault+" diff -o /tmp/x"),
+		Entry("a clustered -po on show", "git -C "+vault+" show -po/tmp/x"),
+		Entry("a quoted -o", "git -C "+vault+" log \"-o/tmp/x\""),
+		Entry("a substituted -o", "X="+vault+"; git -C $X diff -o/tmp/x"),
+		Entry("a compound with -o", "git -C "+vault+" status && git -C "+vault+" log -o/tmp/x"),
+		Entry("a .. walk out of the roots", "git -C "+vault+"/nope/../../../../.ssh log"),
+		Entry("a .. walk to /etc", "git -C "+vault+"/nope/../../../../../../etc status"),
+		Entry("a glob operand", "git -C "+vault+" log *"),
+		Entry("a tilde-user operand", "git -C "+vault+" log ~root"),
 	)
 
 	DescribeTable("resolves a literal assignment only when the rewrite is faithful",

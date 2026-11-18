@@ -87,7 +87,28 @@ func GitShapeAllows(values []string, cwd string, roots []string) bool {
 			}
 		}
 	}
+	if gitDiffFamily[values[index]] && gitShortOutput(values[index+1:]) {
+		return false
+	}
 	return gitReadOnlyArgs(values[index+1:])
+}
+
+// gitDiffFamily are the subcommands where `-o <file>` is the short `--output`.
+var gitDiffFamily = map[string]bool{"log": true, "show": true, "diff": true}
+
+// gitShortOutput reports whether a short-option cluster carries `o`, which in the
+// diff family writes the output to a file (`-o/tmp/x`, `-po /tmp/x`).
+func gitShortOutput(args []string) bool {
+	for _, value := range args {
+		if value == "--" {
+			return false
+		}
+		if strings.HasPrefix(value, "-") && !strings.HasPrefix(value, "--") &&
+			strings.Contains(value[1:], "o") {
+			return true
+		}
+	}
+	return false
 }
 
 // gitReadOnlyArgs reports whether every argument of a read-only subcommand is static.
@@ -180,9 +201,11 @@ func UnderRoots(path string, roots []string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	real, err := filepath.EvalSymlinks(path)
+	// A path that does not resolve is refused, never matched raw: an uncleaned
+	// `<root>/x/../../..` passes a prefix test while the kernel walks out of root.
+	real, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
-		real = path
+		return false
 	}
 	real += string(os.PathSeparator)
 	for _, root := range roots {
