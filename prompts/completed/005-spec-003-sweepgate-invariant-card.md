@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-sweep-gate-port]
+summary: 'Ported the covered-subject invariant into pkg/sweepgate: open-card attribution, the blocked-on-operator predicate, the row-set re-arm guard, the payload builder, and the always-zero invariant mode, with AC6 and refusal tests'
+execution_id: claude-wrapper-sweep-gate-exec-005-spec-003-sweepgate-invariant-card
+dark-factory-version: v0.198.17
 created: "2026-11-18T00:35:03Z"
 queued: "2026-11-18T01:08:39Z"
+started: "2026-11-18T01:29:52Z"
+completed: "2026-11-18T01:34:06Z"
 ---
 
 # sweepgate invariant: the open-card payload and its re-arm guard
