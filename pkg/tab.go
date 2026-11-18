@@ -62,11 +62,25 @@ func NewTabClient(bin string) TabClient {
 	if bin == "" {
 		bin = "wezterm"
 	}
-	return &tabClient{bin: bin}
+	return newTabClientWithSubmitDelay(bin, defaultSubmitDelay)
+}
+
+// defaultSubmitDelay is the pause between typing a message and pressing Enter.
+//
+// Measured 2026-11-18 on freshly spawned Claude Code panes: text and `\r` sent
+// in one send-text submitted 0/5 times, the Enter swallowed while the composer
+// still held the text; the same text, a 1 s pause, then `\r` as its own
+// send-text submitted 5/5. One second matches claude-supervisor's
+// `scripts/spawn-goal.py`, the sender that already worked.
+const defaultSubmitDelay = time.Second
+
+func newTabClientWithSubmitDelay(bin string, submitDelay time.Duration) TabClient {
+	return &tabClient{bin: bin, submitDelay: submitDelay}
 }
 
 type tabClient struct {
-	bin string
+	bin         string
+	submitDelay time.Duration
 }
 
 // Spawn opens a tab and returns its pane id.
@@ -107,11 +121,15 @@ func (t *tabClient) Activate(ctx context.Context, paneID string) error {
 
 // SendText types text into a pane and submits it.
 //
-// `--no-paste` sends the text as keystrokes rather than through the paste
-// mechanism, which is what lets the trailing carriage return submit it: a
-// bracketed paste leaves the newline inside the composer. `\r` and not `\n` —
-// a terminal's Enter is a carriage return, and a bare `\n` types a line break
-// without submitting.
+// The text and the Enter are two send-text calls with a pause between them.
+// One call carrying `text\r` lets a just-drawn Claude Code composer swallow the
+// Enter (0/5 submitted, measured 2026-11-18), leaving the message unsent in
+// the box; the split submitted 5/5. Empty text sends only the Enter, which is
+// how SendWhenReadyWith re-presses a swallowed submit.
+//
+// `--no-paste` sends keystrokes rather than a bracketed paste, which would keep
+// the carriage return inside the composer. `\r` and not `\n` — a terminal's
+// Enter is a carriage return, and a bare `\n` types a line break.
 //
 // The pane is NOT activated. Measured 2026-11-09: `send-text` reaches a pane in
 // a background tab — 6/6 bytes arrived, and `focused_pane_id` was unchanged
@@ -120,15 +138,26 @@ func (t *tabClient) Activate(ctx context.Context, paneID string) error {
 // pane's output (see SendWhenReady), not from focus; the send's exit code only
 // says the keystrokes reached the pty.
 func (t *tabClient) SendText(ctx context.Context, paneID string, text string) error {
-	framed := text
-	if !strings.HasSuffix(framed, "\r") {
-		framed += "\r"
+	body := strings.TrimSuffix(text, "\r")
+	if body != "" {
+		if err := t.sendKeys(ctx, paneID, body); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Wrapf(ctx, ctx.Err(), "send to pane %s cancelled before submit", paneID)
+		case <-time.After(t.submitDelay):
+		}
 	}
+	return t.sendKeys(ctx, paneID, "\r")
+}
+
+func (t *tabClient) sendKeys(ctx context.Context, paneID string, keys string) error {
 	// #nosec G204 -- t.bin is the configured wezterm binary; paneID is an
-	// identifier WezTerm assigned, and framed is passed as one argv word with
+	// identifier WezTerm assigned, and keys is passed as one argv word with
 	// --no-paste, so it is typed into the pty rather than interpreted by a shell.
 	if _, err := exec.CommandContext(
-		ctx, t.bin, "cli", "send-text", "--pane-id", paneID, "--no-paste", framed,
+		ctx, t.bin, "cli", "send-text", "--pane-id", paneID, "--no-paste", keys,
 	).Output(); err != nil {
 		return errors.Wrapf(ctx, err, "send-text to pane %s failed", paneID)
 	}
