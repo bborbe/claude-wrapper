@@ -7,6 +7,7 @@ package hook_test
 import (
 	"encoding/json"
 	"os"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -650,6 +651,94 @@ var _ = Describe("ToolLogGuard", func() {
 		Expect(record["cwd"]).To(Equal("/tmp"))
 		Expect(record["ts"]).To(HaveSuffix("Z"))
 		Expect(record).NotTo(HaveKey("command"))
+	})
+
+	It("does not apply to a PreToolUse payload", func() {
+		Expect(guard.Applies(hook.Input{HookEventName: hook.EventPreToolUse, ToolName: "Bash"})).
+			To(BeFalse())
+	})
+})
+
+// blockedLogHome points HOME at a fresh directory for the duration of fn.
+func blockedLogHome(fn func(home string)) {
+	home := tempRepo(map[string]string{})
+	previous := os.Getenv("HOME")
+	Expect(os.Setenv("HOME", home)).To(Succeed())
+	defer func() { Expect(os.Setenv("HOME", previous)).To(Succeed()) }()
+	fn(home)
+}
+
+// blockedLogDB returns the raw blocked-permission lines.
+func blockedLogDB(home string) []string {
+	data, err := os.ReadFile(home + "/.claude/state/blocked-permissions.jsonl")
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+var _ = Describe("BlockedLogGuard", func() {
+	guard := hook.NewBlockedLogGuard()
+
+	// emit runs one event for the given command.
+	emit := func(event string, command string) {
+		input := bashInput(command)
+		input.HookEventName = event
+		input.SessionID = "sess-1"
+		Expect(guard.Evaluate(input).Deny).To(BeFalse())
+	}
+
+	It("adds an entry on a permission request", func() {
+		blockedLogHome(func(home string) {
+			emit(hook.EventPermissionRequest, "ls -la")
+			lines := blockedLogDB(home)
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(ContainSubstring(`"tool":"Bash"`))
+			page, err := os.ReadFile(home + "/.claude/blocked.md")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(page)).To(ContainSubstring("**sess-1** · `Bash` ·"))
+		})
+	})
+
+	It("does not add the same entry twice", func() {
+		blockedLogHome(func(home string) {
+			emit(hook.EventPermissionRequest, "ls -la")
+			emit(hook.EventPermissionRequest, "ls -la")
+			Expect(blockedLogDB(home)).To(HaveLen(1))
+		})
+	})
+
+	It("removes the entry when the tool ran", func() {
+		blockedLogHome(func(home string) {
+			emit(hook.EventPermissionRequest, "ls -la")
+			emit(hook.EventPostToolUse, "ls -la")
+			Expect(blockedLogDB(home)).To(BeEmpty())
+			page, err := os.ReadFile(home + "/.claude/blocked.md")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(page)).To(Equal("# Blocked permissions\n\nNone pending.\n"))
+		})
+	})
+
+	It("removes the entry when the prompt was denied", func() {
+		blockedLogHome(func(home string) {
+			emit(hook.EventPermissionRequest, "ls -la")
+			emit(hook.EventPermissionDenied, "ls -la")
+			Expect(blockedLogDB(home)).To(BeEmpty())
+		})
+	})
+
+	It("keys on the tool input, so two commands are two entries", func() {
+		blockedLogHome(func(home string) {
+			emit(hook.EventPermissionRequest, "ls -la")
+			emit(hook.EventPermissionRequest, "pwd")
+			Expect(blockedLogDB(home)).To(HaveLen(2))
+		})
 	})
 
 	It("does not apply to a PreToolUse payload", func() {

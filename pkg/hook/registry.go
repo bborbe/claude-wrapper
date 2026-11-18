@@ -22,5 +22,6 @@ func NewDefaultRegistry() *Registry {
 		NewBranchSwitchGuard(),
 		NewAttributionGuard(),
 		NewToolLogGuard(),
+		NewBlockedLogGuard(),
 	)
 }

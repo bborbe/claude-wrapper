@@ -26,6 +26,8 @@ const (
 	EventPreToolUse         = "PreToolUse"
 	EventPostToolUse        = "PostToolUse"
 	EventPostToolUseFailure = "PostToolUseFailure"
+	EventPermissionRequest  = "PermissionRequest"
+	EventPermissionDenied   = "PermissionDenied"
 )
 
 // Decision is what a guard returns for one input.
