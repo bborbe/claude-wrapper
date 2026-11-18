@@ -129,11 +129,9 @@ var _ = Describe("Registry", func() {
 		Expect(registry.Evaluate(bashInput("anything")).Deny).To(BeTrue())
 	})
 
-	It("returns the first allow when nothing denies", func() {
+	It("discards an allow, so the binary never suppresses a prompt", func() {
 		registry := hook.NewRegistry(allowGuard{})
-		decision := registry.Evaluate(bashInput("anything"))
-		Expect(decision.Allow).To(BeTrue())
-		Expect(decision.Reason).To(Equal("allowed"))
+		Expect(registry.Evaluate(bashInput("anything"))).To(Equal(hook.Decision{}))
 	})
 
 	It("lists the guard names in evaluation order", func() {

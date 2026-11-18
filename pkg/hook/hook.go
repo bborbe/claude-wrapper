@@ -164,10 +164,16 @@ func NewRegistry(guards ...Guard) *Registry {
 
 // Evaluate runs every applicable guard and returns the combined decision.
 //
-// A deny short-circuits: nothing after it can make the call safe. Otherwise the
-// first allow is returned, and with neither the result is a pass-through.
+// A deny short-circuits: nothing after it can make the call safe. **An allow is
+// discarded**: this binary never suppresses the permission prompt, it only refuses.
+//
+// That is a deliberate scope decision, taken after five review passes found
+// nineteen bypasses and every one of them was in an allow path. An allow must be
+// correct on every possible input, because it removes a prompt; a deny only has to
+// be right about what it refuses, and the fallback is the prompt that would have
+// appeared anyway. Dropping the allow removes the whole class at one place rather
+// than one parser at a time.
 func (r *Registry) Evaluate(input Input) Decision {
-	var allowed *Decision
 	for _, guard := range r.guards {
 		if !guard.Applies(input) {
 			continue
@@ -176,13 +182,6 @@ func (r *Registry) Evaluate(input Input) Decision {
 		if decision.Deny {
 			return decision
 		}
-		if decision.Allow && allowed == nil {
-			copied := decision
-			allowed = &copied
-		}
-	}
-	if allowed != nil {
-		return *allowed
 	}
 	return Decision{}
 }
