@@ -146,6 +146,11 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 		w.calls++
 		return nil
 	}
+	if singleShapeHeads[words[0]] {
+		// git / sed / gh are approved by their shape guard or not at all: a broad
+		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
+		return errCompoundUnmodelled
+	}
 	if wrapperProgram(words[0]) {
 		return errCompoundUnmodelled
 	}

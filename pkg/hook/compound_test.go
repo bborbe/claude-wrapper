@@ -538,7 +538,7 @@ var _ = Describe("git -C through the registry", func() {
 	home, err := os.UserHomeDir()
 	Expect(err).NotTo(HaveOccurred())
 	vault := filepath.Join(home, "Documents", "Obsidian", "private-personal")
-	rules := hook.CompoundRules{Allow: []string{"echo:*"}}
+	rules := hook.CompoundRules{Allow: []string{"echo:*", "sed -n:*"}}
 	registry := hook.NewRegistry(
 		hook.NewCdGitChainGuard(),
 		hook.NewCompoundBashGuardWithRules(
@@ -606,6 +606,15 @@ var _ = Describe("git -C through the registry", func() {
 		Entry("a .. walk out of the roots", "git -C "+vault+"/nope/../../../../.ssh log"),
 		Entry("a .. walk to /etc", "git -C "+vault+"/nope/../../../../../../etc status"),
 		Entry("a glob operand", "git -C "+vault+" log *"),
+		Entry("a symlink walk out of the roots", "git -C "+vault+"/link/.. log"),
+		Entry("a diff of a file outside the roots", "git -C "+vault+" diff /etc/passwd /tmp/x"),
+		Entry("a grep pattern file outside the roots", "git -C "+vault+" grep -f /etc/passwd"),
+		Entry("a short option carrying a path", "git -C "+vault+" grep -f/etc/passwd"),
+		Entry("a blame revs file outside the roots", "git -C "+vault+" blame -S /etc/passwd x"),
+		Entry("an ls-remote -u", "git -C "+vault+" ls-remote -u id origin"),
+		Entry("a compound sed in place", "git -C "+vault+" status && sed -n -i 1p x"),
+		Entry("a compound sed write", "git -C "+vault+" status && sed -n 1w/tmp/x x"),
+		Entry("a sed read walking out of tmp", "sed -n 1p /tmp/../etc/passwd"),
 		Entry("a tilde-user operand", "git -C "+vault+" log ~root"),
 	)
 

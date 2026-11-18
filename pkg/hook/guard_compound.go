@@ -227,7 +227,12 @@ func compoundTextAllows(
 		if compoundShapeAllows(words, cwd, roots) && staticWords(words) {
 			continue
 		}
-		if wrapperProgram(words[0]) {
+		if singleShapeHeads[words[0]] {
+		// git / sed / gh are approved by their shape guard or not at all: a broad
+		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
+		return false
+	}
+	if wrapperProgram(words[0]) {
 			return false
 		}
 		if !matchesAnyPattern(segment, rules.Allow) {
