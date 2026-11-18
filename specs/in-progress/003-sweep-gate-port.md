@@ -159,6 +159,8 @@ Modes, as they stand today (`sweep-gate.py:3181-3330`):
 ## Constraints
 
 - **`sweep-gate-fixture.py` is the parity reference while the port is in flight**, read-only until AC10 retires it. Its five assertion groups — `CLOSE-ME`, `FIVE-WAY`, `PROGRESS`, `LIVENESS`, `HELD` — are the minimum the port's tests must cover.
+- **The table renderer is currently a SECOND Python process, from a path neither repo owns.** `render_table` shells out to `BOX_TABLE = ~/.claude/plugins/marketplaces/claude-supervisor/scripts/box-table.py` (`sweep-gate.py:176-178`, `:2857-2863`), so a tick costs two interpreter starts and the frame's exact bytes come from a marketplace clone. The port must reproduce box-table's column widths (`WIDTHS = [42, 10, 34, 9, 17]`), unicode box drawing and ellipsis truncation, and must **not** shell out to it — that dependency is the reason AC2's diff is byte-level rather than structural.
+- **Grouping is three spaces per level with the root flush left on BOTH branches**, and the goal branch emits **no synthetic topic row** (a synthetic row drew the goal name twice, measured 2026-10-12). A task naming several goals is listed once, under its first member goal. The Essential/Optional split is deliberately not rendered.
 - **The state file formats are frozen** for the switchover (AC8). Renaming a field costs a spurious change on the first tick and a lost digest.
 - **The attention store and session registry are read, never written.** The port adds no producer.
 - **`github.com/bborbe/errors` only**, `ctx` threaded, Ginkgo/Gomega tests against a real collaborator.
