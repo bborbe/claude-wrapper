@@ -206,13 +206,14 @@ func unquoteStaticWords(words []string) []string {
 	for i, word := range words {
 		inner := strings.TrimSuffix(strings.TrimPrefix(word, `"`), `"`)
 		if len(word) >= 2 && word[0] == '"' && word[len(word)-1] == '"' &&
-			!strings.ContainsAny(inner, "$`'\"\\") {
+			!strings.ContainsAny(inner, "$`'\"\\") && !strings.HasPrefix(inner, "~") {
 			out[i] = inner
 			continue
 		}
 		// `'x'` passes x verbatim; a word with a second quote inside is left as is.
 		if len(word) >= 2 && word[0] == '\'' && word[len(word)-1] == '\'' &&
-			!strings.ContainsAny(word[1:len(word)-1], "'\"") {
+			!strings.ContainsAny(word[1:len(word)-1], "'\"") &&
+			!strings.HasPrefix(word[1:len(word)-1], "~") {
 			out[i] = word[1 : len(word)-1]
 			continue
 		}

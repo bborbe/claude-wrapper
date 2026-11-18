@@ -215,14 +215,15 @@ func literalWord(word *syntax.Word) (string, bool) {
 			return "", false
 		}
 		lit, ok := part.Parts[0].(*syntax.Lit)
-		if !ok || strings.ContainsAny(lit.Value, "\\$`") {
+		if !ok || strings.ContainsAny(lit.Value, "\\$`") || strings.HasPrefix(lit.Value, "~") {
 			return "", false
 		}
 		return lit.Value, true
 	case *syntax.SglQuoted:
 		// `'150,158p'` never expands: the shell passes the inside verbatim, and the
 		// shape guards still judge that value exactly as they judge a bare word.
-		if part.Dollar {
+		// A quoted `~` is not expanded by the shell, while UnderRoots would expand it.
+		if part.Dollar || strings.HasPrefix(part.Value, "~") {
 			return "", false
 		}
 		return part.Value, true

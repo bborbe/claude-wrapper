@@ -644,6 +644,8 @@ var _ = Describe("git -C through the registry", func() {
 		Entry("a quoted sed write is still refused", "git -C "+vault+" status | sed -n '1w/tmp/x'", false),
 		Entry("a quoted sed in-place is still refused", "git -C "+vault+" status && sed -n -i '1p' x", false),
 		Entry("an ANSI-C quote is refused", "git -C "+vault+" log $'-o/tmp/x'", false),
+		Entry("a single-quoted ~ in -C is refused", "git -C '~/Documents/Obsidian/private-personal' log", false),
+		Entry("a double-quoted ~ in -C is refused", "git -C \"~/Documents/Obsidian/private-personal\" status", false),
 		Entry("an escaped -o is refused", "git -C "+vault+" log \\-o/tmp/x", false),
 		Entry("an escaped -o in a compound is refused", "git -C "+vault+" status | git -C "+vault+" log -\\o/tmp/x", false),
 	)
