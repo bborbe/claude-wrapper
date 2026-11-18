@@ -1000,6 +1000,10 @@ func (h keyedParkedHold) Hold(_ context.Context, row FlaggedRow) (string, bool) 
 	return "", false
 }
 
+// Opened is the no-op half of the interface: this stub never produces a pending
+// baseline, so there is nothing for a successful reopen to commit.
+func (h keyedParkedHold) Opened(_ context.Context, _ FlaggedRow) {}
+
 // runPRTicks drives one tick three times against one pull request observable:
 // the first records the baseline, the second repeats the same reading, and the
 // third moves the head.

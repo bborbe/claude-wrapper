@@ -542,6 +542,12 @@ func (t *FlaggedTick) tickFromRows(
 		if neverOpened(row) {
 			t.rememberOpened(row, now)
 		}
+		// The reopen succeeded, so the park gate may commit the baseline a movement
+		// produced. This is the only place it is committed — a row refused by caps or
+		// rate above never reaches here and keeps its old fingerprint, so it retries.
+		if t.Parked != nil {
+			t.Parked.Opened(ctx, row)
+		}
 		result.Opened = append(result.Opened, row.Key())
 		recordResumeDelay(&result, row, ended, now)
 	}

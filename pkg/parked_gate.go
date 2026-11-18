@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"log"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -25,6 +26,15 @@ type ParkedHold interface {
 	// when it must. The reason is the class token, optionally followed by
 	// ": <cause>" when a probe failed.
 	Hold(ctx context.Context, row FlaggedRow) (reason string, held bool)
+	// Opened tells the gate that the row's reopen actually succeeded, which is the
+	// only moment an advanced baseline may be committed.
+	//
+	// ⚠️ It is a second call, not part of Hold, because Hold runs BEFORE the caps
+	// and rate guards. Recording the advanced fingerprint inside Hold meant a row
+	// refused by caps kept the new baseline and was held on every later tick —
+	// dark for days on a `parked-on-pr` row, which has no expiry. Measured
+	// 2026-11-18 in review.
+	Opened(ctx context.Context, row FlaggedRow)
 }
 
 // NewParkedGate wires the four probes and the baseline store.
@@ -58,6 +68,54 @@ type parkedGate struct {
 	Clocks      ClockProbe
 	Now         libtime.CurrentDateTimeGetter
 	Logf        func(format string, args ...any)
+
+	// pendingMutex guards pending.
+	pendingMutex sync.Mutex
+	// pending holds the advanced baseline a movement produced, keyed by row, until
+	// the tick confirms the row actually opened. A pending entry that is never
+	// confirmed is simply dropped: the baseline keeps its old fingerprint, so the
+	// next tick sees the movement again and retries.
+	pending map[string]pendingBaseline
+}
+
+// pendingBaseline is one movement's uncommitted baseline.
+type pendingBaseline struct {
+	sessionID   string
+	declaration ParkedDeclaration
+	observation ParkedObservation
+	hash        string
+}
+
+// rememberPending stashes a movement's baseline until the reopen is confirmed.
+func (g *parkedGate) rememberPending(key string, p pendingBaseline) {
+	g.pendingMutex.Lock()
+	defer g.pendingMutex.Unlock()
+	if g.pending == nil {
+		g.pending = map[string]pendingBaseline{}
+	}
+	g.pending[key] = p
+}
+
+// takePending removes and returns the row's pending baseline.
+func (g *parkedGate) takePending(key string) (pendingBaseline, bool) {
+	g.pendingMutex.Lock()
+	defer g.pendingMutex.Unlock()
+	p, ok := g.pending[key]
+	if ok {
+		delete(g.pending, key)
+	}
+	return p, ok
+}
+
+// Opened commits the advanced baseline a movement produced.
+//
+// A row with no pending baseline — one that was not moved this tick — is a no-op.
+func (g *parkedGate) Opened(ctx context.Context, row FlaggedRow) {
+	pending, ok := g.takePending(row.Key())
+	if !ok {
+		return
+	}
+	g.record(ctx, row.Key(), pending.sessionID, pending.declaration, pending.observation, pending.hash)
 }
 
 // Hold answers whether the row is parked on something that has not happened
@@ -118,13 +176,16 @@ func (g *parkedGate) holdOrRecord(
 	baseline := g.Store.Load(ctx, key)
 	if baseline != nil && baseline.SessionID == row.SessionID && baseline.CloserHash == hash {
 		if baseline.Fingerprint != observation.Fingerprint {
-			// ⚠️ The new baseline is recorded on the movement branch, not only on a
-			// first sighting. Without it the stored fingerprint stays at the FIRST
-			// sighting forever, so a resumed session that repeats its closer wording
-			// reopens on every later tick — exactly the churn this gate exists to
-			// remove. Measured 2026-11-18 in review: held, open, then open again on
-			// an unchanged third tick.
-			g.record(ctx, key, row.SessionID, declaration, observation, hash)
+			// ⚠️ The advanced baseline is PENDING here, not written. Hold runs before
+			// the caps and rate guards, so a row that is then refused must keep its
+			// old fingerprint and retry next tick. The write happens in Opened, once
+			// the reopen has actually succeeded.
+			g.rememberPending(key, pendingBaseline{
+				sessionID:   row.SessionID,
+				declaration: declaration,
+				observation: observation,
+				hash:        hash,
+			})
 			return "", false
 		}
 		return g.holdRecorded(declaration, observation, baseline)
