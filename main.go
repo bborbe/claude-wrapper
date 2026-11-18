@@ -932,6 +932,9 @@ func startFlaggedTick(
 		Now:      now,
 		Interval: interval,
 	}
+	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
+		tick.Idle = nudger
+	}
 	if err := tick.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("flagged tick stopped: %v", err)
 	}

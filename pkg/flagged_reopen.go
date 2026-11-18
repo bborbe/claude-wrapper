@@ -37,6 +37,24 @@ type FlaggedReopenSupervisor interface {
 	Spawn(ctx context.Context, options SpawnOptions) (*Session, error)
 	Send(ctx context.Context, id string, text string) error
 	Stop(ctx context.Context, id string) error
+	Get(ctx context.Context, id string) (*Session, error)
+}
+
+// FlaggedIdleNudger re-drives a flagged headless row whose child this process
+// still holds and whose last turn has closed.
+//
+// ⚠️ This is the case liveness cannot resolve. A finished turn files a terminal
+// ledger row, the heartbeat poster then stops stamping the session (by design),
+// and the registry still shows the pid alive — so `session-liveness.py` answers
+// UNKNOWN, never ABSENT, and `decision` skips the row as `not-absent` until a
+// restart kills the child. Only this process can tell that child is idle, because
+// it reads the child's own event stream.
+type FlaggedIdleNudger interface {
+	// HoldsIdleChild reports whether this process holds the row's child with no
+	// turn open and no question pending.
+	HoldsIdleChild(ctx context.Context, row FlaggedRow) bool
+	// Nudge sends the row's work turn to that live child. It spawns nothing.
+	Nudge(ctx context.Context, row FlaggedRow) error
 }
 
 // flaggedReopener routes a row to the spawn path its own mode names.
@@ -142,6 +160,34 @@ func (r *flaggedReopener) reopenHeadless(
 		return errors.Wrap(ctx, err, "deliver opening turn")
 	}
 	r.recordSpawn(ctx, row, session)
+	return nil
+}
+
+// HoldsIdleChild reports whether the row's headless child is held and idle.
+//
+// Idle is read from the child's event-derived state AND its pending-turn count:
+// `idle` alone also holds between two assistant messages of one turn while a tool
+// runs, and a nudge there would interleave a second turn into a working one.
+// A pending question means the child is parked on a gate, not finished.
+func (r *flaggedReopener) HoldsIdleChild(ctx context.Context, row FlaggedRow) bool {
+	if r.Supervisor == nil || row.SessionID == "" || !isHeadlessRow(row) {
+		return false
+	}
+	session, err := r.Supervisor.Get(ctx, row.SessionID)
+	if err != nil || session == nil {
+		return false
+	}
+	return session.State == StateIdle && session.PendingTurns == 0 && session.Question == nil
+}
+
+// Nudge sends the row's work turn to the child this process already holds.
+func (r *flaggedReopener) Nudge(ctx context.Context, row FlaggedRow) error {
+	if r.Supervisor == nil {
+		return errors.Errorf(ctx, "no supervisor is wired, so an idle child cannot be nudged")
+	}
+	if err := r.Supervisor.Send(ctx, row.SessionID, reopenPrompt(row)); err != nil {
+		return errors.Wrap(ctx, err, "deliver nudge turn")
+	}
 	return nil
 }
 
