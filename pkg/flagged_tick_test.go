@@ -81,6 +81,17 @@ type recordingSupervisor struct {
 	spawnErr  error
 	sendErr   error
 	sessionID string
+	// held is the child table Get answers from; an absent id is not held.
+	held map[string]*Session
+}
+
+func (s *recordingSupervisor) Get(_ context.Context, id string) (*Session, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if session, ok := s.held[id]; ok {
+		return session, nil
+	}
+	return nil, ErrSessionNotFound
 }
 
 func (s *recordingSupervisor) Spawn(

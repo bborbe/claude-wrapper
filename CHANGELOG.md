@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.38.5
+
+- fix: **a flagged headless row whose turn finished, but whose child the wrapper still holds, now gets a new turn instead of sitting idle until a restart.** A closed turn files `done`, the heartbeat poster stops stamping the session, and the registry still shows the pid alive, so `session-liveness.py` answers UNKNOWN and the tick skipped the row as `not-absent` indefinitely. Measured 2026-11-18: one row closed its turn at 09:17:08 and was skipped on every tick until a 16:23 restart. The tick now asks its own supervisor whether it holds the child with no pending turn and no pending question; if so it sends the row's work turn to that child (`nudged=` on the tick line). It spawns nothing, so it takes no cap or rate reservation. The park gate still applies, and a nudged session is left alone for 30 minutes.
+
 ## v0.38.4
 
 - fix: **a single-quoted argument no longer pushes a read-only `git -C` compound back to the prompt.** `… | sed -n '150,158p'` and `git grep -n 'a b'` prompted after v0.38.2 because the syntax tree accepted only bare and double-quoted words; a `'…'` word is now the literal the shell passes, and a single shape-head command with a quoted space falls back to the tree. A tree literal carrying a backslash is refused, since the parser keeps `\-o` while the shell passes `-o`; and a quoted word starting with `~` is refused, since the shell does not expand it while `UnderRoots` would.
