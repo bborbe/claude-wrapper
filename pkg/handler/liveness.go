@@ -5,6 +5,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/bborbe/errors"
@@ -17,8 +18,14 @@ import (
 // GET only. It reads the child table and the heartbeat store, then hands both
 // to pkg.LivenessVerdicts together with the registry, so this process — not a
 // Python script and not the LLM fleet round — is the single authority on
-// liveness. A read failure is a 500, never a verdict: an empty set would read
-// as "nothing is live".
+// liveness.
+//
+// A failure of a PRIMARY source is a 500, never a verdict: an empty set would
+// read as "nothing is live". The heartbeat store is different — it is
+// corroboration only, so its failure is logged and the answer is served from the
+// primary sources alone. Returning 500 there would hide every live worker on a
+// store outage, which is the exact failure this endpoint exists to remove; the
+// same degrade is the established pattern at pkg/roster.go:157-161.
 func Liveness(
 	registry pkg.SessionRegistry,
 	supervisor pkg.Supervisor,
@@ -37,9 +44,12 @@ func Liveness(
 			return
 		}
 		rows, err := heartbeats.Rows(ctx)
-		if err != nil {
-			writeError(resp, http.StatusInternalServerError, err)
-			return
+		if err != nil || rows == nil {
+			// Corroboration absent, not fatal: the registry and the child table
+			// already answered, and a store outage must never hide a live worker.
+			log.Printf("WARNING: liveness — the heartbeat store could not be read, "+
+				"answering from the primary sources alone: %v", err)
+			rows = nil
 		}
 		verdicts, err := pkg.LivenessVerdicts(ctx, registry, children, rows)
 		if err != nil {

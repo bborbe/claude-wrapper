@@ -53,6 +53,14 @@ type LivenessVerdict struct {
 // A registry read failure returns the error with no verdicts: an empty or
 // partial set would read as "nothing is live", which is the direction that
 // silently hides running sessions.
+//
+// ⚠️ The response is UNBOUNDED over the daemon's lifetime. `Supervisor.List`
+// keeps every child it ever spawned — exited records are never removed — so the
+// union grows with uptime and carries one not-live row per child that has ever
+// run. `/api/1.0/sessions` already behaves this way, so this matches the existing
+// surface rather than inventing a second retention rule; a caller that wants only
+// live sessions filters on Liveness. Trimming exited rows here would make this
+// endpoint disagree with the child table it reports from.
 func LivenessVerdicts(
 	ctx context.Context,
 	registry SessionRegistry,
@@ -89,6 +97,17 @@ func LivenessVerdicts(
 // the session. Otherwise a child with no exit code is live; a child that exited
 // is not-live; and an id named only by a heartbeat row is not-live with source
 // `none` — corroboration never creates a live verdict.
+//
+// The registry-wins tie-break is DELIBERATE, and it is the one place this
+// function can be wrong. If a child crashed and its pid was then reused by an
+// unrelated process, a stale registry entry would read `live` while the child row
+// records a real exit. It is left this way because the registry file is deleted on
+// exit, so the window needs both a crash that skipped that deletion and a pid
+// reuse — and preferring the child row instead would make every cleanly exited
+// child permanent, since exited records are never removed from the child table.
+// The registry is the only source that can say "still running" after this process
+// stopped watching the child, which is the case that matters for a resumed or
+// adopted session.
 func verdictFor(
 	id string,
 	registryByID map[string]RegistryEntry,
