@@ -97,6 +97,15 @@ A hold is a skip, not a refusal. It does not spend a reservation, does not end
 the tick's opening pass, and does not count against the per-tick row budget. The
 next tick simply probes again.
 
+⚠️ **A failing probe holds the row for as long as it keeps failing.** No baseline
+is recorded on the error path, and `MAX_AGE_S` releases only a row that carries
+one — so a probe that never succeeds (an expired `gh` credential, an unreachable
+attention store) holds its rows indefinitely rather than for one hour. That is
+deliberate: the alternative is reopening rows on a broken probe, which is the
+duplicate-session hazard the gate exists to prevent. It is bounded by the probe
+being fixed, not by the clock, and "a broken probe costs freshness" describes the
+successful-but-stale case only.
+
 ## Where the vocabulary comes from
 
 The four class names are `claude-supervisor`'s `parked-wait` vocabulary refined
