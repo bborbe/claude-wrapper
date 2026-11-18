@@ -85,6 +85,12 @@ const (
 
 // PaneGuardVerdict returns the verdict for one captured screen.
 //
+// A leading `# captured …` provenance line is dropped first (see
+// captureHeader). No live pane produces one, so this costs the live path
+// nothing; the trade-off is that a pane whose first visible line genuinely
+// began with that marker would lose it, which is accepted so a captured
+// fixture replays through this function unmodified.
+//
 // `text` is nil when the pane could not be read; that is the error branch and
 // never a guess. `subjectState` is `manager-liveness.py --state`'s first field,
 // passed in so this function stays pure: `SLEEPING` refuses the wake before the

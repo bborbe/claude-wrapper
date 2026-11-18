@@ -22,12 +22,13 @@ var captureHeaderPattern = regexp.MustCompile(
 
 // readCapture loads a real screen capture.
 //
-// Every fixture under pkg/testdata/fleetpusher was produced by
-// `pkg/testdata/fleetpusher/capture.sh`, which reads a scratch pane driven to the
-// named state with `wezterm cli get-text --escapes --pane-id` and writes the
-// provenance line above it, so the escape bytes are the terminal's own — not a
-// hand-written approximation. A hand-written screen would not exercise the
-// SGR/dim parsing that is the whole reason the guard exists.
+// Every fixture under pkg/testdata/fleetpusher was read from a real scratch pane
+// driven to the named state with `wezterm cli get-text --escapes --pane-id`, so
+// the escape bytes are the terminal's own — not a hand-written approximation. A
+// hand-written screen would not exercise the SGR/dim parsing that is the whole
+// reason the guard exists. `pkg/testdata/fleetpusher/capture.sh` is the committed
+// wrapper for that read: it writes the provenance line above the screen, and a
+// new or re-taken fixture must come from it.
 //
 // The provenance line is the file's first line. The guard skips it, so the
 // fixture is replayed unmodified.
@@ -63,17 +64,18 @@ var _ = ginkgo.Describe("FleetPusher guard", func() {
 			})
 		}
 
-		// The header is provenance, not screen content: each capture must read
-		// exactly as the same screen with the header line removed.
-		ginkgo.It("reads every capture as its screen below the header", func() {
+		// The header is provenance, not screen content: the guard must drop
+		// exactly that one line from each capture and read the rest unchanged.
+		ginkgo.It("strips exactly the header line from every capture", func() {
 			for _, path := range paths {
 				raw, err := os.ReadFile(path)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				text := string(raw)
-				body := text
-				if index := strings.IndexByte(text, '\n'); strings.HasPrefix(text, captureHeader) && index >= 0 {
-					body = text[index+1:]
-				}
+				body := text[strings.IndexByte(text, '\n')+1:]
+				gomega.Expect(withoutCaptureHeader(text)).To(
+					gomega.Equal(body),
+					filepath.Base(path)+" did not lose exactly its header line",
+				)
 				gomega.Expect(PaneGuardVerdict(&text, false, "")).To(
 					gomega.Equal(PaneGuardVerdict(&body, false, "")),
 					filepath.Base(path)+" reads differently with its capture header",
