@@ -22,6 +22,10 @@ type fakeFleetRegistry struct {
 
 func (f *fakeFleetRegistry) Live(context.Context) ([]RegistryEntry, error) { return f.entries, f.err }
 
+func (f *fakeFleetRegistry) Entries(context.Context) ([]RegistryEntry, error) {
+	return f.entries, f.err
+}
+
 func (f *fakeFleetRegistry) Status(context.Context, string) (*string, error) {
 	return nil, nil
 }
