@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.40.1
 
 - test: **every fleet-pusher fixture now records the pane it was captured from.** The 11 screen captures under `pkg/testdata/fleetpusher/` carried no provenance, so a hand-typed screen passed exactly as a capture did and the parent criterion's claim — that the guard's dim/escape parsing is exercised on real terminal output — rested on a `# Progress` note rather than on anything the suite could check. A new `pkg/testdata/fleetpusher/capture.sh` reads a pane with `wezterm cli get-text --escapes --pane-id` and writes `# captured <ISO8601> pane=<pane-id>` above the screen; each fixture now opens with that line. `PaneGuardVerdict` skips it, so a fixture reaches the verdict function exactly as a live pane does, and a spec globs the directory and fails on any file whose first line is not a capture header — a fixture added without one can no longer stand in for a capture silently. The line records provenance rather than proving it: a hand-typist can forge one, and that would now be a deliberate act rather than an oversight. No verdict changed — the per-fixture table is identical before and after.
 
