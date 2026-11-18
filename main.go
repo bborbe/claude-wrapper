@@ -203,7 +203,11 @@ func main() {
 	sequencer := pkg.NewSequencer(
 		supervisor, libtime.NewCurrentDateTime(), locks, 30*time.Minute)
 
-	mux := newMux(supervisor, sequencer, locks, *listen, *mcpTurnTimeout)
+	mux := newMux(
+		supervisor, sequencer, locks,
+		pkg.NewSessionRegistry(""), pkg.NewHeartbeatClient(*attentionURL, nil),
+		*listen, *mcpTurnTimeout,
+	)
 
 	startFleetFaces(
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
@@ -467,6 +471,8 @@ func newMux(
 	supervisor pkg.Supervisor,
 	sequencer pkg.Sequencer,
 	locks *pkg.SessionLocks,
+	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatReader,
 	listen string,
 	mcpTurnTimeout time.Duration,
 ) *http.ServeMux {
@@ -474,6 +480,10 @@ func newMux(
 	mux.Handle("/healthz", handler.Healthz())
 	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
 	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer, locks))
+	// The ONE authoritative liveness verdict per session. Python scripts and the
+	// LLM fleet round each derived liveness separately and disagreed; this route
+	// is the single source, and it is binary — live or not-live, never unknown.
+	mux.Handle("/api/1.0/liveness", handler.Liveness(registry, supervisor, heartbeats))
 	// The client-facing MCP face: Codex → wrapper, over streamable HTTP on this
 	// same listener. Not to be confused with --mcp-stdio, which is child-facing
 	// (the wrapper giving its own child a permission tool) and runs in a
