@@ -601,7 +601,7 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 		caps := testCaps(
 			&rosterLedger{err: errors.New("boom")},
 			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("w1")}},
-			writeSpawnConfig(workerAxisConfig(2, 50)),
+			writeSpawnConfig(workerAxisConfig(3, 50)),
 			ginkgo.GinkgoT().TempDir(),
 		)
 
@@ -783,7 +783,7 @@ var _ = ginkgo.Describe("spawn caps: degraded count sources", func() {
 			"",
 			ginkgo.GinkgoT().TempDir(),
 		)
-		stateDir, dirErr := SupervisorStateDir(ctx, caps.home, caps.getenv)
+		stateDir, dirErr := SessionRoot(ctx, "", caps.home, caps.getenv)
 		gomega.Expect(dirErr).To(gomega.BeNil())
 		store := NewSessionStore(stateDir)
 		gomega.Expect(store.Create(ctx, SessionRecord{
@@ -806,6 +806,69 @@ var _ = ginkgo.Describe("spawn caps: degraded count sources", func() {
 		gomega.Expect(counts.Headless).To(gomega.Equal(1))
 		gomega.Expect(counts.Managers).To(gomega.Equal(1))
 		gomega.Expect(counts.total()).To(gomega.Equal(1))
+	})
+
+	// ⚠️ Two nearby directories look plausible and only one holds records. The
+	// store roots at `~/.claude/state/claude-wrapper/sessions`; the supervisor's
+	// config state dir is `~/.local/state/claude-supervisor`. A reader pointed at
+	// the second finds zero records, so the degraded path silently charges every
+	// live session interactive and counts managers as workers — the exact scenario
+	// the degraded path exists for.
+	ginkgo.It("reads the child table where the daemon's session store writes", func() {
+		home := ginkgo.GinkgoT().TempDir()
+		noEnv := func(string) string { return "" }
+
+		dir, err := SessionRoot(ctx, "", home, noEnv)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(dir).To(gomega.Equal(
+			filepath.Join(home, ".claude", "state", "claude-wrapper", "sessions"),
+		))
+
+		configDir, err := SupervisorStateDir(ctx, home, noEnv)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(dir).NotTo(gomega.Equal(configDir))
+	})
+
+	ginkgo.It("honours the state-dir override the daemon's store honours", func() {
+		override := ginkgo.GinkgoT().TempDir()
+
+		dir, err := SessionRoot(ctx, "", ginkgo.GinkgoT().TempDir(), func(key string) string {
+			if key == StateDirEnv {
+				return override
+			}
+			return ""
+		})
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(dir).To(gomega.Equal(filepath.Join(override, "sessions")))
+	})
+
+	// ⚠️ The child table defaults an empty mode to HEADLESS (`SpawnOptions.Mode`:
+	// "Empty means headless, which is what every wrapper child is today"), the
+	// opposite of the ledger's default. Every record measured on this machine
+	// carries an empty mode, so bucketing it as interactive would charge the whole
+	// fleet to the wrong axis during the outage this path exists for.
+	ginkgo.It("charges an empty child-table mode as headless, not interactive", func() {
+		caps := testCaps(
+			ledgerWith{err: errors.New("connection refused")},
+			&stubHeartbeats{err: errors.New("connection refused")},
+			"",
+			ginkgo.GinkgoT().TempDir(),
+		)
+		stateDir, dirErr := SessionRoot(ctx, "", caps.home, caps.getenv)
+		gomega.Expect(dirErr).To(gomega.BeNil())
+		store := NewSessionStore(stateDir)
+		gomega.Expect(store.Create(ctx, SessionRecord{
+			ID:       "s1",
+			ChildPID: os.Getpid(),
+		})).Error().NotTo(gomega.HaveOccurred())
+		caps.registry = &capsRegistry{live: []RegistryEntry{{SessionID: "s1"}}}
+
+		counts, err := caps.countWorkersByMode(ctx)
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(counts.Headless).To(gomega.Equal(1))
+		gomega.Expect(counts.Interactive).To(gomega.Equal(0))
 	})
 
 	ginkgo.It("refuses when no liveness source can be read", func() {

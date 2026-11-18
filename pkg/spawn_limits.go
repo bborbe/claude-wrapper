@@ -497,10 +497,9 @@ func (c *spawnCaps) countWorkersByMode(ctx context.Context) (workerModeCounts, e
 		return counts, nil
 	}
 	// Degraded: the controller is down, so identity and mode come from the
-	// wrapper's own child table and a live session with no record reads as
-	// interactive — the documented default for an absent mode. Counting a session
-	// that turns out not to be a worker refuses MORE, which is the safe direction;
-	// reporting zero would open past the cap, which is not.
+	// wrapper's own child table. Counting a session that turns out not to be a
+	// worker refuses MORE, which is the safe direction; reporting zero would open
+	// past the cap, which is not.
 	log.Printf(
 		"claude-wrapper: spawn cap: live_count_source=%s degraded=%s",
 		cen.source(), cen.degraded(),
@@ -510,15 +509,17 @@ func (c *spawnCaps) countWorkersByMode(ctx context.Context) (workerModeCounts, e
 			counts.Managers++
 			continue
 		}
-		counts.addMode(cen.childModes[sessionID])
+		counts.addChildMode(cen.childModes[sessionID])
 	}
 	return counts, nil
 }
 
 // addMode charges one live session to its mode bucket.
 //
-// An absent mode predates the field and reads as interactive, which is the node's
-// rule (`record.mode || 'interactive'`).
+// An unrecognised mode falls to interactive, which is the safe direction for a
+// LEDGER row: charging a session to the interactive bucket counts it against the
+// total worker cap either way, and the ledger is the only source that records a
+// mode at all.
 func (c *workerModeCounts) addMode(mode string) {
 	switch mode {
 	case SpawnModeHeadless:
@@ -530,6 +531,23 @@ func (c *workerModeCounts) addMode(mode string) {
 	default:
 		c.Interactive++
 	}
+}
+
+// addChildMode charges one live session using the CHILD TABLE's own default.
+//
+// ⚠️ The child table and the ledger default in OPPOSITE directions, and sharing
+// one bucketing rule silently mis-splits the fleet. `SpawnOptions.Mode` documents
+// "Empty means headless, which is what every wrapper child is today", and every
+// record measured 2026-11-18 on this machine carries an empty mode (38 of 38) —
+// so bucketing an empty child-table mode as interactive charges the entire
+// fleet to the wrong axis, under-counting headless and over-counting interactive
+// during exactly the outage the degraded path exists for.
+func (c *workerModeCounts) addChildMode(mode string) {
+	if mode == "" {
+		c.Headless++
+		return
+	}
+	c.addMode(mode)
 }
 
 // countManagers counts live manager sessions from the spawn ledger.
@@ -768,7 +786,7 @@ func (c *spawnCaps) readHeartbeats(ctx context.Context, cen *liveCensus) {
 // swallowed, so `degraded()` can name it on the tick line instead of leaving a
 // count that quietly lost its mode source.
 func (c *spawnCaps) readChildren(ctx context.Context, cen *liveCensus) {
-	dir, err := SupervisorStateDir(ctx, c.home, c.getenv)
+	dir, err := SessionRoot(ctx, "", c.home, c.getenv)
 	if err != nil {
 		cen.childErr = err
 		return

@@ -694,9 +694,9 @@ func recentlySpawned(rows []LedgerRow) map[string]time.Time {
 func (t *FlaggedTick) mergeChildSpawnTimes(ctx context.Context, out map[string]time.Time) {
 	store := t.Sessions
 	if store == nil {
-		dir, err := SupervisorStateDir(ctx, t.Home, t.Getenv)
+		dir, err := SessionRoot(ctx, "", t.Home, t.Getenv)
 		if err != nil {
-			t.logf("flagged-tick: state dir unavailable, recently-spawned guard is ledger-only: %v", err)
+			t.logf("flagged-tick: session state dir unavailable, recently-spawned guard is ledger-only: %v", err)
 			return
 		}
 		store = NewSessionStore(dir)
