@@ -197,6 +197,7 @@ func main() {
 	mux := newMux(
 		supervisor, sequencer, locks,
 		pkg.NewSessionRegistry(""), pkg.NewHeartbeatClient(*attentionURL, nil),
+		sweepGateConfigFromFlags(sweepGate),
 		*listen, *mcpTurnTimeout,
 	)
 
@@ -477,6 +478,7 @@ func newMux(
 	locks *pkg.SessionLocks,
 	registry pkg.SessionRegistry,
 	heartbeats pkg.HeartbeatReader,
+	sweepCfg sweepgate.Config,
 	listen string,
 	mcpTurnTimeout time.Duration,
 ) *http.ServeMux {
@@ -488,6 +490,9 @@ func newMux(
 	// LLM fleet round each derived liveness separately and disagreed; this route
 	// is the single source, and it is binary — live or not-live, never unknown.
 	mux.Handle("/api/1.0/liveness", handler.Liveness(registry, supervisor, heartbeats))
+	// The gate's classified rows as data, so a consumer reads buckets instead of
+	// parsing the rendered frame. Subject is a query parameter; see handler.Sweep.
+	mux.Handle("/api/1.0/sweep", handler.Sweep(sweepCfg))
 	// The client-facing MCP face: Codex → wrapper, over streamable HTTP on this
 	// same listener. Not to be confused with --mcp-stdio, which is child-facing
 	// (the wrapper giving its own child a permission tool) and runs in a
