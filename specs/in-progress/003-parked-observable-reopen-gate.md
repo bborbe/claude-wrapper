@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-11-17T16:28:42Z"
 generating: "2026-11-17T17:09:53Z"
 prompted: "2026-11-17T17:09:53Z"
+verifying: "2026-11-17T23:50:01Z"
 branch: dark-factory/parked-observable-reopen-gate
 ---
 
@@ -136,7 +137,7 @@ The classification is bounded in both directions: a declaration naming a clock i
 ## Desired Behavior
 
 1. For each ABSENT row with a session id, the tick reads the last complete assistant message from that session's own event stream, over a bounded tail of the file. A closer with no `⏰ Ends:` line leaves the row on the existing clock resume.
-2. A closer carrying `⏰ Ends:` is classified into exactly one class, in this precedence: `parked-on-card`, `parked-on-pr`, `parked-on-host`, `parked-until`. At most one probe runs per row per tick.
+2. A closer carrying `⏰ Ends:` is classified into exactly one class, in this precedence: `parked-on-card`, `parked-on-pr`, `parked-until`, `parked-on-host`. At most one probe runs per row per tick. ⚠️ The clock outranks the host deliberately: a declaration naming both a clock and a host token must bound at the clock, because a `parked-on-host` row is never released by `MAX_AGE_S`. `docs/parked-waits.md` is the owner of the precedence.
 3. Each class has one observable: whether the row's session still owns an open card; the PR's head, review decision and state; the host's TCP reachability; the named clock, or for an unprobeable declaration the age since first sighting.
 4. The tick records the first sighting's fingerprint for the row and holds it; a later tick opens the row when the observable is satisfied. A missing baseline costs exactly one tick.
 5. A baseline is tied to the session id and the closer's own hash, so a resumed session that parks again on a new declaration starts a new baseline rather than inheriting the old one.
