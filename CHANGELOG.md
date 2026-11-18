@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.36.1
 
 - fix: `make precommit` is green again after the park gate landed — `(*parkedGate).holdRecorded` drops the `observation` parameter it never read (`unparam`), and `main`'s sweep-gate and fleet-pusher one-shot modes move into `runOneShotMode`, which reports whether one ran so `main` keeps its early return and stays inside the 80-line `funlen` budget. Behaviour is unchanged: the sweep-gate mode still exits the process with its own status, and the fleet-pusher probe is still one wake tick writing no heartbeat.
 
