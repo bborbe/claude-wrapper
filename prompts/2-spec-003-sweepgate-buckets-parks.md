@@ -13,6 +13,7 @@ created: "2026-11-18T00:35:03Z"
 - Liveness is read from the session registry, the headless heartbeat store and the attention feed, with the feed winning when it answers
 - A worker parked on a gate the feed never registered, or one that declared a machine-watched wait, is classified as waiting rather than as a problem
 - A row is called blocked-upstream only when at least one named blocker is not completed, and a blocker outside the tracked set still counts
+- One prepared value carries the enriched rows, the hold store and the digest, so the renderer and the invariant read exactly the rows the tick enriched
 - Each classification guard that refuses, suppresses or degrades has its own named test, so the refusal list can be derived mechanically later
 </summary>
 
@@ -24,6 +25,10 @@ Port the classification half of the gate into `pkg/sweepgate`: the bucket/status
 Read `pkg/sweepgate/config.go`, `pkg/sweepgate/task.go`, `pkg/sweepgate/snapshot.go`, `pkg/sweepgate/digest.go` and `pkg/sweepgate/state.go` first — the previous prompt created them and this prompt extends the package. Also read `pkg/sweepgate/*_test.go` for the suite shape.
 
 Read the reference at `testdata/sweepgate/reference/sweep-gate.py`. The functions you are porting are `bucket`, `_classify`, `_is_waiting`, `read_holds`, `held_reason`, `held_age`, `held_label`, `is_held`, `is_deferred`, `_parse_defer_date`, `open_box_count`, `idle_stuck`, `apply_stuck`, `blocker_statuses`, `apply_blocked_upstream`, `liveness_of`, `liveness_of_set`, `enrich_liveness`, `heartbeat_live`, `read_registry`, `read_feed`, `is_open_gate`, `is_external_wait`, `apply_external_waits`, `apply_declared_waits`, `park_threshold_seconds`, `parked_on_unregistered_gate`, `session_in_flight`, `apply_unregistered_parks`, and the constant blocks `BUCKETS`, `GLYPHS`, `BUCKET_ORDER`, `DEFER_OVERLAY_EXEMPT`, `NON_SPAWNABLE_ROLES`, `LIVENESS_*`, `PARKED_VERBS`, `EXTERNAL_WAIT_MARKER`, `KIND_FROM_MECHANISM`, `_YAML_NULLS`, `STUCK_SECONDS`, `LIVE_WINDOW`, `STUCK_MARKER_SECONDS`, `HEARTBEAT_TTL_SECONDS`.
+
+Two shape facts about the reference that the port must preserve, both visible at `bucket` (`sweep-gate.py:2108`) and `is_deferred` (`:1994`):
+- `bucket` reads the hold store itself (`held_label(task.get("session"))`) and `is_deferred` reads the wall clock (`date.today()`). Neither is a pure function of the task in Python; in Go both inputs become explicit parameters so a test can pin them.
+- The hold overlay changes the LABEL and leaves the KEY alone, and it is not exempted for `done`/`hold`/`backlog`/`waiting` — so a key-only reader is unaffected by the hold store, and a label reader must have it.
 
 Repo patterns to follow:
 - `pkg/flagged_tick.go` — `decision` is a pure function returning `(reason, refused, skipped)`; `orderFlaggedRows` is a stable sort. Classification here is the same shape: pure functions over a row, named branches, one reason string per branch.
@@ -42,21 +47,21 @@ Coding guides (in container):
 2. **`pkg/sweepgate/bucket.go` — the status cell and the bucket key.**
    - `const (LivenessLive = "live"; LivenessParked = "parked"; LivenessNone = "none")`.
    - `var Glyphs map[string]string` and `var BucketOrder []string` with exactly the reference's keys, glyphs and order. `BucketOrder` must contain `upstream` and `declared` — a key present in `Glyphs` but absent from `BucketOrder` is counted and then silently dropped from the marker, which is the reference's own recorded defect.
-   - `func Bucket(t Task) (label string, key string)`:
+   - `func Bucket(now time.Time, holds map[string]Hold, t Task) (label string, key string)`:
      - `status` in `{completed, aborted, hold, backlog}` returns the `BUCKETS` label/key pairs: `✅ done`/`done`, `✅ done · aborted`/`done`, `⏸️ blocked/hold`/`hold`, `—`/`backlog`.
-     - the hold overlay applies FIRST and unconditionally (`HeldLabel(t.Session)` non-nil → that label, ordinary key), because a hold is an operator statement about the session and must read as held whatever else the row says.
-     - the deferred overlay applies when `key` is not in `{done, hold, backlog, waiting}` and `IsDeferred(t)` — label `⏸️ deferred`, key unchanged.
-     - `Classify(t)` is the ordinary precedence, in this exact order: `phase: human_review` → `⌛ waiting-on-human`/`waiting`; `liveness == parked` → `waiting`; `phase: todo` and not `OperatorFlagged` → `⌛ waiting-approval`/`approval`; `ExternalWait` → `⌛ waiting-external`/`external`; `InFlight` → `🔄 progressing`/`progressing`; `DeclaredWaitActive` → `⌛ waiting-declared`/`declared`; `UnregisteredPark` → `⌛ parked-on-unregistered-gate`/`unregistered`; role in `{human, manager}` AND not `BlockedUpstream` AND `liveness != live` → `👤 YOURS`/`yours`; `Stuck` and not `IsWaiting(t)` → `⚠️ problem`/`problem`; `status == next` or (`status == in_progress` and `phase == planning`) → live owner `progressing`, blocked-upstream `⏸️ blocked/upstream`/`upstream`, else `🚀 ready-to-start`/`ready`; `status == in_progress` → `progressing`; otherwise `—`/`other`.
+     - the hold overlay applies FIRST and unconditionally (`HeldLabel(now, holds, t.Session)` found → that label, ordinary key), because a hold is an operator statement about the session and must read as held whatever else the row says. Read `t.Session` only — never the id set: the reference's own comment records that reading the raw frontmatter key here compiles, runs and is inert.
+     - the deferred overlay applies when `key` is not in `{done, hold, backlog, waiting}` and `IsDeferred(now, t)` — label `⏸️ deferred`, key unchanged.
+     - `Classify(now time.Time, t Task)` is the ordinary precedence, in this exact order: `phase: human_review` → `⌛ waiting-on-human`/`waiting`; `liveness == parked` → `waiting`; `phase: todo` and not `OperatorFlagged` → `⌛ waiting-approval`/`approval`; `ExternalWait` → `⌛ waiting-external`/`external`; `InFlight` → `🔄 progressing`/`progressing`; `DeclaredWaitActive` → `⌛ waiting-declared`/`declared`; `UnregisteredPark` → `⌛ parked-on-unregistered-gate`/`unregistered`; role in `{human, manager}` AND not `BlockedUpstream` AND `liveness != live` → `👤 YOURS`/`yours`; `Stuck` and not `IsWaiting(now, t)` → `⚠️ problem`/`problem`; `status == next` or (`status == in_progress` and `phase == planning`) → live owner `progressing`, blocked-upstream `⏸️ blocked/upstream`/`upstream`, else `🚀 ready-to-start`/`ready`; `status == in_progress` → `progressing`; otherwise `—`/`other`.
      - The order is the contract. Do not reorder to "tidy" it: each placement has a recorded false positive behind it (an in-flight row must beat the park cell; the park cell must beat `stuck`; the role carve-out must beat `stuck` and the offer). Keep those reasons as comments on the branches, shortened to one line each.
-   - `func StatusLabel(t Task) string` — the label for a bare status, built by calling `Bucket` on a neutral row (`phase`, `session` empty, `LivenessNone`, `Stuck` false), never a second status→glyph map.
-   - `func IsDeferred(t Task) bool` — parse `DeferDate` as a bare date (`YYYY-MM-DD` first, then RFC3339), compare against `cfg.Now`'s date in local time; unparseable or absent → false.
-   - `func IsWaiting(t Task) bool` — any of: parked liveness, `BlockedUpstream`, deferred, `DeclaredWaitActive`.
+   - `func StatusLabel(now time.Time, t Task) string` — the label for a bare status, built by calling `Bucket(now, nil, neutralRow)` where the neutral row has `phase`, `session` empty, `LivenessNone`, `Stuck` false — never a second status→glyph map. A neutral row carries no session and no defer date, so the nil hold store and the empty clock are inert here.
+   - `func IsDeferred(now time.Time, t Task) bool` — parse `DeferDate` as a bare date (`YYYY-MM-DD` first, then RFC3339), compare against `now`'s date in local time; unparseable or absent → false. The clock is a parameter, never `time.Now()`: the reference's `date.today()` is the only non-injected clock in this port.
+   - `func IsWaiting(now time.Time, t Task) bool` — any of: parked liveness, `BlockedUpstream`, `IsDeferred(now, t)`, `DeclaredWaitActive`.
 
 3. **`pkg/sweepgate/holds.go` — the operator's hold overlay.**
    - `type Hold struct { Reason string \`json:"reason"\`; HeldAt string \`json:"held_at"\` }`, `type HoldStore struct { Holds map[string]Hold \`json:"holds"\` }`.
    - `func ReadHolds(ctx context.Context, path string) (map[string]Hold, error)` — a missing, unreadable or malformed store returns an empty map and a NIL error. A hold is an operator instruction to STOP, so inventing one from an unreadable file would suppress wakes for sessions the operator never held; reading a real store as empty merely fails to honour a hold, loudly, on the next tick.
    - `func HeldReason(holds map[string]Hold, sessionID string) (string, bool)` — empty id → false; a non-object entry → false; the reason defaults to `held`.
-   - `func HeldAge(now time.Time, heldAt string) string` — `%dm` under an hour, `%dh` under a day, `%dd` otherwise, `?` for an absent or unparseable stamp (never age zero, which would read as a hold set seconds ago). Parse the stamp as `%Y-%m-%dT%H:%M:%SZ` in UTC.
+   - `func HeldAge(now time.Time, heldAt string) string` — `%dm` under an hour, `%dh` under a day, `%dd` otherwise, `?` for an absent or unparseable stamp (never age zero, which would read as a hold set seconds ago). Parse the stamp as `%Y-%m-%dT%H:%M:%SZ` in UTC, and clamp a negative age to zero.
    - `func HeldLabel(now time.Time, holds map[string]Hold, sessionID string) (string, bool)` — `⏸️ HELD — <reason> · <age>`, exactly.
    - The whole store is read once per tick and passed down; do not re-read the file per row. (The reference re-reads it per row; that is a cost, not a contract, and one read per tick cannot change an answer.)
 
@@ -88,16 +93,21 @@ Coding guides (in container):
    ```go
    // Prepared is one subject, fully enriched, ready to digest, render or inspect.
    type Prepared struct {
-       Snapshot Snapshot
-       Tasks    []Task
-       Busy     map[string]BusyStamp
-       Digest   string
+       Snapshot    Snapshot
+       Tasks       []Task
+       Holds       map[string]Hold
+       Busy        map[string]BusyStamp
+       Digest      string
+       ParkBasis   string
+       ParkSeconds int
    }
    func Prepare(ctx context.Context, cfg Config) (Prepared, error)
    ```
-   It runs, in the reference's order: `ResolveSubject` → `ResolveTracked` → `ReadRegistry` → `ReadFeed` → `EnrichLiveness` → `ParkThreshold` → `ApplyUnregisteredParks` → `ApplyExternalWaits` → `ApplyDeclaredWaits` → `ApplyStuck` (seeded from the state file's `busy_since`) → `BlockerStatuses` + `ApplyBlockedUpstream` → `Digest`. The order is load-bearing: the digest is built from what the frame renders, so a flag resolved after the digest would move the table without moving the change signal; and `ApplyBlockedUpstream` runs AFTER `ApplyStuck` exactly as the reference does, with `IsWaiting` doing the suppression. Return the `ParkThreshold` basis to the caller (add a `ParkBasis string` and `ParkSeconds int` field) — the tick mode prints it on every tick.
-   Bound the vault reads (`ResolveSubject`, `ResolveTracked`, `BlockerStatuses`) with `cfg.ReadTimeout` via `context.WithTimeout`, the way `FlaggedTick.readRows` bounds a predicate read. The bound exists to abandon a HUNG read, never a slow one, so it is deliberately larger than the tick interval; a read that exceeds it returns an error that names the timeout, and the caller logs it and continues with the next subject rather than stopping the loop.
-   A subject that cannot resolve is an error; the caller decides the exit code. Every other read failure degrades to its safe default, never an error.
+   It runs, in the reference's order: `ResolveSubject` → `ResolveTracked` → `ReadRegistry` → `ReadFeed` → `ReadHolds` → `EnrichLiveness` → `ParkThreshold` → `ApplyUnregisteredParks` → `ApplyExternalWaits` → `ApplyDeclaredWaits` → `ApplyStuck` (seeded from the state file's `busy_since`) → `BlockerStatuses` + `ApplyBlockedUpstream` → `Digest`. The order is load-bearing: the digest is built from what the frame renders, so a flag resolved after the digest would move the table without moving the change signal; and `ApplyBlockedUpstream` runs AFTER `ApplyStuck` exactly as the reference does, with `IsWaiting` doing the suppression.
+   - `Holds` is read ONCE here and carried on `Prepared`, because every label reader downstream (`Bucket`, `StatusLabel`, `HeldLabel`) needs the store and none of them may re-read the file. A caller that rendered from `Tasks` alone would bucket a held row wrong.
+   - `ParkBasis` and `ParkSeconds` are returned to the caller — the tick mode prints the basis on every tick.
+   - **Bound every read that can hang with `cfg.ReadTimeout` via `context.WithTimeout`**, the way `FlaggedTick.readRows` bounds a predicate read: `ResolveSubject`, `ResolveTracked`, `BlockerStatuses`, **and `cfg.Source.Snapshot(ctx, cfg.Subject)` when `cfg.Source` is set** — the injected source replaces the first two reads and bypasses any bound wrapped around them, so an unbounded `Snapshot` would hang the whole tick loop. The bound exists to abandon a HUNG read, never a slow one, so it is deliberately larger than the tick interval; a read that exceeds it returns an error that names the timeout, and the caller logs it and continues with the next subject rather than stopping the loop.
+   - A subject that cannot resolve is an error; the caller decides the exit code. Every other read failure degrades to its safe default, never an error.
 
 7. **The refusal tests (AC3's test half).** Every guard that refuses, suppresses, degrades or falls back gets a named test. Use the naming convention `It("refuses <name>", ...)` for a guard that declines an action and `It("degrades <name>", ...)` for one that reads an unreadable input as a safe default — the documentation prompt will cite these exact strings, so the names are part of the contract. Minimum set for this prompt:
    - `refuses a non-live owner the ready offer`
@@ -121,15 +131,15 @@ Coding guides (in container):
    Each test drives the real function with a real fixture file in `ginkgo.GinkgoT().TempDir()` or the checked-in `testdata/sweepgate/inputs/`, and asserts the specific outcome (the label, the key, or the flag). Do not assert on an internal call count.
 
 8. **Tests for the classification contract.** In addition to the refusal set:
-   - `Describe("classifies every bucket in the reference order", ...)` — one case per branch of `Classify`, each asserting BOTH the label and the key, including `aborted` → `done` with the `· aborted` suffix, `waiting-approval` for an unflagged `todo`, and `YOURS` for a sessionless `role: human` row at `phase: execution`.
-   - `Describe("renders the held overlay with reason and age", ...)` — exact-equality on `⏸️ HELD — <reason> · <age>` for the three age bands and for an unreadable stamp (`?`); an unheld control row.
+   - `Describe("classifies every bucket in the reference order", ...)` — one case per branch of `Classify`, each asserting BOTH the label and the key, including `aborted` → `done` with the `· aborted` suffix, `waiting-approval` for an unflagged `todo`, and `YOURS` for a sessionless `role: human` row at `phase: execution`. Call `Bucket` with a FIXED `now` (a literal `time.Date`) and an empty hold store, so no case depends on the wall clock.
+   - `Describe("renders the held overlay with reason and age", ...)` — exact-equality on `⏸️ HELD — <reason> · <age>` for the three age bands and for an unreadable stamp (`?`); an unheld control row. Drive `Bucket` with the hold store built in the test and the same fixed clock.
    - `Describe("keeps the digest blind to the render-only flags", ...)` — set every render-only flag on a task, assert `Digest` is unchanged.
 
 9. **`CHANGELOG.md`.** Add one bullet under the existing `## Unreleased` heading:
    `- feat: pkg/sweepgate classifies sweep rows — bucket precedence, hold and defer overlays, three-source liveness, and the park/wait flags, with every refusal carried as a named test`
    Do not create a second `## Unreleased` heading.
 
-10. **Self-check before finishing.** Re-run `<verification>` and confirm it passes. Walk requirements 1-9. Confirm no render-only flag reaches `Digest`, and confirm every branch of `Classify` appears in `BucketOrder`'s key space (`Glyphs` has an entry for each key the classifier can return).
+10. **Self-check before finishing.** Re-run `<verification>` and confirm it passes. Walk requirements 1-9. Confirm no render-only flag reaches `Digest`, confirm every branch of `Classify` appears in `BucketOrder`'s key space (`Glyphs` has an entry for each key the classifier can return), and confirm no bucket-reading function takes its clock or hold store from anything but its parameters.
 </requirements>
 
 <constraints>
@@ -140,7 +150,7 @@ Coding guides (in container):
 - The `SWEEP_GATE_*` overrides are trusted local config, set by the operator or the fixture; they are not a request surface.
 - No hardcoded vault path anywhere (AC7); the vault is `Config.Vault`.
 - `github.com/bborbe/errors` only (`errors.Wrap`, `errors.Wrapf`, `errors.Errorf`, `errors.Is`); `ctx` threaded. Do not introduce `fmt.Errorf`.
-- The clock is `libtime.CurrentDateTimeGetter` from `Config.Now`; no `time.Now()` outside a test's own fixed clock.
+- The clock is `libtime.CurrentDateTimeGetter` from `Config.Now`, read once per call site; no `time.Now()` outside a test's own fixed clock. A function that needs the clock takes it as a `now time.Time` parameter rather than reaching for the config.
 - Ginkgo v2 + Gomega, in-package tests, qualified imports, no counterfeiter mocks.
 - Do NOT commit — dark-factory handles git.
 - Existing tests must still pass.

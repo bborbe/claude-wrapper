@@ -24,7 +24,11 @@ Read the package as it stands: `pkg/sweepgate/config.go`, `task.go`, `snapshot.g
 
 Read the reference at `testdata/sweepgate/reference/sweep-gate.py`. The functions you are porting are `open_cards`, `manager_subject`, `cards_for_subject`, `subject_has_manager`, `cached_verdicts`, `subject_blocked_on_operator`, `row_set_key`, `invariant_card`, `load_settled`, `save_settled`, `write_card`, plus the constants `OPERATOR_BUCKETS` (`{waiting, approval}`), `OPERATOR_VERDICTS` (`{needs-you, below-bar}`) and `WORKER_MANAGER_DIR` / `PREDISPATCH_DIR`.
 
-The caller contract is in the supervisor plugin: `commands/steps/covered-subject-invariant.md`. Read it at `/home/node/.claude/plugins/marketplaces/claude-supervisor/commands/steps/covered-subject-invariant.md`. It treats exit `3` as "another layer already holds it" and ANY other non-zero exit as "the vault-side script is unavailable". That is why this mode returns 0 on every path — and why the port must never invent a 3.
+The caller contract is stated in the reference's own comments and is the whole reason this mode never returns a non-zero code: the plugin step that invokes it treats exit `3` as "another layer already holds it" and ANY other non-zero exit as "the vault-side script is unavailable", reported once per round. That is why this mode returns 0 on every path — and why the port must never invent a 3. The step file itself is not in the container mount; the contract above is what you implement against, and `sweep-gate.py:3214-3224` records the measured cost of getting it wrong (1487 + 851 + 239 fail-open ledger rows reporting a working install as broken).
+
+Two shape facts to carry over:
+- `bucket` applies the hold overlay, so a row's KEY is the hold-independent classification while its LABEL may be `⏸️ HELD — …`. Read keys through `Bucket(now, prepared.Holds, t)`; read the hold overlay through `HeldLabel(now, prepared.Holds, t.Session)`. Neither is available from a bare `[]Task`.
+- The reference's `main()` computes the card from the SAME enriched `tracked` list the frame is rendered from, after every `apply_*`. This prompt therefore takes `Prepared`, not a fresh read.
 
 Coding guides (in container):
 - `/home/node/.claude/plugins/marketplaces/coding/docs/go-testing-guide.md`
@@ -40,16 +44,16 @@ Coding guides (in container):
    - `func CachedVerdicts(ctx context.Context, cfg Config, subject string) (map[string]string, error)` — read `<PredispatchDir>/<slug>.verdicts.json` as `{task name: {verdict: "..."}}`; an absent or unreadable cache yields an empty map and a nil error (a missing cache must never turn every row into "blocked on the operator").
 
 2. **`pkg/sweepgate/invariant.go` — the predicate, the identity, the payload.**
-   - `func SubjectBlockedOnOperator(ctx context.Context, cfg Config, tasks []Task, subject string) bool` — over the non-terminal rows only (`Bucket(t)` key != `done`), EVERY row must qualify by one of: its bucket key is `waiting` or `approval`; it carries the hold overlay (checked with `HeldLabel`, because a hold keeps its ordinary key); or its cached verdict is `needs-you` or `below-bar`. No non-terminal rows → false. Any row that is none of those → false. That last clause is the control that stops the invariant firing on every subject with nothing in flight.
-   - `func RowSetKey(ctx context.Context, cfg Config, subject string, tasks []Task) string` — the identity of the ask: for every non-terminal row, the tuple `[name, bucket key, held, verdict]`, the list sorted, marshalled as compact JSON (`encoding/json` with `json.Marshal` over `[][]any` is acceptable — the exact byte layout need only be stable within this package), sha256 hex truncated to 16 characters. Order-free, so a reorder is not a change; a row joining, leaving or changing bucket/held/verdict IS a change. Set-change, never a tick count.
-   - `func InvariantPayload(ctx context.Context, cfg Config, prepared Prepared) ([]byte, bool, error)` — the conjunction, in this order, each early return printing its stderr line:
+   - `func SubjectBlockedOnOperator(ctx context.Context, cfg Config, prepared Prepared, subject string) bool` — over the non-terminal rows only (`Bucket(now, prepared.Holds, t)` key != `done`, with `now := cfg.Now.Now().Time()` read once), EVERY row must qualify by one of: its bucket key is `waiting` or `approval`; it carries the hold overlay (`HeldLabel(now, prepared.Holds, t.Session)` found — checked on the label, because a hold keeps its ordinary key); or its cached verdict is `needs-you` or `below-bar`. No non-terminal rows → false. Any row that is none of those → false. That last clause is the control that stops the invariant firing on every subject with nothing in flight. Take `Prepared` rather than `[]Task`: the hold store and the clock both come from it, and a bare task list cannot answer either clause.
+   - `func RowSetKey(ctx context.Context, cfg Config, prepared Prepared, subject string) string` — the identity of the ask: for every non-terminal row, the tuple `[name, bucket key, held, verdict]`, the list sorted, marshalled as compact JSON (`encoding/json` with `json.Marshal` over `[][]any` is acceptable — the exact byte layout need only be stable within this package), sha256 hex truncated to 16 characters. Order-free, so a reorder is not a change; a row joining, leaving or changing bucket/held/verdict IS a change. Set-change, never a tick count. It takes `Prepared` for the same reason as the predicate.
+   - `func InvariantPayload(ctx context.Context, cfg Config, prepared Prepared, stderr io.Writer) ([]byte, bool, error)` — the conjunction, in this order, each early return writing its stderr line to the `stderr` writer it was given:
      1. `CardsForSubject` non-empty → `(nil, false, nil)`.
-     2. `SubjectHasManager` false → print `skip <subject>: resolves no owner — no manager registration names it` to stderr, return `(nil, false, nil)`.
+     2. `SubjectHasManager` false → write `skip <subject>: resolves no owner — no manager registration names it` to `stderr`, return `(nil, false, nil)`.
      3. `SubjectBlockedOnOperator` false → `(nil, false, nil)`.
-     4. `LoadSettled` record's `RowKey` equals `RowSetKey` → print `suppress <subject>: settled ask unchanged — already answered` to stderr, return `(nil, false, nil)`.
+     4. `LoadSettled` record's `RowKey` equals `RowSetKey` → write `suppress <subject>: settled ask unchanged — already answered` to `stderr`, return `(nil, false, nil)`.
      5. otherwise build the card, `SaveSettled`, and return the marshalled bytes with `true`.
      The card's fields, exactly: `dedup_key` = `open-card-invariant:<slug>`; `payload` = `<subject> is blocked on you, and the board carries no card for it.`; `context` = `All <n> non-terminal row(s) of <subject> are waiting on the operator, and the attention board holds no open card attributable to it — so the subject reports itself operator-blocked with nothing for the operator to answer.`; `options` = `["Look at the blocked rows now", "Leave it — I know about this"]`; `recommend` = `Look at the blocked rows now`.
-     The stderr writer is a parameter (see requirement 3) — do not print to `os.Stderr` from this function.
+     `stderr` is a REQUIRED parameter — the function never writes to `os.Stderr` itself. The mode passes the process stderr; the tick's card builder passes a `cfg.Logf`-backed writer, because a daemon tick's stdout belongs to nobody.
    - The payload is compact single-line JSON. The Python emits `json.dumps`'s default spacing; a compact encoding is a whitespace-only difference that any JSON parser normalises, and the caller posts the payload rather than diffing it. Record that divergence in `docs/sweep-gate.md` when the documentation prompt runs.
 
 3. **`pkg/sweepgate/mode_invariant.go` — the mode.**
@@ -58,8 +62,9 @@ Coding guides (in container):
    // It returns 0 on EVERY path.
    func Invariant(ctx context.Context, cfg Config, stdout, stderr io.Writer) int
    ```
-   - Unresolvable or unreadable subject: `fail-open: subject unreadable/unparseable: <err>` to stderr, NOTHING on stdout, return `ExitNoChange` (0). The honest answer for a subject that cannot be shown to be operator-blocked is "nothing", said with the no-fire code; a non-zero exit makes every retired topic read to the caller as a broken install.
-   - After a successful resolve, print `park: <basis>` to stderr BEFORE deciding anything — every mode announces the threshold basis, armed or not, because a correct run that prints nothing is uncitable. stderr is the right channel: stdout belongs to the caller.
+   - Unresolvable or unreadable subject (`Prepare` returns an error): `fail-open: subject unreadable/unparseable: <err>` to stderr, NOTHING on stdout, return `ExitNoChange` (0). The honest answer for a subject that cannot be shown to be operator-blocked is "nothing", said with the no-fire code; a non-zero exit makes every retired topic read to the caller as a broken install.
+   - After a successful `Prepare`, write `park: <prepared.ParkBasis>` to stderr BEFORE deciding anything — every mode announces the threshold basis, armed or not, because a correct run that prints nothing is uncitable. stderr is the right channel: stdout belongs to the caller.
+   - Call `InvariantPayload(ctx, cfg, prepared, stderr)` and pass the SAME `stderr` writer the mode was given, so the `skip` / `suppress` lines land on the caller's stderr rather than the process's.
    - Payload fires: the payload plus one trailing newline on stdout, return 0.
    - Nothing fires: empty stdout, return 0.
    - Never return `3`. That code belongs to the consumer's own claim command.
@@ -109,6 +114,7 @@ Run `make precommit` — must exit 0.
 Additional checks (all container-executable):
 - `go test -v -count=1 ./pkg/sweepgate -args -ginkgo.focus='prints the payload only when the card fires' -ginkgo.v` — exits 0 and prints one `case=<name> stdout_bytes=<n> exit=0` line per case.
 - `go test -v -count=1 ./pkg/sweepgate -args -ginkgo.focus='refuses a card to a subject with no owner' -ginkgo.v` — exits 0.
+- `grep -q 'stderr io.Writer' pkg/sweepgate/invariant.go` — the payload builder takes its writer rather than writing to the process's.
 - `! grep -rn 'ExitCode(3)\|return 3' pkg/sweepgate/*.go` — the port never invents the consumer's reserved code.
 - `! grep -q 'Obsidian/Personal' pkg/sweepgate/*.go` — no hardcoded vault path.
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints `1`.

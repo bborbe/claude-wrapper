@@ -12,13 +12,15 @@ created: "2026-11-18T00:35:03Z"
 - The change signal (the digest) is computed by Go and is bit-identical to the one the Python script computes for the same tasks
 - A checked-in fixture vault reproduces a real subject's inputs, so parity can be tested without touching the operator's vault
 - A generator script captures reference output from the Python script and stamps every captured file with the script's own revision, so a "golden" produced by the Go port cannot pass
+- The generator can reach the second Python file the reference shells out to, because it stages that file under a temporary home directory
 - Every state file keeps its existing path, name and JSON shape, so the switchover produces no spurious change and loses no stored digest
 - Subject names are turned into file names by one hardened function that cannot escape the state directory
+- The package owns the four exit codes the later modes return, so no later prompt invents one
 - No vault path is hardcoded; the vault is an argument
 </summary>
 
 <objective>
-Create `pkg/sweepgate` and give it the half of the gate that has nothing to do with rendering: configuration and path resolution, task parsing, tracked-set resolution, the digest, the state-file readers/writers, and the checked-in parity fixture with its generator and captured reference output. This is the foundation every later prompt builds on; nothing here renders a frame.
+Create `pkg/sweepgate` and give it the half of the gate that has nothing to do with rendering: configuration and path resolution, task parsing, tracked-set resolution, the digest, the exit codes, the state-file readers/writers, and the checked-in parity fixture with its generator and captured reference output. This is the foundation every later prompt builds on; nothing here renders a frame.
 </objective>
 
 <context>
@@ -29,18 +31,18 @@ Files to read before changing anything:
 - `pkg/flagged_rows_source.go` — the `CommandRunner` interface (`Run(ctx, name string, args ...string) ([]byte, error)`) and `ExecCommandRunner`, the repo's pattern for shelling out to a script without spawning it in tests.
 - `pkg/subject_state.go` — `baseSlug` / `nonSlug` (`regexp.MustCompile(`[^a-z0-9]+`)`), the `worker-manager` and `sweep-gate` state-directory defaults, and the `os.UserHomeDir()` + `filepath.Join` default-resolution idiom.
 - `pkg/attention_read.go` — `readJSONArray`, the repo's rule that only a 200 is a read and a decode failure is "could not read it", never an empty result.
-- `pkg/pkg_suite_test.go` — the suite shape; this new package's suite follows `pkg/handler/handler_suite_test.go` (dot-imported `ginkgo`/`gomega`, `RunSpecs(t, "Sweepgate Suite")`).
+- `pkg/pkg_suite_test.go` — the suite shape, and the ONLY suite to follow: qualified `ginkgo.` / `gomega.` imports in an in-package test file. Do NOT copy `pkg/handler/handler_suite_test.go`: that one is an external `_test` package with dot imports, which cannot reach the unexported guards this package's tests must drive.
 - `pkg/flagged_tick_test.go` — test style: `ginkgo.Describe` / `ginkgo.It`, `ginkgo.GinkgoWriter.Printf` for evidence lines, `ginkgo.GinkgoT().TempDir()`.
 
-The port's reference implementation is `testdata/sweepgate/reference/sweep-gate.py` — a frozen, verbatim copy of the vault-side script at the pinned revision. Read it; never edit it, never import it from Go, and never wire it into the daemon. The functions you are porting are `split_frontmatter`, `fm_scalar`, `fm_session_id`, `fm_metrics_session_ids`, `session_id_set`, `fm_wikilinks`, `fm_list`, `progress_hash`, `checkbox_count`, `declared_members`, `read_task`, `resolve_tracked`, `digest_of`, `resolve_subject`, `page_type_of`, `slug`, `state_path`, `tick_path`, `card_path`, `settled_path`, `load_state`, `load_stored`, `save_stored`, `write_tick`, `write_card`, `load_settled`, `save_settled`, and the constants block (`DEFAULT_VAULT`, `STATE_DIR`, `SETTLED_DIR`, `FEED_DIR`, `HOLDS_PATH`, `PREDISPATCH_DIR`, `WORKER_MANAGER_DIR`, `EXIT_NOCHANGE`, `EXIT_CHANGE`, `EXIT_USAGE`, `EXIT_FAILED`, `TASKS_INDEX_VERSION`).
+The port's reference implementation is `testdata/sweepgate/reference/sweep-gate.py` — a frozen, verbatim copy of the vault-side script at the pinned revision. Its renderer's byte contract is a second frozen copy, `testdata/sweepgate/reference/box-table.py` (217 lines): `sweep-gate.py:176-178` resolves `BOX_TABLE` to `~/.claude/plugins/marketplaces/claude-supervisor/scripts/box-table.py` and `:2857-2863` shells out to it with `sys.executable`, so the parity goldens cannot be produced without it. Read both; never edit either, never import them from Go, and never wire them into the daemon. `testdata/sweepgate/reference/README.md` records their origins and that both are retained permanently. The functions you are porting are `split_frontmatter`, `fm_scalar`, `fm_session_id`, `fm_metrics_session_ids`, `session_id_set`, `fm_wikilinks`, `fm_list`, `progress_hash`, `checkbox_count`, `declared_members`, `read_task`, `resolve_tracked`, `digest_of`, `resolve_subject`, `page_type_of`, `slug`, `state_path`, `tick_path`, `card_path`, `settled_path`, `load_state`, `load_stored`, `save_stored`, `write_tick`, `write_card`, `load_settled`, `save_settled`, and the constants block (`DEFAULT_VAULT`, `STATE_DIR`, `SETTLED_DIR`, `FEED_DIR`, `HOLDS_PATH`, `PREDISPATCH_DIR`, `WORKER_MANAGER_DIR`, `EXIT_NOCHANGE`, `EXIT_CHANGE`, `EXIT_USAGE`, `EXIT_FAILED`, `TASKS_INDEX_VERSION`).
 
-<!-- OPEN QUESTION (reviewer): the container mounts only this repo. The vault script
-     is therefore reachable ONLY through `testdata/sweepgate/reference/sweep-gate.py`.
-     That copy must exist before this prompt runs — it cannot be produced from inside
-     the container. If it is absent, stop and report it (requirement 1). Its long-term
-     fate after the vault copy is deleted is undecided: keeping it makes `generate.sh`
-     re-runnable, deleting it makes the captured goldens the only evidence. This prompt
-     assumes KEEP. -->
+<!-- The container mounts only this repo, so the vault script is reachable ONLY
+     through `testdata/sweepgate/reference/sweep-gate.py`. BOTH reference files are
+     vendored under that directory and are RETAINED PERMANENTLY — see
+     `testdata/sweepgate/reference/README.md`. They are the only record of what was
+     ported, and `docs/sweep-gate.md` cites their line numbers, so neither is
+     deleted when the vault copy goes away. `generate.sh` therefore stays
+     re-runnable for the life of the repo. -->
 
 Coding guides (in container):
 - `/home/node/.claude/plugins/marketplaces/coding/docs/go-testing-guide.md`
@@ -51,10 +53,24 @@ Coding guides (in container):
 </context>
 
 <requirements>
-1. **Verify the reference exists, and stop if it does not.**
-   `testdata/sweepgate/reference/sweep-gate.py` must be present before you write code. If it is missing, do not create it, do not synthesise goldens, and do not continue: report the exact missing path as a blocker and stop. Everything below is a port of that file; guessing from this prompt is not an acceptable substitute.
+1. **Verify both references exist, and stop if either does not.**
+   `testdata/sweepgate/reference/sweep-gate.py` and `testdata/sweepgate/reference/box-table.py` must both be present before you write code. If either is missing, do not create it, do not synthesise goldens, and do not continue: report the exact missing path as a blocker and stop. Everything below is a port of the first file, and requirement 10 cannot run without the second; guessing from this prompt is not an acceptable substitute.
 
 2. **Create the package `pkg/sweepgate`** (`package sweepgate`, copyright header identical to `pkg/flagged_tick.go`, `Sweepgate Suite` bootstrap in `pkg/sweepgate/sweepgate_suite_test.go`). Tests are in-package (`package sweepgate`) with QUALIFIED `ginkgo.` / `gomega.` imports, following `pkg/pkg_suite_test.go` — the guards below are unexported and must be testable directly.
+   Also create `pkg/sweepgate/exit.go` with the reference's four exit codes, doc-commented as a caller contract (the plugin's step file reads a non-zero, non-`3` exit as "the script is unavailable", so these values are not free to change):
+   ```go
+   const (
+       // ExitNoChange is a successful run that found nothing to report.
+       ExitNoChange = 0
+       // ExitChange is a successful run that found a change.
+       ExitChange = 10
+       // ExitUsage is a caller error, and the code a failed run returns.
+       ExitUsage = 2
+       // ExitFailed is the reference's EXIT_FAILED — the same value as ExitUsage.
+       ExitFailed = ExitUsage
+   )
+   ```
+   These are the only exit codes the package may return; every later mode uses them by name.
 
 3. **`pkg/sweepgate/config.go` — `Config` and defaults.**
    ```go
@@ -118,7 +134,7 @@ Coding guides (in container):
    - `type BusyStamp struct { Since float64 \`json:"since"\`; Progress string \`json:"progress"\` }` — the cross-tick busy clock the state file carries.
    - `type State struct` with `Topic string \`json:"topic"\``, `Digest string \`json:"digest"\``, `Members int \`json:"members"\``, `BusySince map[string]BusyStamp \`json:"busy_since"\``, `RecordedAt string \`json:"recorded_at"\``.
    - `LoadState(ctx, path string) (State, error)` and `LoadStored(ctx, path string) (digest string, failReason string, err error)` — a missing file is `failReason = "first run — no state file"`; an unreadable file is `state unreadable (<reason>)`; a parse error is `state parse error (<reason>)`; a parsed object with no `digest` key is `state parse error (no digest key)`. Every one of those returns a non-empty `failReason` and no error, which forces a full sweep.
-   - `SaveStored(ctx, path string, state State) error` — atomic (`<path>.tmp` then `os.Rename`), `json.MarshalIndent` with two-space indent, `RecordedAt` in local time with seconds precision (`time.RFC3339`).
+   - `SaveStored(ctx, path string, state State) error` — atomic (`<path>.tmp` then `os.Rename`, the same shape as `pkg/sessionstore.go`'s `os.Rename(tmpPath, path)`), `json.MarshalIndent` with two-space indent, `RecordedAt` in local time with seconds precision (`time.RFC3339`).
    - `LoadSettled(ctx, path string) (Settled, error)` / `SaveSettled(ctx, path string, settled Settled) error` with `type Settled struct { Subject string; RowKey string; RecordedAt string }` and the JSON tags `subject`, `row_key`, `recorded_at`. A missing or half-written record is "no memory" (`Settled{}`, nil error), never an error — the safe direction is a re-post, never a silence.
    - `WriteTickFile(ctx, path, frame string) error` — atomic, mode `0600` at creation (`os.OpenFile` with `0o600`, never a `chmod` after the write), content is `StripLinks(frame)` with trailing newlines normalised to exactly one. `StripLinks(text string) string` drops OSC 8 sequences (`\x1b]8;...ST`); it is unexported-in-spirit but needed by the render prompt, so export it.
    - `WriteCardFile(ctx, path string, payload []byte) error` — `payload == nil` REMOVES the file (a stale payload would re-post an answered card) and a missing file is not an error; otherwise atomic write of `json.MarshalIndent` bytes.
@@ -137,6 +153,7 @@ Coding guides (in container):
 
 10. **`testdata/sweepgate/generate.sh` — the only producer of goldens.**
     - Runs `python3 testdata/sweepgate/reference/sweep-gate.py` (repo-relative; never a host path) against `testdata/sweepgate/vault/`, with `SWEEP_GATE_STATE_DIR`, `SWEEP_GATE_SETTLED_DIR`, `SWEEP_GATE_FEED_DIR`, `SWEEP_GATE_HOLDS`, `SWEEP_GATE_PREDISPATCH_DIR`, `SWEEP_GATE_WORKER_MANAGER_DIR` and `SWEEP_GATE_STORE_URL` pointed at `testdata/sweepgate/inputs/` and a throwaway copy of it, and `BOX_TABLE_NO_LINKS=1` exported.
+    - **Stage `HOME` so the reference can find its renderer.** `sweep-gate.py:176-178` resolves `BOX_TABLE` with `os.path.expanduser("~/.claude/plugins/marketplaces/claude-supervisor/scripts/box-table.py")` — a marketplace path that does not exist in the container. Before invoking the reference, create a temp dir, `mkdir -p` the full `$TMPHOME/.claude/plugins/marketplaces/claude-supervisor/scripts/` path inside it, and `ln -s` the vendored `testdata/sweepgate/reference/box-table.py` to `box-table.py` in that directory; then run the reference with `HOME="$TMPHOME"` exported. Resolve the vendored file to an absolute path before symlinking, so the link survives the `cd` into the temp dir. Fail loudly if the symlink target is missing. `BOX_TABLE_NO_LINKS=1` stays exported so `box-table.py`'s `links_enabled()` returns false and it never resolves its own siblings (`who-needs-me.py`, `jump-link.py`) — the fixture holds no live session, so no `[sid8]` cell exists and no link is ever built.
     - Writes, for the case name `parity-topic`:
       1. `testdata/sweepgate/parity-topic.render.golden.txt` — from `--render`, prefixed by exactly one first line `# generated by sweep-gate.py@<sha8>` where `<sha8>` is the first 8 hex characters of `sha256sum testdata/sweepgate/reference/sweep-gate.py`.
       2. `testdata/sweepgate/parity-topic.render.stderr.golden.txt` — the `--render` run's stderr (the `park:` line and any failure line).
@@ -155,6 +172,7 @@ Coding guides (in container):
       This is AC8's evidence line. If the two digests disagree, fix the Go digest — never edit the state file.
     - `Describe("rejects a traversal subject", ...)` — `../../etc/x`, `..`, `.`, `""`, and a subject that slugs to empty; each returns an error and no path is produced. Assert that a subject containing `../` never yields a path whose `filepath.Clean` escapes `StateDir`.
     - `Describe("computes the digest from the rendered state", ...)` — each of status, phase, session id, task-added, task-removed and a new `# Progress` entry moves the digest, and a mutation to a task outside the tracked set does not. This is the reference fixture's FIVE-WAY group; keep the control.
+    - Add one `It` asserting the exit-code contract the later modes rely on: `ExitNoChange == 0`, `ExitChange == 10`, `ExitUsage == 2`, and `ExitFailed == ExitUsage`. Name it `It("pins the four exit codes", ...)`. A later prompt returns these by name; a silent value change would make every mode's contract wrong.
 
 12. **`CHANGELOG.md`.** Ensure exactly one `## Unreleased` heading exists (create it directly above the first `## v` heading, blank line either side). Add one bullet:
     `- feat: pkg/sweepgate ports the manager sweep gate's task parsing, tracked-set resolution and digest to Go, with a checked-in parity fixture and Python-generated goldens`
@@ -167,11 +185,12 @@ Coding guides (in container):
 - The vault path is a constructor argument; no vault path is hardcoded anywhere in `pkg/sweepgate` (AC7). The Python's `DEFAULT_VAULT` must NOT be ported.
 - The state file formats are frozen for the switchover (AC8): `<slug>.json`, `<slug>.tick.txt`, `<slug>.card.json`, `<branch>--<slug>.cadence`, and the settled record in its own directory. Renaming a field costs a spurious change on the first tick and a lost digest.
 - The `SWEEP_GATE_{STATE_DIR,SETTLED_DIR,FEED_DIR,HOLDS,PREDISPATCH_DIR,WORKER_MANAGER_DIR}` overrides are preserved: a second host relies on `STATE_DIR` and the reference fixture monkeypatches the rest.
+- The exit codes are a caller contract, not an implementation detail: `ExitNoChange` 0, `ExitChange` 10, `ExitUsage` 2, `ExitFailed` == `ExitUsage`. No mode may return a bare integer.
 - `slug()` is the only thing between a vault-authored subject and a path. It is applied before every path join and rejects an empty result or one containing `..`.
 - Parsed JSON from disk is untrusted: a malformed record reads as "no record", never as a fatal error.
 - `github.com/bborbe/errors` only (`errors.Wrap`, `errors.Wrapf`, `errors.Errorf`, `errors.Is`); `ctx` threaded through every call that can fail. Do not introduce `fmt.Errorf`.
 - Ginkgo v2 + Gomega, in-package tests, qualified (non-dot) imports, one suite (`Sweepgate Suite`). No counterfeiter mocks — use real files in `ginkgo.GinkgoT().TempDir()` or the checked-in fixture.
-- `testdata/sweepgate/reference/sweep-gate.py` is a frozen reference: never edit it, never import it from Go, never wire it into the daemon.
+- `testdata/sweepgate/reference/sweep-gate.py` and `testdata/sweepgate/reference/box-table.py` are frozen references, retained permanently (see their `README.md`): never edit either, never import either from Go, never wire either into the daemon.
 - Do NOT shell out to `box-table.py` or any Python from production code in this prompt.
 - Do NOT commit — dark-factory handles git.
 - Existing tests must still pass.
@@ -182,10 +201,12 @@ Run `make precommit` — must exit 0.
 
 Additional checks (all container-executable):
 - `ls pkg/sweepgate/*.go | wc -l` — prints a number greater than 0.
+- `grep -q 'ExitChange = 10' pkg/sweepgate/exit.go && grep -q 'ExitFailed = ExitUsage' pkg/sweepgate/exit.go` — the four exit codes exist with the reference's values.
 - `! grep -q 'Obsidian/Personal' pkg/sweepgate/*.go` — no hardcoded vault path (AC7). Use `! grep -q`, not `grep -c`: `grep -c` exits 1 when the count is zero.
 - `ls testdata/sweepgate/parity-topic.render.golden.txt testdata/sweepgate/parity-topic.render.stderr.golden.txt testdata/sweepgate/state/parity-topic.json` — all three exist.
 - `head -1 testdata/sweepgate/parity-topic.render.golden.txt | grep -qE '^# generated by sweep-gate\.py@[0-9a-f]{8,}$'` — the provenance marker is present.
 - `go test -v -count=1 ./pkg/sweepgate -args -ginkgo.focus='reads a state file written by the python' -ginkgo.v` — exits 0 and prints `file=… python_digest=… go_digest=… equal=true`.
 - `go test -v -count=1 ./pkg/sweepgate -args -ginkgo.focus='rejects a traversal subject' -ginkgo.v` — exits 0.
+- `go test -v -count=1 ./pkg/sweepgate -args -ginkgo.focus='pins the four exit codes' -ginkgo.v` — exits 0.
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints `1`.
 </verification>

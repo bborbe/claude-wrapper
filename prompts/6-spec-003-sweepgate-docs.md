@@ -12,6 +12,7 @@ created: "2026-11-18T00:35:03Z"
 - The page lists every refusal, suppression and degradation the gate performs, each with the reference line it came from and the test that carries it
 - The list is derived by a recorded sweep with its hit count and its justified exclusions, so it cannot silently shrink when a guard is added
 - A test reads the page and fails if a listed refusal has no test behind it, or if the table's size disagrees with the recorded derivation
+- The pinned reference copies are recorded as permanent, so every cited line number stays checkable
 </summary>
 
 <objective>
@@ -23,7 +24,11 @@ Read `docs/eligibility-predicate.md` for this repo's documentation voice: a tabl
 
 Read the package as it stands: `pkg/sweepgate/*.go` and `pkg/sweepgate/*_test.go`. The tests you will cite are named `It("refuses <name>", ...)` and `It("degrades <name>", ...)`.
 
-Read the reference at `testdata/sweepgate/reference/sweep-gate.py` — the line numbers you cite are at this exact revision, and the file is frozen, so they stay valid after the vault copy is deleted. Compute its revision as the full sha256 hex of the file.
+Read both reference copies at `testdata/sweepgate/reference/`:
+- `sweep-gate.py` — the gate itself. The line numbers you cite are at this exact revision.
+- `box-table.py` — the renderer the Go port replaces; cite its line numbers when the guard is a renderer guard (e.g. the truncation and padding rules).
+
+Both are frozen and **retained permanently** — `testdata/sweepgate/reference/README.md` records their origins, that `sweep-gate.py` is the vault's revision `1eb24d6d` (2026-11-16, 3 337 lines), that `box-table.py` is 217 lines, and that neither is deleted when the vault's own copy goes away. Deleting them would delete the only record of what was ported and invalidate every line number this page cites. Compute the pinned revision as the full sha256 hex of `sweep-gate.py`.
 
 Also read the spec's Acceptance Criteria AC3, AC8 and AC10, and the Constraints section's boundary sentence.
 
@@ -34,11 +39,11 @@ Coding guides (in container):
 
 <requirements>
 1. **Create `docs/sweep-gate.md`.** It is a tracked file; `CLAUDE.md` in this repo is gitignored and cannot enter a PR, so this page is the only written boundary a reviewer can read. Sections, in this order (order matters — see requirement 6):
-   - **Header.** Title `# The sweep gate`, then a two-column metadata block: `Reference` = `testdata/sweepgate/reference/sweep-gate.py`, `Pinned revision` = the full sha256 hex of that file, `Ported` = the date, `Package` = `pkg/sweepgate`, `Owner` = `claude-wrapper`.
+   - **Header.** Title `# The sweep gate`, then a two-column metadata block: `Reference` = `testdata/sweepgate/reference/sweep-gate.py`, `Table renderer reference` = `testdata/sweepgate/reference/box-table.py`, `Pinned revision` = the full sha256 hex of `sweep-gate.py`, `Ported` = the date, `Package` = `pkg/sweepgate`, `Owner` = `claude-wrapper`. Add one line stating that both reference copies are retained permanently, so every line number on the page stays checkable.
    - **`## Why it lives here`.** State the boundary in one paragraph: this repo owns "spawn/control **and periodic fleet ticks**"; the gate renders a fleet table and produces a periodic tick, so it is a fleet tick rather than a ranker or a renderer belonging to the attention service. Name the two candidates that exclude it by their own stated boundary (the attention service is explicitly "no ranking, no arms or renderers"; this repo's phase-1 description names spawn/list/inspect/answer/stop and did not name a change gate), and name the parent goal's clause that supplies the missing one. One short paragraph each, no more.
-   - **`## Modes`.** A table of the four modes: `Mode | stdout | stderr | exit`. `--check` → `CHANGE <reason>` or `NOCHANGE`; 0 or 10. `--render` → the frame; 0 or 10. `--tick` → the frame and `VERDICT change (<reason>)` ONLY on a change; the tick file always written; 0 or 10. `--invariant` → the card payload only when the card fires; 0 ALWAYS. Every mode prints `park: <basis>` to stderr after a successful resolve, and every failure path writes to stderr only — stdout is a caller's event stream, so a `CHANGE` line on an unreadable subject would wake a model on every tick.
+   - **`## Modes`.** A table of the four modes: `Mode | stdout | stderr | exit`. `--check` → `CHANGE <reason>` or `NOCHANGE`; 0 or 10. `--render` → the frame; 0 or 10. `--tick` → the frame and `VERDICT change (<reason>)` ONLY on a change; the tick file always written; 0 or 10. `--invariant` → the card payload only when the card fires; 0 ALWAYS. Every mode prints `park: <basis>` to stderr after a successful resolve, and every failure path writes to stderr only — stdout is a caller's event stream, so a `CHANGE` line on an unreadable subject would wake a model on every tick. Name the exit constants as the code names them (`ExitNoChange` 0, `ExitChange` 10, `ExitUsage`/`ExitFailed` 2).
    - **`## State files`.** A table with the five rows from the spec's AC8: purpose, path, notes — digest state `<StateDir>/<slug>.json`; tick file `<StateDir>/<slug>.tick.txt` (the operator-facing table, link-free, mode 0600); card payload `<StateDir>/<slug>.card.json` (written by `--tick` too); cadence arm `<StateDir>/<branch>--<slug>.cadence` (branch prefix); settled ask `<SettledDir>/<slug>.json` (a separate directory). State the slug transform verbatim (`re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")`) and why it is part of the contract (subjects carry spaces). List the six `SWEEP_GATE_*` overrides and say a second host relies on `STATE_DIR`.
-   - **`## Divergences from the reference`.** Exactly these, each with its reason: the box table is rendered in Go rather than by a second Python process (the reason the parity comparison is byte-level); the card payload is compact JSON rather than the Python's default spacing (a whitespace-only difference; the caller posts the payload, it does not diff it); the parity test normalises the marker's leading `HH:MM` on both sides (the Python reads the wall clock and the port reads the injected clock, so an un-normalised comparison fails whenever the minute changes); the parity goldens carry a provenance marker line the Python does not emit; and the live-vault capture under `testdata/sweepgate/live/` is preserved only as the post-deploy diff reference, not as a parity golden (it cannot be reproduced from the fixture vault).
+   - **`## Divergences from the reference`.** Exactly these, each with its reason: the box table is rendered in Go rather than by a second Python process (the reason the parity comparison is byte-level); the card payload is compact JSON rather than the Python's default spacing (a whitespace-only difference; the caller posts the payload, it does not diff it); the parity test normalises the marker's leading `HH:MM` on both sides (the Python reads the wall clock and the port reads the injected clock, so an un-normalised comparison fails whenever the minute changes); the parity goldens carry a provenance marker line the Python does not emit; and the live-vault capture under `testdata/sweepgate/live/` is preserved only as the post-deploy diff reference, not as a parity golden (it cannot be reproduced from the fixture vault). Add one line recording that both reference copies are kept permanently — `generate.sh` stays re-runnable, and the line numbers cited above stay checkable after the vault's own copies are retired.
    - **`## Refusals`** — the LAST section in the document (see requirement 6), containing the sweep record and the table.
 
 2. **Derive the refusal list by a recorded sweep.** Run exactly this command from the repository root and record its output count:
@@ -53,7 +58,7 @@ Coding guides (in container):
    The label `raw hits:` carries the DERIVED count, not the unfiltered one, because the acceptance criterion's own evidence command greps for `raw hits: <n>` and compares it to the table's row count. Record the unfiltered number separately as `unfiltered hits:` so nothing is lost.
 
 3. **The refusal table.** Columns `Guard | Line | Test | Why`. One row per retained guard, and the number of DATA rows must equal `R`.
-   - `Line` is the reference line number at the pinned revision.
+   - `Line` is the reference line number at the pinned revision — `sweep-gate.py`'s, or `box-table.py`'s for a renderer guard, written so the file is unambiguous (e.g. `box-table.py:141`).
    - `Test` is the exact `It(...)` name from `pkg/sweepgate/*_test.go` (e.g. `refuses the park cell to an in-flight row`). Read the test files and copy the names; never invent one.
    - `Why` is one clause naming what the guard prevents.
    - Cover the guards the earlier prompts implemented, at minimum: the fail-open subject path, the three state-load failures, the tick-file write failure, the card write failure, the state-save failure, the held/deferred/approval/external/declared action silences, the five park predicates, the role carve-out, the stuck suppression, the blocked-upstream rule, the unreadable hold store / registry record / heartbeat store / feed / malformed JSON / malformed feed line degradations, and the four invariant withholdings (no owner, existing card, settled ask, not blocked).
@@ -90,7 +95,7 @@ Coding guides (in container):
 - Every guard cited must have a test behind it, and every test cited must exist with that exact name. The table is not aspirational.
 - The refusal list is derived by the recorded sweep, never written from memory; the recorded count and the table's size must agree.
 - The document states the mode contracts and the state-file formats as they are implemented, not as the Python implemented them, with the divergences named in their own section.
-- Do not edit `testdata/sweepgate/reference/sweep-gate.py`; the pinned line numbers depend on it being frozen.
+- Do not edit `testdata/sweepgate/reference/sweep-gate.py` or `testdata/sweepgate/reference/box-table.py`; the pinned line numbers depend on both being frozen, and both are retained permanently for exactly that reason.
 - `github.com/bborbe/errors` only; do not introduce `fmt.Errorf`.
 - Ginkgo v2 + Gomega, in-package tests, qualified imports.
 - Do NOT commit — dark-factory handles git.
@@ -105,5 +110,6 @@ Additional checks (all container-executable):
 - `printf 'rows '; sed -n '/^## Refusals/,/^## /p' docs/sweep-gate.md | grep -c '^| '` and `printf 'derived '; grep -oE 'raw hits: [0-9]+' docs/sweep-gate.md` — both print the same number.
 - `grep -c 'raw hits:' docs/sweep-gate.md` — prints `1`.
 - `grep -c '^## Refusals' docs/sweep-gate.md` — prints `1`, and `awk '/^## /{print NR": "$0}' docs/sweep-gate.md | tail -1` names `## Refusals` as the last section.
+- `grep -q 'reference/box-table.py' docs/sweep-gate.md` — the page names the renderer reference too, not only the gate.
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints `1`.
 </verification>

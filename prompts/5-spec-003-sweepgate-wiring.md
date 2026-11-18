@@ -12,6 +12,7 @@ created: "2026-11-18T00:35:03Z"
 - The tick can be disabled with one interval flag or by configuring no subjects, and disabling it is announced rather than silent
 - No vault path is compiled in; the vault, the subjects and the state directory all come from flags
 - A test proves the wiring actually writes a tick file, not merely that a goroutine was started
+- A read that hangs is abandoned at the configured timeout, including a read from an injected source, so one wedged subject cannot stall the loop
 </summary>
 
 <objective>
@@ -21,7 +22,7 @@ Wire `pkg/sweepgate` into the daemon: add the two remaining mode entry points, t
 <context>
 Read `main.go` in full — especially `registerFlaggedTickFlags`, the `--mcp-stdio` early return, the `--fleet-pusher-once` early return (the precedent for a mode that runs before the supervisor is built and never binds the listener), `startFleetFaces`, `startFlaggedTick` (the precedent for a tick goroutine that is disabled by a zero interval and logs its own stop), and `expandHome`.
 
-Read the package as it stands: `pkg/sweepgate/*.go` — `Config`, `Prepare`, `Tick`, `Invariant`, `CardBuilder`, `NewVaultSnapshotter`, the exit constants and the state paths.
+Read the package as it stands: `pkg/sweepgate/*.go` — `Config`, `Prepared`, `Prepare`, `Tick`, `Invariant`, `InvariantPayload`, `CardFunc`, `CardBuilder`, `NewVaultSnapshotter`, the exit constants (`ExitNoChange`, `ExitChange`, `ExitUsage`, `ExitFailed`) and the state paths.
 
 Repo patterns to follow:
 - `pkg/flagged_tick.go` — `Run(ctx) error` returns `ctx.Err()` when the context ends; the loop is sequential, so an overrun delays the next tick rather than stacking.
@@ -37,14 +38,14 @@ Coding guides (in container):
 
 <requirements>
 1. **`pkg/sweepgate/mode_check.go` and `pkg/sweepgate/mode_render.go` — the two remaining modes.**
-   - `func Check(ctx context.Context, cfg Config, stdout, stderr io.Writer) int` — `Prepare`, print `park: <basis>` to stderr, compare the digest against the stored one, then print `CHANGE <reason>` (exit `ExitChange`) or `NOCHANGE` (exit `ExitNoChange`). `<reason>` is the stored-state failure reason when the load failed, otherwise `digest differs`. It writes no tick file, no card and no state.
-   - `func Render(ctx context.Context, cfg Config, stdout, stderr io.Writer) int` — `Prepare`, print `park: <basis>` to stderr, print the frame plus one trailing newline, return `ExitChange` when changed else `ExitNoChange`. It writes no tick file, no card and no state.
-   - Both: an unresolvable or unreadable subject prints `fail-open: subject unreadable/unparseable: <err>` to stderr, NOTHING to stdout, and returns `ExitFailed` (2) — never a `CHANGE` line.
+   - `func Check(ctx context.Context, cfg Config, stdout, stderr io.Writer) int` — `Prepare`, print `park: <prepared.ParkBasis>` to stderr, compare `prepared.Digest` against the stored one, then print `CHANGE <reason>` (return `ExitChange`) or `NOCHANGE` (return `ExitNoChange`). `<reason>` is the stored-state failure reason when the load failed, otherwise `digest differs`. It writes no tick file, no card and no state.
+   - `func Render(ctx context.Context, cfg Config, stdout, stderr io.Writer) int` — `Prepare`, print `park: <prepared.ParkBasis>` to stderr, print `Frame(ctx, cfg, prepared, changed)` plus one trailing newline, return `ExitChange` when changed else `ExitNoChange`. It writes no tick file, no card and no state.
+   - Both: an unresolvable or unreadable subject prints `fail-open: subject unreadable/unparseable: <err>` to stderr, NOTHING to stdout, and returns `ExitFailed` (2) — never a `CHANGE` line. Use the named constants from `pkg/sweepgate/exit.go`; never a bare integer.
 
 2. **`pkg/sweepgate/config.go` — add the daemon's subject list and the injectable source.** Add two fields to `Config` without renaming any existing one:
    - `Subjects []string` — "the subjects the daemon tick covers; empty disables the daemon tick". `Subject` remains the single subject a one-shot mode runs against.
    - `Source Snapshotter` — nil means "build the real vault snapshotter from this config". Every mode and `Prepare` resolve through `cfg.Source` when it is non-nil, which is what lets a test drive any mode, including the daemon runner, without a vault.
-   `Validate` requires `Subject` only for the one-shot modes; the daemon path validates that `Vault` is set and each subject is non-empty. Update `Prepare` so it reads the subject through `cfg.Source` when that field is non-nil and only falls back to `NewVaultSnapshotter(cfg)` when it is nil — every mode then inherits the injected source with no signature change.
+   `Validate` requires `Subject` only for the one-shot modes; the daemon path validates that `Vault` is set and each subject is non-empty. Update `Prepare` so it reads the subject through `cfg.Source` when that field is non-nil and only falls back to `NewVaultSnapshotter(cfg)` when it is nil — every mode then inherits the injected source with no signature change. **The `cfg.ReadTimeout` bound added in the previous prompt must wrap the `cfg.Source.Snapshot(ctx, cfg.Subject)` call too**, not only the three vault reads: `Source` bypasses `ResolveSubject`/`ResolveTracked`, so an unbounded `Snapshot` would hang the whole loop, and requirement 9's test depends on that bound existing.
 
 3. **`pkg/sweepgate/runner.go` — the periodic tick over subjects.**
    ```go
@@ -70,7 +71,7 @@ Coding guides (in container):
    - `Run` returns `ctx.Err()` when the context ends, and the caller treats `context.Canceled` as a clean stop.
    - The tick is sequential by construction: a pass that overruns the interval delays the next pass rather than starting a second one concurrently.
 
-4. **`pkg/sweepgate/card.go` — the card builder the tick mode takes.** Add `func CardBuilder(cfg Config) CardFunc`, returning the `CardFunc` the tick mode takes (defined in the render prompt as `func(ctx context.Context, prepared Prepared) ([]byte, error)`), so `--tick` also writes the card file. It calls the invariant prompt's `InvariantPayload` with a stderr writer that goes to `cfg.Logf` line by line, never to the tick's stdout. A build failure is an error; the tick mode names it on stderr and keeps its verdict.
+4. **`pkg/sweepgate/card.go` — the card builder the tick mode takes.** Add `func CardBuilder(cfg Config) CardFunc`, returning the `CardFunc` the tick mode takes (defined in the render prompt as `func(ctx context.Context, prepared Prepared) ([]byte, error)`), so `--tick` also writes the card file. It calls the invariant prompt's `InvariantPayload(ctx, cfg, prepared, stderr)` and supplies a stderr writer that goes to `cfg.Logf` line by line, never to the tick's stdout — `InvariantPayload` takes the writer as a parameter and never writes to `os.Stderr` itself, so this is the only place the daemon chooses that channel. A build failure is an error; the tick mode names it on stderr and keeps its verdict.
 
 5. **`main.go` — the flag group.** Add a `sweepGateFlags` struct and `registerSweepGateFlags()`, in the same style as `registerFlaggedTickFlags`:
    - `-sweep-gate-mode` (string, default `""`) — one of `""`, `check`, `render`, `tick`, `invariant`. Empty means "do not run a one-shot mode".
@@ -80,7 +81,7 @@ Coding guides (in container):
    - `-sweep-gate-interval` (duration, default `pkg/sweepgate`'s `DefaultInterval`) — `0` disables the daemon tick.
    Build one `pkg/sweepgate.Config` from these with a small helper (`sweepGateConfigFromFlags`), splitting `-sweep-gate-topics` on commas and trimming whitespace.
 
-6. **`main.go` — the one-shot dispatch, before the listener binds.** Immediately after the signal context is created and before the `fleetPusher.once` branch, add: when `-sweep-gate-mode` is non-empty, build the config, run the named mode against `os.Stdout` / `os.Stderr`, and `os.Exit(code)` with the mode's return value. An unknown mode value prints a usage line to stderr and exits 2. This branch must never construct the supervisor or bind the listener, so it can be invoked beside the live daemon — the same reason `--fleet-pusher-once` runs there.
+6. **`main.go` — the one-shot dispatch, before the listener binds.** Immediately after the signal context is created and before the `fleetPusher.once` branch, add: when `-sweep-gate-mode` is non-empty, build the config, run the named mode against `os.Stdout` / `os.Stderr`, and `os.Exit(code)` with the mode's return value. An unknown mode value prints a usage line to stderr and exits `pkg/sweepgate.ExitUsage`. This branch must never construct the supervisor or bind the listener, so it can be invoked beside the live daemon — the same reason `--fleet-pusher-once` runs there.
 
 7. **`main.go` — the goroutine.** Add a `startSweepGate(ctx context.Context, cfg pkg/sweepgate.Config)` function:
    - when `cfg.Interval <= 0` or `len(cfg.Subjects) == 0` or `cfg.Vault == ""`, log `sweep gate disabled (interval=<d> subjects=<n> vault=<empty|set>)` and return;
@@ -100,14 +101,15 @@ Coding guides (in container):
 
 9. **AC5 test — a hanging read is abandoned and the next tick still fires.** `Describe("cancels a hanging read", ...)` (verbatim, because the spec's verification greps for it):
    - construct `&TickRunner{Configs: []Config{{Vault: "unused", Subject: "Parity Topic", Source: blockingSnapshotter{}, ReadTimeout: 10 * time.Millisecond, Now: fixedClock, Logf: <collector>}}, Interval: 20 * time.Millisecond, Logf: <collector>}` directly — a `blockingSnapshotter` whose `Snapshot` waits on `<-ctx.Done()` and returns `ctx.Err()`;
-   - let at least two tick passes elapse (each pass abandons its read at `ReadTimeout`), then cancel the outer context;
+   - let at least two tick passes elapse, then cancel the outer context;
    - assert the collector saw at least two tick log lines from ONE `Run` call (the abandoned read did not wedge the loop) and that `Run` returns an error satisfying `errors.Is(err, context.Canceled)`;
    - print `err=%v` via `ginkgo.GinkgoWriter.Printf`.
+   This test passes ONLY because `Prepare` wraps `cfg.Source.Snapshot` in `cfg.ReadTimeout` (requirement 2). `Source` bypasses `ResolveSubject`/`ResolveTracked`, so without that wrap `Snapshot` would block until the OUTER context ends and `Run` would never produce a second pass — do not weaken the assertion to make an unwrapped implementation pass; fix the wrap.
    Use `errors.Is` from `github.com/bborbe/errors`.
 
 10. **`CHANGELOG.md`.** Add one bullet under `## Unreleased`:
-   `- feat: claude-wrapper owns the sweep gate — one flag group, four CLI modes with their own exit codes, and one daemon goroutine ticking every configured subject`
-   Do not create a second `## Unreleased` heading.
+    `- feat: claude-wrapper owns the sweep gate — one flag group, four CLI modes with their own exit codes, and one daemon goroutine ticking every configured subject`
+    Do not create a second `## Unreleased` heading.
 
 11. **Self-check before finishing.** Re-run `<verification>` and confirm it passes. Walk requirements 1-10. Confirm the AC9 grep matches, and confirm the test fails if `startSweepGate`'s body is replaced with an immediate `return` (reason about it or try it, then restore).
 </requirements>
@@ -118,6 +120,7 @@ Coding guides (in container):
 - The one-shot mode branch runs before the supervisor is built and never binds the listener.
 - The daemon tick is sequential; an overrun delays the next pass rather than stacking a second one.
 - A failing subject never stops the pass or the loop; it is logged with its subject name.
+- Every read that can hang is bounded by `cfg.ReadTimeout`, including a read from an injected `cfg.Source`. An unbounded source read is a hung loop.
 - `github.com/bborbe/errors` only in `pkg/sweepgate`; `main.go` keeps its existing `errors` usage. Do not introduce `fmt.Errorf`.
 - The clock is `libtime.CurrentDateTimeGetter`; the runner uses `Config.Now`.
 - Ginkgo v2 + Gomega, in-package tests in `pkg/sweepgate`, qualified imports, no counterfeiter mocks.
