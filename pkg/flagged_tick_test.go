@@ -394,7 +394,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 
 		ginkgo.DescribeTable("each guard",
 			func(row FlaggedRow, wantOpened bool, wantReason string) {
-				reason, refused, skipped := decision(row, recent, now)
+				reason, refused, skipped := decision(row, recent, nil, now)
 				ginkgo.GinkgoWriter.Printf(
 					"case=%s reason=%s opened=%t\n", row.Name, reason, !refused && !skipped,
 				)
@@ -1445,5 +1445,50 @@ var _ = ginkgo.Describe("flagged tick park gate", func() {
 		gomega.Expect(opened).To(gomega.HaveLen(1))
 		gomega.Expect(opened[0].Key()).To(gomega.Equal(second.Key()))
 		gomega.Expect(caps.modes()).To(gomega.HaveLen(1))
+	})
+})
+
+var _ = ginkgo.Describe("flagged tick not-absent labelling", func() {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	// A row the predicate believes is alive: it is not ABSENT, so it is skipped
+	// either way. Only the REASON is under test.
+	row := FlaggedRow{
+		Kind: "task", Vault: "private-personal", Name: "a live-looking row",
+		Role: "agent", Mode: "headless",
+		SessionID: "abc-123", Liveness: "LIVE", Branch: "resume",
+	}
+
+	ginkgo.It("says not-absent-dead when the ledger proves the session ended", func() {
+		// Measured 2026-11-18: 19 of 39 rows skipped as `not-absent` had no entry
+		// in the wrapper's own roster, so the line asserted a live session that
+		// was not there. The decision must not change — only the claim.
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
+		gomega.Expect(result.Opened).To(gomega.BeEmpty(), "the decision must not change")
+	})
+
+	ginkgo.It("still says not-absent when the ledger says the session is running", func() {
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "running",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+		gomega.Expect(result.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsent))
+		gomega.Expect(result.Skipped).NotTo(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
 	})
 })

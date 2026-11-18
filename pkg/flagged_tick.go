@@ -84,8 +84,21 @@ const (
 // The refusal and skip reasons, named so the log line is greppable and so a
 // test asserts on the same string the operator reads.
 const (
-	reasonBlocked         = "blocked"
-	reasonNotAbsent       = "not-absent"
+	reasonBlocked   = "blocked"
+	reasonNotAbsent = "not-absent"
+	// reasonNotAbsentDead is `not-absent` for a row whose session the LEDGER
+	// reports as ended. It exists because `not-absent` is a claim about the
+	// session ("the predicate could not prove it absent"), and when the ledger
+	// says the session already ended that claim is false. Measured 2026-11-18:
+	// 19 of 39 rows skipped as `not-absent` had no entry in the wrapper's own
+	// roster, so the reason was misreporting the fleet's state.
+	//
+	// ⚠️ It changes the LABEL only, never the decision. Treating these rows as
+	// eligible was the other candidate and was declined (operator, 2026-11-18):
+	// `decision`'s conservatism is deliberate — the permissive form reopens the
+	// entire fleet — so a terminal ledger status alone must not make a row
+	// eligible. What it must do is stop the line asserting the session is alive.
+	reasonNotAbsentDead   = "not-absent-dead"
 	reasonAlreadyLive     = "already-live"
 	reasonRecentlySpawned = "recently-spawned"
 	reasonRowBudget       = "row budget"
@@ -494,9 +507,10 @@ func (t *FlaggedTick) classify(
 	ctx context.Context,
 	row FlaggedRow,
 	recent map[string]time.Time,
+	dead map[string]struct{},
 	now time.Time,
 ) (string, rowAction) {
-	if reason, refused, skipped := decision(row, recent, now); refused || skipped {
+	if reason, refused, skipped := decision(row, recent, dead, now); refused || skipped {
 		if skipped {
 			return reason, rowSkipped
 		}
@@ -533,6 +547,9 @@ func (t *FlaggedTick) tickFromRows(
 	t.mergeChildSpawnTimes(ctx, recent)
 	t.mergeOpened(recent)
 	ended := endedAtBySession(ledger)
+	// Which sessions the ledger says are over. Used only to label a skip
+	// truthfully, never to change the decision — see reasonNotAbsentDead.
+	dead := endedSessions(ledger)
 	now := t.now()
 	// halted is the fleet-level refusal that ended this tick's opening pass. It
 	// is a reason string, not a bool, because the rows it leaves behind are still
@@ -547,7 +564,7 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
-		reason, action := t.classify(ctx, row, recent, now)
+		reason, action := t.classify(ctx, row, recent, dead, now)
 		if action == rowSkipped {
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
 			continue
@@ -663,6 +680,25 @@ func (t *FlaggedTick) ledgerRows(ctx context.Context) []LedgerRow {
 		return nil
 	}
 	return rows
+}
+
+// endedSessions returns the session ids whose ledger status is terminal.
+//
+// It exists so a skip can be labelled truthfully: `not-absent` asserts the
+// predicate could not prove the session gone, and a terminal ledger status is
+// proof that it is. Unlike recentlySpawned, this does NOT skip terminal rows —
+// they are the whole point.
+func endedSessions(rows []LedgerRow) map[string]struct{} {
+	out := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if row.SessionID == "" {
+			continue
+		}
+		if terminalLedgerStatuses[row.Status] {
+			out[row.SessionID] = struct{}{}
+		}
+	}
+	return out
 }
 
 // endedAtBySession maps a session id to the instant its last turn ended, which
@@ -815,6 +851,7 @@ func (t *FlaggedTick) now() time.Time {
 func decision(
 	row FlaggedRow,
 	recent map[string]time.Time,
+	dead map[string]struct{},
 	now time.Time,
 ) (reason string, refused bool, skipped bool) {
 	if len(row.Refused) > 0 {
@@ -837,6 +874,13 @@ func decision(
 	// permissive form would have reopened the entire fleet.
 	fresh := neverOpened(row)
 	if row.Liveness != "ABSENT" && !fresh {
+		// The ledger knows whether this session ended; the predicate's liveness
+		// claim does not. When the two disagree, say so in the reason instead of
+		// repeating the predicate's assertion. The DECISION is unchanged — see
+		// reasonNotAbsentDead.
+		if _, ended := dead[row.SessionID]; ended {
+			return reasonNotAbsentDead, false, true
+		}
 		return reasonNotAbsent, false, true
 	}
 	if row.Branch == "jump" {

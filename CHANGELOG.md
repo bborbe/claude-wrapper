@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the flagged tick no longer calls a dead session `not-absent`.** `not-absent` asserts the predicate could not prove the session gone, but the ledger often already records the session as ended — measured 2026-11-18, 19 of 39 rows skipped with that reason had no entry in the wrapper's own roster, so the tick line was misreporting the fleet's state on half of its skips. A skip whose ledger status is terminal now reports `not-absent-dead`. ⚠️ The **decision** is deliberately unchanged: treating those rows as eligible was considered and declined, because `decision`'s conservatism exists precisely to stop an unproven row reopening the whole fleet. Only the label moves, so the log tells the truth without the blast radius.
+
 ## v0.38.4
 
 - fix: **a single-quoted argument no longer pushes a read-only `git -C` compound back to the prompt.** `… | sed -n '150,158p'` and `git grep -n 'a b'` prompted after v0.38.2 because the syntax tree accepted only bare and double-quoted words; a `'…'` word is now the literal the shell passes, and a single shape-head command with a quoted space falls back to the tree. A tree literal carrying a backslash is refused, since the parser keeps `\-o` while the shell passes `-o`; and a quoted word starting with `~` is refused, since the shell does not expand it while `UnderRoots` would.
