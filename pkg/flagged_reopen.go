@@ -194,6 +194,24 @@ func launcherMCPConfigs(launcher string) []string {
 	return nil
 }
 
+// readinessFirstStep is the gate a reopened task row runs before it starts.
+//
+// ⚠️ The reopen tick is model-free by construction (`specs/flagged-reopen-tick.md`:
+// "No model is invoked anywhere in the path"), so it cannot score a row. The
+// readiness ladder — >= 9 opens, >= 7 after one improvement pass, < 7 refuses
+// (`claude-supervisor:docs/fleet-surface.md` § Spawn a worker item 2) — is an agent
+// call, so the gate
+// runs where the model already is: in the worker the tick just spawned. Without it a
+// below-bar row opens ungated, which is the defect the tick exists to close (measured
+// 2026-11-18: a row scored 5/10 and its worker got the row anyway).
+//
+// The `/supervisor:open` branch does not carry this: it runs Gate 2 itself.
+const readinessFirstStep = "\n\nFIRST STEP — readiness gate. Before anything else run " +
+	"Agent(subagent_type='vault-cli:task-auditor', description='Readiness: <task>') " +
+	"on this task and read its READINESS: <score>/10 line. >= 9 proceed. " +
+	">= 7 run one improvement pass, then proceed. < 7 STOP at phase: planning and " +
+	"post a card naming the score (attention-ask.py post). Never proceed below the bar."
+
 // reopenPrompt is the first turn a reopened worker receives.
 //
 // ⚠️ A resume that sends NO turn is a row that dies again inside one tick: the
@@ -201,9 +219,13 @@ func launcherMCPConfigs(launcher string) []string {
 // child resumed with nothing to do is idle from its first second. The reopen
 // therefore sends the same work command `/supervisor:open` sends on its create
 // branch.
+//
+// A task row carries `readinessFirstStep` because `/vault-cli:work-on-task` plans but
+// never applies the readiness ladder; the `/supervisor:open` branch reaches Gate 2 and
+// would run the audit twice.
 func reopenPrompt(row FlaggedRow) string {
 	if row.Kind == "task" {
-		return `/vault-cli:work-on-task "` + row.Name + `"`
+		return `/vault-cli:work-on-task "` + row.Name + `"` + readinessFirstStep
 	}
 	return `/supervisor:open "` + row.Name + `"`
 }

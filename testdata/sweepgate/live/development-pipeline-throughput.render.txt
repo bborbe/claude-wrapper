@@ -1,0 +1,1423 @@
+23:04 ✓ Development Pipeline Throughput — 1293 tasks · 23 🔄 · 2 ⌛ · 118 ⌛ · 1 ⌛ · 9 ⌛ · 1 ⏸️ · 9 ⚠️ · 53 🚀 · 3 👤 · 1052 ✅ · 16 ◦ · 6 ⏸️ · change
+  ┌────────────────────────────────────────────┬────────────┬────────────────────────────────────┬───────────┬───────────────────┐
+  │ Topic / Goal / Task                        │ Session    │ Status                             │ Phase     │ Met               │
+  ├────────────────────────────────────────────┼────────────┼────────────────────────────────────┼───────────┼───────────────────┤
+  │ Development Pipeline Throughput            │ —          │ 🔄 progressing                     │ —         │ SC 2/5 · Gate 0/5 │
+  │    Flow Baseline Names the Binding Stage   │ —          │ ✅ done                            │ —         │ 6/6               │
+  │       Build a throughput-diagnose Command… │ (de70c566) │ ✅ done                            │ done      │ 11/11             │
+  │       Build the Weekly Flow Readout Wrapp… │ (967ce0ec) │ ✅ done                            │ done      │ 11/11             │
+  │       Complete the Flow Readout's Queue A… │ (73e18e1d) │ ✅ done                            │ done      │ 17/17             │
+  │       Count Accepted Changes, Cycle Time … │ (611c42e5) │ ✅ done                            │ done      │ 12/12             │
+  │       Count Only Operator-Typed Prompts a… │ (8280648c) │ ✅ done                            │ done      │ 13/13             │
+  │       Diagnose Whether the Serialized Clu… │ (ba094faf) │ ✅ done                            │ done      │ 10/10             │
+  │       Fold the Throughput Topics Into Dev… │ (195d327a) │ ✅ done                            │ done      │ 15/15             │
+  │       Give the Flow Readout a Queue Age f… │ (00d202e5) │ ✅ done                            │ done      │ 11/11             │
+  │       Measure Merge-to-Tag Latency for bb… │ (0720f78e) │ ✅ done                            │ done      │ 5/5               │
+  │       Record the First Flow Readout on De… │ (1f11ead6) │ ✅ done                            │ done      │ 10/10             │
+  │       Sort the PR Reviews Waiting on a Hu… │ (37d60d57) │ ✅ done                            │ done      │ 12/12             │
+  │       Wire the Accepted-Changes and Opera… │ (0af1f386) │ ✅ done                            │ done      │ 12/12             │
+  │       Write a Per-Task Queue Timestamp in… │ (fe951e20) │ ✅ done                            │ done      │ 14/14             │
+  │       vault-cli rollup weekly Aborts on a… │ (c005d6f6) │ ✅ done                            │ done      │ 11/11             │
+  │    Only the Most Important Work Is Approv… │ —          │ ✅ done                            │ —         │ 3/3               │
+  │       An Approved Task Is Never Driven Be… │ (590282e4) │ ✅ done                            │ done      │ 12/12             │
+  │       Bring the Development Pipeline Thro… │ (4ad4b0f9) │ ✅ done                            │ done      │ 13/13             │
+  │       Label the Rows the 2026-10-28 Triag… │ (41407274) │ ✅ done                            │ done      │ 14/14             │
+  │       Measure the Approved-Not-Started Co… │ (2f83ac65) │ ✅ done                            │ done      │ 12/12             │
+  │       Read the Kept Set's Lead Time Seven… │ (d694bc89) │ ✅ done                            │ done      │ 10/10             │
+  │       Retire or Justify the Six DPT Rows … │ —          │ ✅ done · aborted                  │ planning  │ 0/13              │
+  │       Triage the Approved Backlog to the … │ (52c360c4) │ ✅ done                            │ done      │ 17/17             │
+  │    Throughput Is Measured as Goals Delive… │ —          │ 🔄 progressing                     │ —         │ 4/5               │
+  │       A Finished Goal Closes Itself Witho… │ (95e9b174) │ ✅ done                            │ done      │ 15/15             │
+  │       A Flagged Task Is Still Read as Par… │ —          │ ✅ done · aborted                  │ todo      │ 0/10              │
+  │       A Fleet Round Delegates the Legs Th… │ (57777472) │ ✅ done                            │ done      │ 16/16             │
+  │       A Fleet Round Restarts Managers and… │ (3c13cd4f) │ ✅ done                            │ done      │ 13/13             │
+  │       A Freshly Spawned Tab Never Renders… │ (14532a97) │ ✅ done · aborted                  │ planning  │ 0/10              │
+  │       A Killed Session Closes Within One … │ —          │ ✅ done                            │ done      │ 10/10             │
+  │       A Manager Tab Spawned From a Headle… │ (3dd574bd) │ ✅ done                            │ done      │ 10/10             │
+  │       A Missing PATH Reads as a Launcher … │ (7c78dd11) │ ✅ done                            │ done      │ 13/13             │
+  │       A Seven-Second Label Check Was Bill… │ (d072f5d2) │ ✅ done                            │ done      │ 15/15             │
+  │       An Empty Regression Metric Heading … │ (1537c729) │ ✅ done                            │ done      │ 10/10             │
+  │       An idle-plus-closer Park Is Exclude… │ (bef935ad) │ ✅ done                            │ done      │ 11/11             │
+  │       Classify the 46 Metric-Less Rows SC… │ (7e9a4497) │ ✅ done                            │ done      │ 11/11             │
+  │       Close or Gate the Intake That Refil… │ (c537a020) │ ✅ done                            │ done      │ 23/23             │
+  │       Correct the False caught-Unreachabl… │ (f64003b9) │ ✅ done                            │ done      │ 8/8               │
+  │       Cut the Approved-Not-Started Intake… │ (1c611731) │ ✅ done                            │ done      │ 15/15             │
+  │       Disposition Every Topic Task That S… │ (1ee373ba) │ ✅ done                            │ done      │ 13/13             │
+  │       Each Weekly Note Carries a Generate… │ (ff7a361b) │ ✅ done                            │ done      │ 12/12             │
+  │       Every Session Records Its State and… │ (2cf8084e) │ ✅ done                            │ done      │ 20/20             │
+  │       Finish the Throughput Dashboard Pan… │ (f7ff4529) │ ✅ done                            │ done      │ 17/17             │
+  │       Flow Readout Prints Goals Delivered… │ (bf855a95) │ ✅ done                            │ done      │ 13/13             │
+  │       Flow Readout Prints Operator Interv… │ (a855c5d0) │ ✅ done                            │ done      │ 11/11             │
+  │       Goal Cycle Time Is Unmeasurable Bec… │ (dcd25695) │ ✅ done                            │ done      │ 13/13             │
+  │       Goal and Topic Loops Tick SC and Do… │ (1bf13a24) │ ✅ done                            │ done      │ 12/12             │
+  │       Make Approval to Verified-Done Meas… │ (2b20236b) │ ✅ done                            │ done      │ 8/8               │
+  │       Migrate the 85 Pre-Fix Repair Rows … │ —          │ ✅ done                            │ done      │ 8/8               │
+  │       Next Focus Reserves a Slot for the … │ (aa017019) │ ✅ done                            │ done      │ 13/13             │
+  │       Ninety-Two Sessions Died Without an… │ (f102df56) │ ✅ done                            │ done      │ 16/16             │
+  │       Nothing Sweeps Every Goal's Closure… │ [c68501f7] │ ⌛ waiting-on-human                │ planning  │ 0/14              │
+  │       Plan the Weekly-Target Rung - Yearl… │ (b00c2abf) │ ✅ done                            │ done      │ 12/12             │
+  │       Re-check the Next Focus Reserved Sl… │ —          │ ⏸️ deferred                         │ planning  │ 0/10              │
+  │       Reap a Manager Whose Subject Is Ter… │ (085e50cb) │ ✅ done                            │ done      │ 16/16             │
+  │       Repair Rows Cannot Be Scored Reliab… │ (51d85b72) │ ✅ done                            │ done      │ 16/16             │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ (b6442335) │ ✅ done                            │ done      │ 7/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done                            │ done      │ 4/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ (69e34d69) │ ✅ done                            │ done      │ 7/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ (58b17ae9) │ ✅ done                            │ done      │ 4/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ (412baf4e) │ ✅ done                            │ done      │ 7/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ (b5bebd3d) │ ✅ done                            │ done      │ 4/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ (85e22821) │ ✅ done                            │ done      │ 4/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ planning  │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Missing Regression Metri… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Repair the Missing Regression Metri… │ —          │ ✅ done · aborted                  │ todo      │ 0/4               │
+  │       Repair the Open-Leg Control Fixture… │ (2ee3da25) │ ✅ done · aborted                  │ planning  │ 0/19              │
+  │       Revert vault-cli v0.192.0 and Resto… │ —          │ ✅ done · aborted                  │ execution │ 0/17              │
+  │       Reword the Throughput Goal's SC2 to… │ (62e84807) │ ✅ done                            │ done      │ 9/9               │
+  │       SC4 Is Ticked While Its Own Sweep R… │ (f6f82217) │ ✅ done                            │ done      │ 11/11             │
+  │       Stop the Regression Sweep Flagging … │ (dc43494a) │ ✅ done                            │ done      │ 17/17             │
+  │       Sweep the Topic's Fix Tasks for a M… │ (85df3ca3) │ ✅ done                            │ done      │ 13/13             │
+  │       The Closure Reader's Copied Checkbo… │ (b68184d3) │ ✅ done                            │ done      │ 11/11             │
+  │       The Development Pipeline Throughput… │ (b6fcb741) │ ✅ done                            │ done      │ 10/10             │
+  │       The Drive Leg Returns a Hand-Back b… │ —          │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       The Fixture Reads a Stale Event-Log… │ —          │ ✅ done · aborted                  │ todo      │ 0/10              │
+  │       The Fixture's clear_feed Leaves a S… │ (6530ddd7) │ ✅ done                            │ done      │ 10/10             │
+  │       The Fleet Keeper Detects a Lapse bu… │ (3fe711e8) │ ✅ done                            │ done      │ 21/21             │
+  │       The Fleet Restarts a Broken Manager… │ (4df56eb0) │ ✅ done                            │ done      │ 19/19             │
+  │       The Fleet Round Opens Approved Work… │ (044dc0f8) │ ✅ done                            │ done      │ 20/20             │
+  │       The Fleet's Session Mix Is Measured… │ (bfc96799) │ ✅ done                            │ done      │ 18/18             │
+  │       The Gate Pass Outruns Its Own Inter… │ (b79042b5) │ ✅ done                            │ done      │ 11/11             │
+  │       The Gate's Fixture Suite Aborts on … │ (d4a7caf0) │ ✅ done                            │ done      │ 10/10             │
+  │       The Keep-Alive Probe Guards Can Be … │ (f9c42f33) │ ✅ done                            │ done      │ 15/15             │
+  │       The Ledger Holds mcp-timer Sessions… │ —          │ ✅ done                            │ done      │ 11/11             │
+  │       The N-Row Probe Stretches a Session… │ (4dc032ba) │ ✅ done                            │ done      │ 12/12             │
+  │       The Parked Row's Unrecorded Label O… │ (7c288366) │ ✅ done                            │ done      │ 15/15             │
+  │       The Regression Repair Template Emit… │ (c0ff9c8d) │ ✅ done                            │ done      │ 11/11             │
+  │       The Regression-Metric Gate Only See… │ (672159a2) │ ✅ done                            │ done      │ 14/14             │
+  │       The Repair Template's Goal Link Ove… │ (3a9a1ae8) │ ✅ done                            │ done      │ 10/10             │
+  │       The State Ledger Has No Durable Pol… │ (3b869507) │ ✅ done                            │ done      │ 11/11             │
+  │       The State Ledger's Heartbeat Is Sel… │ (ecaff4b2) │ ✅ done · aborted                  │ planning  │ 2/12              │
+  │       The Topic Keep-Alive Reads a Livene… │ —          │ ✅ done · aborted                  │ planning  │ 0/7               │
+  │       The Tracked Set Silently Drops Six … │ (0b6cf7ed) │ ✅ done                            │ done      │ 15/15             │
+  │       The open_cards Nondeterminism Was a… │ (8e6ac9b2) │ ✅ done                            │ done      │ 14/14             │
+  │       Throughput Numbers Are Pushed Daily… │ (cc3aff14) │ ✅ done                            │ done      │ 17/17             │
+  │       Two Weekly Readings of SC1 and SC2 … │ (a536be6f) │ ✅ done                            │ done      │ 16/16             │
+  │       Verify SC1 and SC2 Against Reading … │ (e0878b1d) │ ✅ done                            │ done      │ 10/10             │
+  │       Verify the Ledger Fix Live Once the… │ —          │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       WIP Limit Is Sized to Operator Atte… │ (7ef6e792) │ ✅ done                            │ done      │ 9/9               │
+  │       Write the Regression Metric Into th… │ (3d46dcc6) │ ✅ done                            │ done      │ 11/11             │
+  │       Write the Regression Metric Into th… │ (e6807caf) │ ✅ done                            │ done      │ 10/10             │
+  │       nuke-dev Has No Job-Start Rate Quot… │ (2384414e) │ ✅ done                            │ done      │ 8/8               │
+  │       sun Runs Below Its Throughput Basel… │ (d45999dc) │ ✅ done                            │ done      │ 8/8               │
+  │       throughput-diagnose Ranks Findings … │ (3b5f1a88) │ ✅ done                            │ done      │ 16/16             │
+  │    Managers Unblock Their Own Workers and… │ —          │ 🔄 progressing                     │ —         │ 3/4               │
+  │       A Blocked Closer Is Filed as a Stal… │ (b1042ea6) │ ✅ done                            │ done      │ 14/14             │
+  │       A Gone Session's Stall Incident Is … │ (8c8e17d3) │ ✅ done                            │ done      │ 16/16             │
+  │       A Headless Worker's Vault Write Par… │ —          │ 🚀 ready-to-start                  │ planning  │ 1/9               │
+  │       A Pane-Bearing Tab Worker Parked on… │ (46db6de5) │ ✅ done                            │ done      │ 5/5               │
+  │       A Park Dies With the Session Proces… │ —          │ ⌛ waiting-approval                │ todo      │ 0/12              │
+  │       A Permission Card With No Options C… │ —          │ ✅ done · aborted                  │ planning  │ 0/10              │
+  │       A Re-Registered Tab Worker Permissi… │ (6edd706b) │ ✅ done                            │ done      │ 8/8               │
+  │       A Wrapper-Backed Worker Skips the P… │ (da61fda8) │ ✅ done                            │ done      │ 13/13             │
+  │       Agent Workers Whose Tasks Need No W… │ —          │ —                                  │ todo      │ 12/18             │
+  │       An Escalated Incident Never Capture… │ (468b520a) │ ✅ done                            │ done      │ 12/12             │
+  │       An Escalation Card Is Bulk-Closed A… │ (d7ec6532) │ ✅ done                            │ done      │ 12/12             │
+  │       An Escalation Card Is Pruned Becaus… │ (82e88c86) │ ✅ done · aborted                  │ planning  │ 0/13              │
+  │       Capture a Last-Turn Closer for Pane… │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       Confirm the Pane-Less Observation o… │ (5db3c139) │ ✅ done                            │ done      │ 9/9               │
+  │       Emit the Manager Violation Count Fr… │ (b03e53e4) │ ✅ done                            │ done      │ 13/13             │
+  │       Every Worker Blocker Is Logged as a… │ (7564b58e) │ ✅ done                            │ done      │ 16/16             │
+  │       Fix the Session-Scope Findings Left… │ (582ac5a7) │ ✅ done                            │ done      │ 16/16             │
+  │       Managers Answer Permission Prompts … │ (30ac014b) │ ✅ done                            │ done      │ 11/11             │
+  │       Nothing Checks That the Supervisor … │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       Prove No Class-B Prompt Reaches the… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       Prove a Pane-Less Observation Consu… │ (f94088cd) │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       Prove matched_entry Is Recorded for… │ (05223607) │ ✅ done · aborted                  │ execution │ 0/13              │
+  │       Prove the Permission Tier Holds a M… │ —          │ ⌛ waiting-approval                │ todo      │ 0/14              │
+  │       Re-Measure the Policy-Answered Popu… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Read the First Full 7-Day Share of … │ (a25fe0d2) │ ✅ done                            │ done      │ 11/11             │
+  │       Rebase and Merge the Five Permissio… │ (2908513e) │ ✅ done                            │ done      │ 14/14             │
+  │       Ship One Permission-Escalation Fix … │ —          │ —                                  │ todo      │ 0/16              │
+  │       The Attention Board Never Renders S… │ —          │ ✅ done · aborted                  │ todo      │ 0/7               │
+  │       The Attention Board Renders Only Ma… │ —          │ ✅ done · aborted                  │ planning  │ 0/10              │
+  │       The Attention Watcher Closes an Esc… │ —          │ ✅ done · aborted                  │ planning  │ 0/13              │
+  │       The Compound Hook Cannot Read the S… │ (89d9bd41) │ ✅ done                            │ done      │ 16/16             │
+  │       The Drive Leg Does Not Raise a Card… │ (beebd127) │ ✅ done                            │ done      │ 13/13             │
+  │       The Drive Leg Reads and Nudges a Se… │ (289ae632) │ ✅ done                            │ done      │ 14/14             │
+  │       The Escalate Leg Has No Per-Round B… │ (0a8a4d73) │ ✅ done                            │ done      │ 11/11             │
+  │       The Escalate Leg Posts for Sessions… │ (a649708c) │ ✅ done                            │ done      │ 12/12             │
+  │       The Fleet Digest Captures a Closer … │ (8b57174f) │ ✅ done                            │ done      │ 17/17             │
+  │       The Fleet Drive Round Does Not Past… │ (6fa699d7) │ ✅ done                            │ done      │ 14/14             │
+  │       The Fleet Manager Holds Its Spawned… │ (a1026e2f) │ ✅ done                            │ done      │ 9/9               │
+  │       The Fleet-Drive Inline Rule Says li… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       The Gate-Owner Filter Attributes An… │ (12db0bc4) │ ✅ done                            │ done      │ 13/13             │
+  │       The Incident Leg Opens a Stall Inci… │ (22971fe2) │ ✅ done                            │ done      │ 11/11             │
+  │       The Manager Allowlist Still Auto-Ap… │ (20491b7d) │ ✅ done                            │ done      │ 10/10             │
+  │       The Own-Parks Leg Answers Only Rout… │ (a7a54576) │ ✅ done                            │ done      │ 11/11             │
+  │       The Role-Mode Matrix Still Permits … │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Verify the Fleet Digest's CLOSERS C… │ (0188762a) │ ✅ done                            │ done      │ 9/9               │
+  │       Weekly Operator Attention Review     │ —          │ ✅ done · aborted                  │ todo      │ 0/11              │
+  │    The Attention Board Shows Managers by … │ —          │ ✅ done                            │ —         │ 3/3               │
+  │       Count Misrouted Flags Weekly per Pr… │ (ed16447f) │ ✅ done                            │ done      │ 10/10             │
+  │       Default the Attention Board to Mana… │ (145d0fe0) │ ✅ done                            │ done      │ 18/18             │
+  │       File a Routing Fix From the First R… │ —          │ ✅ done · aborted                  │ done      │ 0/8               │
+  │       Flag a Board Card as Misrouted With… │ (698d8d5f) │ ✅ done                            │ done      │ 16/16             │
+  │    My Attention Goes to the Decisions Tha… │ —          │ 🔄 progressing                     │ —         │ 0/5               │
+  │       Label a 30-Gate Sample by Door and … │ (c08e65c7) │ ✅ done                            │ done      │ 11/11             │
+  │       Measure the Share of Operator-Appro… │ (a76b6179) │ ✅ done                            │ done      │ 12/12             │
+  │       The Goal Manager Plans Tasks for Un… │ (daa2736c) │ ✅ done                            │ done      │ 15/15             │
+  │       Verify Goal-Round Row 4d Files a Ta… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/6               │
+  │       Who-Needs-Me Ranks Open Operator De… │ (c11f76c4) │ ✅ done · aborted                  │ execution │ 2/12              │
+  │       next-focus Proposes Tasks the Weekl… │ (1a0d1a76) │ ✅ done                            │ done      │ 12/12             │
+  │    Topics and Goals Run on the Same Phase… │ —          │ ✅ done                            │ —         │ 4/4               │
+  │       Goal and Topic Phase Validation Acc… │ (95c9ea8e) │ ✅ done                            │ done      │ 10/10             │
+  │       Run One Topic on the Fleet-Topic-Go… │ (628e4db4) │ ✅ done                            │ done      │ 14/14             │
+  │       Split Manager Commands into Topic a… │ (bfd1ac2c) │ ✅ done                            │ done      │ 19/19             │
+  │       Vault-UI Groups Goals and Topics by… │ (f73fc8ed) │ ✅ done                            │ done      │ 12/12             │
+  │       Verify Vault-UI Groups Goals and To… │ (d91542b1) │ ✅ done                            │ done      │ 6/6               │
+  │    Operator Oversees only Managers, not W… │ —          │ 🔄 progressing                     │ —         │ 6/7               │
+  │       A Goal Manager Is Never Opened Fres… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       A Goal Page With a Live Manager and… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       A Headless Row Resumes Headless Ins… │ (c205f583) │ ✅ done                            │ done      │ 17/17             │
+  │       A Worker's Card Stays Hidden When N… │ (5cceb1ea) │ ✅ done                            │ done      │ 14/14             │
+  │       Agents Ask Before Removing a Worktr… │ (3301eaab) │ ✅ done                            │ done      │ 13/13             │
+  │       Agents Chain cd With git Although t… │ (5615ee42) │ ✅ done                            │ done      │ 13/13             │
+  │       Auto-Open a Goal Manager Only When … │ (6074b0c8) │ ✅ done                            │ done      │ 16/16             │
+  │       Bash Prompts With a Genuinely Non-A… │ (215c4428) │ ✅ done                            │ done      │ 12/12             │
+  │       Close the Operator Oversees Goal Ag… │ (805960b8) │ ✅ done                            │ done      │ 11/11             │
+  │       Compound cd Commands Slip Past Allo… │ (acd12d60) │ ✅ done                            │ done      │ 11/11             │
+  │       Convert a Live Tab Worker to Headle… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/14              │
+  │       Decide the SC8 Question-Family Crit… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/9               │
+  │       Every Finished Session Asks the Ope… │ (4ed76ada) │ ✅ done                            │ done      │ 7/7               │
+  │       Find Why Agent Tasks Still Open as … │ (f43196c4) │ ✅ done                            │ done      │ 17/17             │
+  │       Give the mcp Answer Reach Leg a Rou… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/10              │
+  │       Permission Prompts Weekly Triage     │ —          │ ⏸️ deferred                         │ —         │ 0/11              │
+  │       Re-measure Gates per Finished Task … │ (c6032fdc) │ ✅ done                            │ done      │ 10/10             │
+  │       Record Which Session Answered a Que… │ —          │ ⚠️ problem                          │ execution │ 10/14             │
+  │       Record the Park-to-Answerer Deliver… │ —          │ ✅ done · aborted                  │ planning  │ 0/9               │
+  │       Recurring Operator Gates Have No We… │ (cca32986) │ ✅ done                            │ done      │ 11/11             │
+  │       Recurring-Gates Cannot Tell a Worke… │ (40c9ff52) │ ✅ done                            │ done      │ 11/11             │
+  │       Remove the Four Tasks Listed Twice … │ (70327cf4) │ ✅ done                            │ done      │ 9/9               │
+  │       Session-Close Gates for Provably Fi… │ —          │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │       Six autoMode.allow Entries Carry a … │ (3b2e1eca) │ ✅ done                            │ done      │ 12/12             │
+  │       Stop the Model Composing the sync-p… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/10              │
+  │       Take the 7-Day Defect-Shaped Worktr… │ (740e2ea8) │ ✅ done                            │ done      │ 11/11             │
+  │       Take the SC8 Question-Family Readin… │ —          │ ⚠️ problem                          │ execution │ 10/11             │
+  │       The Answer-Path Probe Certifies a S… │ (ae40bb5f) │ ✅ done                            │ done      │ 17/17             │
+  │       The Bare Commit Shape Still Prompts… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/9               │
+  │       The Supervisor MCP Server Drops the… │ (ec3d278c) │ ✅ done                            │ done      │ 16/16             │
+  │       Twenty-Eight Allow Rules in permiss… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/9               │
+  │       Verify the Four Sibling Goals Own E… │ (3ea7491e) │ ✅ done                            │ done      │ 11/11             │
+  │       Verify the Session-Close Rule Chang… │ (5bfb8554) │ ✅ done                            │ done      │ 7/7               │
+  │       create-task Asks the Docs-Only Rout… │ (33f13e3c) │ ✅ done                            │ done      │ 10/10             │
+  │       vault-cli complete-task and sync-pr… │ (2f8afa33) │ ✅ done                            │ done      │ 13/13             │
+  │    Attention Board Carries Only Operator … │ —          │ 🔄 progressing                     │ —         │ 0/2               │
+  │       A Multi-Select Card Shows Only the … │ (4554848a) │ ✅ done                            │ done      │ 11/11             │
+  │       A Permission Card Carries No Contex… │ (987414df) │ ✅ done                            │ done      │ 11/11             │
+  │       A Rejected Closer Still Mints an Op… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       A Session Holding Two Open Cards Re… │ (c20a2aa6) │ ✅ done                            │ done      │ 16/16             │
+  │       A Sweep-Gate Card Carries No Goal a… │ (dc3a977c) │ ⏸️ deferred                         │ execution │ 5/13              │
+  │       A Worker's Gate Is Re-Shown on Ever… │ —          │ —                                  │ todo      │ 5/15              │
+  │       An Open Board Card Is Hidden When a… │ (51b0b979) │ ✅ done                            │ done      │ 12/12             │
+  │       Closing an Attention Card Means Han… │ (41b02cf9) │ ✅ done                            │ done      │ 13/13             │
+  │       Cluster-Owned Board Cards Cannot Be… │ —          │ ⌛ waiting-approval                │ todo      │ 0/5               │
+  │       Diagnose Why Ordinary Approve and P… │ (372c7bbc) │ ✅ done                            │ done      │ 13/13             │
+  │       Every Board Card Carries a Thumbs U… │ (5d85be08) │ ✅ done                            │ done      │ 16/16             │
+  │       One Worker's Looped Permission Prom… │ (80535166) │ ✅ done                            │ done      │ 15/15             │
+  │       Rating a Card Rebuilds Its Row and … │ (c1595c07) │ ✅ done                            │ done      │ 15/15             │
+  │       Reap Stale Awaiting-Operator Record… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       Reduce the Attention Board's Closer… │ (b23cbf2e) │ ✅ done                            │ done      │ 14/14             │
+  │       Review the Attention Board's Rating… │ —          │ ⏸️ deferred                         │ —         │ 0/8               │
+  │       Route the Week-Window Groups Instea… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       The Attention Board Fills With Low-… │ (8491dba6) │ ✅ done                            │ done      │ 15/15             │
+  │       The Board E2E Case for Session-Kind… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       The Board's ✕ Dismiss Reads Like a … │ (340700ec) │ ✅ done                            │ done      │ 12/12             │
+  │       The Daily Thumbs Task Declares Itse… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       The Feed Emits Every Headless Park … │ —          │ 🚀 ready-to-start                  │ planning  │ 0/12              │
+  │       The No Reply Needed Here Closer Sti… │ —          │ —                                  │ todo      │ 4/18              │
+  │       The Sweep Output Docs Cite a sweep-… │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       The Sweep-Gate Invariant Raises a C… │ (a57df8b6) │ ✅ done · aborted                  │ planning  │ 0/9               │
+  │       Verify the Attention Ratings Tool a… │ —          │ ✅ done                            │ done      │ 12/12             │
+  │       Workers Ask the Operator to Change … │ (0df5301a) │ ⏸️ deferred                         │ execution │ 12/15             │
+  │       sweep-gate Emits Blocked Cards for … │ (e209b9f9) │ ✅ done                            │ done      │ 10/10             │
+  │    Agents Never Gate Reversible In-Scope … │ —          │ 🔄 progressing                     │ —         │ 1/2               │
+  │       A Compact-Approval Card Can Be Rais… │ (313d29ea) │ ✅ done                            │ done      │ 14/14             │
+  │       A Hidden Compact Card Reappears Sec… │ (735b0193) │ ✅ done                            │ done      │ 9/9               │
+  │       A Manager Offers Its Own Work to th… │ (54b95204) │ ✅ done                            │ done      │ 14/14             │
+  │       A Permission Park Cannot Hold 15 Mi… │ (2ca2ba31) │ ✅ done                            │ done      │ 14/14             │
+  │       A Session Holding a Background Shel… │ (709b66f6) │ ✅ done                            │ done      │ 10/10             │
+  │       An Approved Compact Still Needs the… │ (f2ed3216) │ ✅ done                            │ done      │ 16/16             │
+  │       Approve and Review Closers Still Na… │ (ba8b000b) │ ✅ done                            │ done      │ 13/13             │
+  │       Measure SC1 and SC2 on Their 7-Day … │ (fe0f08d3) │ ⏸️ deferred                         │ execution │ 4/7               │
+  │       Plan-Task Puts One-Fix Audit Gaps t… │ (a0211eed) │ ✅ done                            │ done      │ 12/12             │
+  │       Prove the 700k Compact Tier Deliver… │ —          │ —                                  │ todo      │ 4/12              │
+  │       SC2's Zero-per-7-Days Bar Is Unmet … │ (7086ee53) │ ✅ done                            │ done      │ 9/9               │
+  │       Session-End Wrap-Up Menus Reach the… │ (0a54d7ac) │ ✅ done                            │ done      │ 13/13             │
+  │       The Closer Bar Measures Emissions N… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/9               │
+  │       The Closer Lint Reads the Wrong Clo… │ (71f30e33) │ ✅ done                            │ done      │ 15/15             │
+  │       The Compound-Bash Hook Allows Loops… │ (5f802a44) │ ✅ done                            │ done      │ 15/15             │
+  │       The Manager Menu Guard Catches Only… │ (cee03b7d) │ ✅ done                            │ done      │ 13/13             │
+  │       The Remaining Permission Parks Are … │ —          │ ⌛ waiting-approval                │ todo      │ 0/16              │
+  │       The Session-Close Reflect and Self-… │ (e80d4890) │ ✅ done                            │ done      │ 18/18             │
+  │       The ask Template Has No Manager-Own… │ (64067af5) │ ✅ done                            │ done      │ 15/15             │
+  │       The closer-gate-lint Misses 41 Alre… │ (82425a39) │ ✅ done                            │ done      │ 13/13             │
+  │       Tighten the reflect NO-ASK Secret S… │ (a8eb83a0) │ ✅ done                            │ done      │ 13/13             │
+  │       Workers Gate Reversible In-Scope St… │ (63f2ea8b) │ ✅ done                            │ done      │ 12/12             │
+  │       Workers Merge Green PRs With gh -R … │ (b742b996) │ ✅ done                            │ done      │ 16/16             │
+  │    Deploy and Merge Gates Become Standing… │ —          │ 🔄 progressing                     │ —         │ 0/2               │
+  │       A Ruled Repo Holds a Green Bot-Appr… │ —          │ ✅ done                            │ done      │ 13/13             │
+  │       Bare make apply Reaches Prod, So th… │ (36272a7f) │ ✅ done                            │ done      │ 14/14             │
+  │       Bind the Dev Deploy Carve-Out to th… │ (d3c06357) │ ✅ done                            │ done      │ 12/12             │
+  │       Feature-Branch Pushes Still Prompt,… │ (5e961f37) │ ⏸️ deferred                         │ execution │ 10/14             │
+  │       Hook Coverage Is the Prompt Lever, … │ (8c358376) │ ✅ done                            │ done      │ 12/12             │
+  │       Let Agents Run Dev make apply Witho… │ (53c0041d) │ ✅ done                            │ done      │ 16/16             │
+  │       Measure pr merge Hand-Overs Over Se… │ —          │ ⏸️ deferred                         │ execution │ 8/11              │
+  │       Measure the Merge Hand-Over Rate Si… │ (4049df84) │ ✅ done                            │ done      │ 10/10             │
+  │       Measure the Reversible Subset's Ope… │ (f98e76c9) │ ⚠️ problem                          │ execution │ 10/11             │
+  │       Pin the Gate Instrument Before the … │ (4020fd1f) │ ✅ done                            │ done      │ 11/11             │
+  │       Push the Local ~-.claude Commits to… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       Re-Measure the Git-Readonly Prompt … │ (d94ac7a1) │ ✅ done                            │ done      │ 16/16             │
+  │       Re-Measure the Reversible Subset Af… │ —          │ ⏸️ deferred                         │ execution │ 0/10              │
+  │       Re-Read the Merge Hand-Over Window … │ —          │ ⏸️ deferred                         │ execution │ 0/11              │
+  │       Record Both SC Windows and Cutoffs … │ —          │ ⚠️ problem                          │ execution │ 10/12             │
+  │       Safe Commands Keep Prompting Becaus… │ —          │ ✅ done                            │ done      │ 17/17             │
+  │       Shell Loops Over Allowlisted Comman… │ (5a39fc8e) │ ✅ done · aborted                  │ execution │ 19/20             │
+  │       Single-Command Bash Prompts With No… │ (f15ce021) │ ✅ done · aborted                  │ planning  │ 10/11             │
+  │       The Attention Store Records Only Pr… │ (59fdbdf1) │ ✅ done                            │ done      │ 15/15             │
+  │       The Hook Refuses the Shapes Agents … │ (615f4769) │ ⏸️ deferred                         │ execution │ 11/13             │
+  │       The Merge Gate Now Rests on a Hook … │ (c1e8f896) │ ✅ done                            │ done      │ 12/12             │
+  │       The Residual File-Write Class Must … │ (aa14061d) │ ✅ done                            │ done      │ 10/10             │
+  │       The SC1 Gate Classifier Is Prose, S… │ (18d4ec12) │ ✅ done                            │ done      │ 13/13             │
+  │       The make build Ask Rule Stops Unatt… │ (68f5cb50) │ ✅ done                            │ done      │ 10/10             │
+  │       Two-Way Gates Become Standing Allow… │ (688e668e) │ ✅ done · aborted                  │ planning  │ 15/16             │
+  │       Vault Edits Stop Prompting on Every… │ (8ff1526c) │ ✅ done                            │ done      │ 13/13             │
+  │       Workers Merge Green Bot-Approved PR… │ (4d5e9b04) │ ⏸️ deferred                         │ execution │ 10/13             │
+  │    Gate Instrumentation Is Re-Derivable    │ —          │ 🔄 progressing                     │ —         │ 0/2               │
+  │       A Manager Round Can Skip Every Step… │ (63c3d5cd) │ ✅ done                            │ done      │ 14/14             │
+  │       Record the Second Instrument Discon… │ (825acb54) │ ✅ done                            │ done      │ 6/6               │
+  │       The Attention Watcher's 24h Prune D… │ (2f19a7e8) │ ✅ done                            │ done      │ 16/16             │
+  │       The Compound cd Gate Has No Instrum… │ (8cd098c9) │ ✅ done                            │ done      │ 16/16             │
+  │       The Gate Event Log Truncates Detail… │ (4a39cf09) │ ✅ done                            │ done      │ 14/14             │
+  │       The Live claude Checkout Drifts Beh… │ (c199b991) │ ✅ done                            │ done      │ 12/12             │
+  │       The Manager's Gate-Surfacing Instru… │ (e87203fc) │ ✅ done                            │ done      │ 19/19             │
+  │       The Round Receipt's Sweep and Watch… │ (d192a057) │ ✅ done                            │ done      │ 15/15             │
+  │       Widening detail to 4000 Left item_i… │ (d57ef3b7) │ ✅ done                            │ done      │ 11/11             │
+  │       recurring-gates.py Takes Only a Rel… │ (98a838aa) │ ✅ done                            │ done      │ 8/8               │
+  │    Drive Rounds Report Success-Criterion … │ —          │ 🔄 progressing                     │ —         │ 0/3               │
+  │       A Manager Whose Subject Has No Runn… │ (3f61d6d2) │ ✅ done                            │ done      │ 11/11             │
+  │       Coverage Has No Reverse Map From Su… │ (7ae08e48) │ ✅ done                            │ done      │ 10/10             │
+  │       Drive Rounds Judge a Session's Last… │ (5b2ee970) │ ✅ done                            │ done      │ 13/13             │
+  │       Drive Rounds Keep Workers Busy With… │ (be8bbfdd) │ ✅ done                            │ done      │ 13/13             │
+  │       Manager and Fleet Drive Rounds Read… │ —          │ ⏸️ blocked/upstream                 │ planning  │ 0/14              │
+  │       Re-read Tokens per Finished Task 7 … │ —          │ 🚀 ready-to-start                  │ planning  │ 0/12              │
+  │       Split worker-drive §0b and §1 Read … │ (cd190bc3) │ ✅ done                            │ done      │ 12/12             │
+  │       The Manager Loop's Coverage Step Di… │ (23d0ec74) │ ✅ done                            │ done      │ 14/14             │
+  │       Verify the Manager Stand-Down Live … │ —          │ 🚀 ready-to-start                  │ planning  │ 0/12              │
+  │       worker-drive §8 Requires a Modal Wh… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/12              │
+  │    Work That Needs Me Reaches Me and Then… │ —          │ 🚀 ready-to-start                  │ —         │ 0/5               │
+  │       A Board Answer to a Busy Pane Waits… │ (bcefec80) │ ✅ done                            │ done      │ 12/12             │
+  │       A Board Answer to a claude-wrapper … │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       Close the Three Residual Gaps the R… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       Decide Whether claude-wrapper Can O… │ —          │ ⌛ waiting-approval                │ todo      │ 0/14              │
+  │       Some Waiting Closers Are Recorded L… │ (d0a43268) │ ✅ done                            │ done      │ 14/14             │
+  │    The Manager Ranks Work by What It Cost… │ —          │ 🚀 ready-to-start                  │ —         │ 2/6               │
+  │       Cut the Interaction Cost of Check P… │ —          │ ✅ done                            │ done      │ 17/17             │
+  │       Make Session Colour Machine-Readable │ (b8437da2) │ ✅ done                            │ done      │ 12/12             │
+  │       Measure Check Prometheus Alerts Aga… │ (89575752) │ ✅ done                            │ done      │ 8/8               │
+  │       Measure Interruptions by Session Ty… │ (3e0c235b) │ ✅ done                            │ done      │ 12/12             │
+  │       Prototype the Interaction-Cost Rank… │ (d36de111) │ ✅ done                            │ done      │ 15/15             │
+  │       Seibert Ticket Branches Are Denied … │ —          │ ✅ done                            │ done      │ 13/13             │
+  │       The Manager Loop's Tick Lands ~9k T… │ (d105ea5a) │ ✅ done · aborted                  │ planning  │ 0/19              │
+  │       The Step-9 Unowned-Task Guardrail P… │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       The git push Ask-Rule Fires on Feat… │ (cc350bad) │ ✅ done                            │ done      │ 16/16             │
+  │    No Session Sits Idle Unnoticed and a L… │ —          │ 🔄 progressing                     │ —         │ 2/3               │
+  │       A Blocked Worker Is Resumed When It… │ (063ee8da) │ ✅ done                            │ done      │ 12/12             │
+  │       A Closer Naming an Unanswerable Gat… │ (be26bd09) │ ✅ done                            │ done      │ 14/14             │
+  │       A Date-Gated Subject Stands Down In… │ (70dea896) │ ✅ done                            │ done      │ 13/13             │
+  │       A Deferred Row Missing Its later-on… │ (0ec108b4) │ ✅ done                            │ done      │ 10/10             │
+  │       A Deliberately Stood-Down Manager I… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       A Flagged Goal With No Live Manager… │ —          │ ✅ done · aborted                  │ planning  │ 0/14              │
+  │       A Fleet Round That Never Ran Leaves… │ (357aa24f) │ ✅ done                            │ done      │ 14/14             │
+  │       A Goal With No Armed Manager Leaves… │ (bfdc2a75) │ ✅ done                            │ done      │ 15/15             │
+  │       A Goal-Drive Round Never Refreshes … │ (d446e69c) │ ✅ done                            │ done      │ 11/11             │
+  │       A Hand-Started cc-private-claude Re… │ (0f53345e) │ ✅ done                            │ done      │ 11/11             │
+  │       A Harness-Injected Idle Nudge Reach… │ —          │ ✅ done · aborted                  │ todo      │ 0/8               │
+  │       A Headless Session Stuck in Busy Ho… │ (5db0ec4b) │ ✅ done                            │ done      │ 9/9               │
+  │       A Headless Session With No Task Anc… │ —          │ ✅ done · aborted                  │ done      │ 0/14              │
+  │       A Headless Worker Mints a Delivery-… │ (39b140a6) │ ✅ done                            │ done      │ 13/13             │
+  │       A Healthy Armed Manager Is Nudged t… │ —          │ ✅ done                            │ done      │ 13/13             │
+  │       A Hung Audit Dispatch Carries the D… │ —          │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       A Lapse Report Lands Well Past the … │ —          │ ✅ done · aborted                  │ planning  │ 0/9               │
+  │       A Lapse Report That Fails to Delive… │ (f0989849) │ ✅ done                            │ done      │ 17/17             │
+  │       A Lapsed Manager Is Reported Within… │ (825aa8b4) │ ✅ done                            │ done      │ 14/14             │
+  │       A Lapsed Manager Is Reported Within… │ (a9f99f7d) │ ✅ done                            │ done      │ 16/16             │
+  │       A Leaked pending_turns Counter Hold… │ (1297ebb6) │ ✅ done                            │ done      │ 8/8               │
+  │       A Live Session Missing From the Reg… │ [5d4d78a8] │ 🔄 progressing                     │ execution │ 0/12              │
+  │       A Manager Round Arms Liveness Only … │ (e3037e2b) │ ✅ done                            │ done      │ 18/18             │
+  │       A Manager Round That Skips Its Keep… │ (fba323b5) │ ✅ done                            │ done      │ 11/11             │
+  │       A Manager That Lengthens Its Interv… │ (800a397c) │ ✅ done                            │ done      │ 13/13             │
+  │       A Manager With Fewer Than Four Arms… │ (91e616e6) │ ✅ done · aborted                  │ todo      │ 0/12              │
+  │       A Manager's Round Records a Dead Wo… │ (ceaaa96d) │ ✅ done                            │ done      │ 11/11             │
+  │       A Park Wake That Finds No Session C… │ (55e782b2) │ ✅ done                            │ done      │ 11/11             │
+  │       A Parked Card for a Live Pane-Less … │ —          │ ✅ done · aborted                  │ planning  │ 0/14              │
+  │       A Parked Headless Worker Is Closed … │ (4f47860a) │ ✅ done                            │ done      │ 17/17             │
+  │       A Permission Card Whose Producer Ex… │ (3a80f692) │ ✅ done                            │ done      │ 18/18             │
+  │       A Receipt Check That Keeps the Two-… │ (a8fa92ce) │ ✅ done                            │ done      │ 10/10             │
+  │       A Renamed Task's Session Becomes Un… │ (446aefc1) │ ✅ done                            │ done      │ 14/14             │
+  │       A Resolved Gate Still Mints a Deliv… │ (427d017f) │ ✅ done                            │ done      │ 11/11             │
+  │       A Resume Request Passes the Guard a… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/11              │
+  │       A Resumed Topic Manager's Session E… │ (77f7ff67) │ ✅ done · aborted                  │ todo      │ 6/13              │
+  │       A Session Can Outlive Its Exit Obse… │ (4b8275b0) │ ⌛ waiting-external                │ execution │ 3/16              │
+  │       A Session Death Names Its Sender Th… │ —          │ ✅ done · aborted                  │ todo      │ 0/8               │
+  │       A Session That Ended Its Turn Is Re… │ (511b46e3) │ ✅ done                            │ done      │ 13/13             │
+  │       A Session Waiting on a Machine Even… │ (9663d48a) │ ✅ done                            │ done      │ 16/16             │
+  │       A Session Whose Task Was Handed to … │ (e4b25dfb) │ ✅ done                            │ done      │ 12/12             │
+  │       A Slow but Healthy Heartbeat Read R… │ (bbccdd3f) │ ✅ done                            │ done      │ 15/15             │
+  │       A Take-Over Bind Drops the Outgoing… │ (a41ba8b8) │ ✅ done                            │ done      │ 10/10             │
+  │       A Worker Exits Cleanly Parked With … │ (694afb06) │ ✅ done                            │ done      │ 10/10             │
+  │       A Worker Holds Its Spawn Slot After… │ (8416dc21) │ ✅ done                            │ done      │ 17/17             │
+  │       A stop_agent-Stopped Session Stays … │ —          │ ✅ done · aborted                  │ planning  │ 0/10              │
+  │       Add a fleet-reset Verb That Clears … │ (90ac0532) │ ✅ done                            │ done      │ 16/16             │
+  │       Add the Tail Liveness Beat to the F… │ (0df5c097) │ ✅ done                            │ done      │ 16/16             │
+  │       An Answered Propose-a-Manager Card … │ (a2d26325) │ ✅ done                            │ done      │ 15/15             │
+  │       Attention-Answer Records an Answer … │ (c1784549) │ ✅ done                            │ done      │ 14/14             │
+  │       Clock-Bound Workers Park via defer_… │ (803079b8) │ ✅ done · aborted                  │ todo      │ 9/13              │
+  │       Close Paths Cannot Resolve a Sessio… │ (49aca877) │ ✅ done                            │ done      │ 13/13             │
+  │       Close the Lapsed-Manager One-Cadenc… │ —          │ ✅ done · aborted                  │ todo      │ 0/11              │
+  │       Close the Ownership-Filter's Satisf… │ —          │ ✅ done                            │ done      │ 9/9               │
+  │       Cover the Tail Arm's Write Path and… │ —          │ ✅ done · aborted                  │ todo      │ 0/10              │
+  │       Diagnose What the Idle Sessions Hol… │ (7db4057a) │ ✅ done                            │ done      │ 16/16             │
+  │       Diagnose Why Six Sessions With Open… │ (5638e095) │ ✅ done                            │ done      │ 16/16             │
+  │       Digest Watcher Judges File Arrival,… │ (83b88ac3) │ ✅ done                            │ done      │ 13/13             │
+  │       Drive the Sixteen Non-Terminal Link… │ (4b556b77) │ ✅ done                            │ done      │ 11/11             │
+  │       Exercise the Fleet Worker Cap Throu… │ —          │ ✅ done · aborted                  │ todo      │ 0/9               │
+  │       Exercise the Kind-d Close-Then-Resu… │ —          │ 🚀 ready-to-start                  │ planning  │ 2/2               │
+  │       Exercise the Manager Loop's Tick Ag… │ —          │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       Find Proper Goal Owners for the 18 … │ —          │ ✅ done · aborted                  │ —         │ 0/10              │
+  │       Fix and Merge PR 206 So the Census … │ (2d8bda74) │ ✅ done                            │ done      │ 12/12             │
+  │       Flagged Goals and Topics Open Autom… │ (3626e833) │ ✅ done                            │ done      │ 19/19             │
+  │       Fleet Manager Proposes a Goal Manag… │ (1dd474f8) │ ✅ done                            │ done      │ 13/13             │
+  │       Goal Complete Has No Success-Criter… │ (b656aadd) │ ✅ done                            │ done      │ 11/11             │
+  │       Goal and Topic Binds Drop the Outgo… │ (3318dd1f) │ ✅ done                            │ done      │ 14/14             │
+  │       Goal-Tier Liveness Lapses Six Times… │ (92afc298) │ ✅ done                            │ done      │ 13/13             │
+  │       Goals and Topics Carry a Phase Fiel… │ (e029e51e) │ ✅ done                            │ done      │ 14/14             │
+  │       Headless Permission Gates Still Rec… │ (29d8dbe7) │ ✅ done                            │ done      │ 17/17             │
+  │       Keep the Tail Marker in Its Own Fil… │ (7c90b3f4) │ ✅ done                            │ done      │ 12/12             │
+  │       Make Every Fleet Manager Death Attr… │ (a5529a78) │ ⏸️ deferred                         │ execution │ 10/13             │
+  │       Make Manager Enumeration Cheap Enou… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/8               │
+  │       Manager Rounds Delegate Every Heavy… │ (7dae63ea) │ ✅ done                            │ done      │ 14/14             │
+  │       Nine Sessions Sit Parked Past the F… │ (ebd76359) │ ⏸️ deferred                         │ execution │ 12/16             │
+  │       No Producer Exists for the Below-Ba… │ —          │ ✅ done · aborted                  │ todo      │ 0/12              │
+  │       No Sweep Flags a Fleet Manager Pane… │ (c99f799e) │ ✅ done                            │ done      │ 15/15             │
+  │       Nothing Enforces the 15-Minute Park… │ (f15ef362) │ ✅ done                            │ done      │ 14/14             │
+  │       Nothing Pins the Fleet Router Again… │ (c67c504f) │ ✅ done                            │ done      │ 13/13             │
+  │       Observe a Date-Gated Manager Sleep … │ (914849f9) │ ⏸️ deferred                         │ execution │ 4/12              │
+  │       Observe a Natural Leaked pending_tu… │ —          │ —                                  │ todo      │ 0/8               │
+  │       Observe a Real Manager Loop Stop De… │ (989321be) │ ⏸️ deferred                         │ execution │ 4/14              │
+  │       One Test Suite Reads Ambient SUPERV… │ (97980583) │ ✅ done                            │ done      │ 9/9               │
+  │       Pin attention-ask poll --answered-a… │ (800993a5) │ ✅ done                            │ done      │ 10/10             │
+  │       Port _leaked_pending_turn Into the … │ —          │ 🚀 ready-to-start                  │ planning  │ 0/9               │
+  │       Probe find_vault_cli at the Top of … │ (dc4db3ac) │ ✅ done                            │ done      │ 11/11             │
+  │       Probe session-close Manager Routing… │ (f91d4261) │ ✅ done                            │ done      │ 11/11             │
+  │       Prove a Disarmed Manager Loop Is Re… │ (725ca9ad) │ ✅ done                            │ done      │ 9/9               │
+  │       Pull the Reload Lever Across the St… │ (5c3dc190) │ ✅ done                            │ done      │ 10/10             │
+  │       Re-Home or Close the Todo Rows That… │ (b5272392) │ ✅ done                            │ done      │ 8/8               │
+  │       Reload Plugins Refreshes Disk but N… │ (e3668b51) │ ✅ done                            │ done      │ 11/11             │
+  │       Round Readings Parse Only Unpadded … │ (bdc2f1ed) │ ✅ done                            │ done      │ 14/14             │
+  │       Run supervisor fleet-reset on a Rea… │ —          │ 👤 YOURS                           │ planning  │ 0/5               │
+  │       Run the Day-End Idle-Session Census… │ (e5e3a2d9) │ ✅ done                            │ done      │ 11/11             │
+  │       Run the Goal's Closure Pass So Ever… │ —          │ ✅ done                            │ done      │ 9/9               │
+  │       SC2's False-Lapse Ceiling Has Never… │ (7b0de3a8) │ ✅ done                            │ done      │ 11/11             │
+  │       Session Close Never Teaches Park Re… │ (33646d27) │ ✅ done                            │ done      │ 14/14             │
+  │       Session-Close Asks the Operator to … │ (1ff62605) │ ✅ done                            │ done      │ 13/13             │
+  │       Supervisor Scripts Honour defer_dat… │ (2a92f8ae) │ ✅ done                            │ done      │ 14/14             │
+  │       Task Approve Does Not Refresh appro… │ —          │ ✅ done · aborted                  │ planning  │ 0/7               │
+  │       Task Approve's Help Text Promises a… │ (e17e5211) │ ✅ done                            │ done      │ 10/10             │
+  │       The Auto-Resume Gate Reads an Opera… │ (9b2a3007) │ ✅ done                            │ done      │ 14/14             │
+  │       The Bucket-Set Store Truncates Name… │ —          │ ✅ done · aborted                  │ todo      │ 0/13              │
+  │       The Cadence Check Reads UNARMED for… │ (a4e98bd8) │ ✅ done                            │ done      │ 14/14             │
+  │       The Decision-Park Decider Cannot Re… │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       The Decision-Park Leg's Unreachable… │ —          │ ✅ done · aborted                  │ todo      │ 0/7               │
+  │       The Decision-Park Readings Never Re… │ (9509e919) │ ✅ done                            │ done      │ 13/13             │
+  │       The Decision-Park Resume Leg Cannot… │ (fc429726) │ ⚠️ problem                          │ execution │ 0/12              │
+  │       The Digest Render Copies Its Own Sn… │ (9cd249bc) │ ✅ done                            │ done      │ 8/8               │
+  │       The Drive Leg Observes Unverifiable… │ (55907437) │ ✅ done · aborted                  │ todo      │ 10/17             │
+  │       The Drive Leg's Audit Budget Bounds… │ —          │ ✅ done · aborted                  │ todo      │ 0/12              │
+  │       The Exit-Record Coverage Check Has … │ (073f5a95) │ ✅ done                            │ done      │ 20/20             │
+  │       The Fleet Board's JSON Drops a Work… │ (0e9760c8) │ ✅ done                            │ done      │ 10/10             │
+  │       The Fleet Digest Carries Forward Wh… │ (2265fd2c) │ ✅ done                            │ done      │ 14/14             │
+  │       The Fleet Digest Drops the Pane of … │ (3d716be1) │ ✅ done                            │ done      │ 11/11             │
+  │       The Fleet Drive Agent Body Has One … │ (395b3679) │ ✅ done                            │ done      │ 11/11             │
+  │       The Fleet Manager Can Close a Finis… │ (b77c4530) │ ✅ done                            │ done      │ 9/9               │
+  │       The Fleet Manager Died at Midday Wi… │ (ee9380ad) │ ✅ done                            │ done      │ 11/11             │
+  │       The Fleet Pusher's Cheap Wake Caden… │ (ad45d507) │ ✅ done                            │ done      │ 15/15             │
+  │       The Fleet Round Proposes Only Crash… │ (c5cd765b) │ ✅ done                            │ done      │ 15/15             │
+  │       The Gate-Owner Feed Reports a role-… │ (51cfe2d5) │ ✅ done                            │ done      │ 12/12             │
+  │       The Goal Round Never Reads goal-par… │ (b277d9ef) │ ✅ done                            │ done      │ 10/10             │
+  │       The Goal Round's Receipt Covers Fou… │ (ac589796) │ ✅ done                            │ done      │ 17/17             │
+  │       The Goal's DoD4 Rests on an Invento… │ (694847f1) │ ✅ done                            │ done      │ 21/21             │
+  │       The Idle Census Counts Drill and Wr… │ (13511838) │ ✅ done                            │ done      │ 12/12             │
+  │       The Idle Nudge Nags a Sleeping Mana… │ (630b0d5a) │ ✅ done                            │ done      │ 12/12             │
+  │       The In-Flight Check's Tick Render a… │ (bc35f75d) │ ✅ done                            │ done      │ 9/9               │
+  │       The Keep-Alive Can Never See a Dead… │ (5d3c69bd) │ ✅ done                            │ done      │ 12/12             │
+  │       The Lapse Detector Re-Emits One Epi… │ (83d3e434) │ ✅ done                            │ done      │ 15/15             │
+  │       The Liveness Period-Collapse Probe … │ —          │ —                                  │ todo      │ 0/10              │
+  │       The Manager Can No Longer Reach Its… │ [9b29463f] │ 🔄 progressing                     │ execution │ 7/8               │
+  │       The Manager Liveness Record Measure… │ (33715a21) │ ✅ done                            │ done      │ 9/9               │
+  │       The Manager's Name Lists Drop Rows … │ (910ef74c) │ ✅ done                            │ done      │ 14/14             │
+  │       The Ownership-Filtered Feed Cannot … │ (68cd745e) │ ✅ done                            │ done      │ 15/15             │
+  │       The Ownership-Filtered Feed Wakes o… │ (d9019752) │ ✅ done                            │ done      │ 13/13             │
+  │       The Pane List Has a Five Second Tim… │ (03025915) │ ✅ done                            │ done      │ 13/13             │
+  │       The Park Nudge and SC3 Both Read qu… │ (f8f39853) │ ✅ done                            │ done      │ 18/18             │
+  │       The Permission Tier's Five-Second C… │ (81c57b37) │ ✅ done                            │ done      │ 13/13             │
+  │       The Pod Arm's Poll Still Prints OPE… │ (83066831) │ ✅ done                            │ done      │ 14/14             │
+  │       The Reap Remedy Has No Recipient Wh… │ (44db8e09) │ ✅ done                            │ done      │ 16/16             │
+  │       The Registry's Empty Match Cannot T… │ (d698c888) │ ✅ done                            │ done      │ 14/14             │
+  │       The Resume Fix Is Verified Only on … │ —          │ ✅ done · aborted                  │ execution │ 0/5               │
+  │       The Round Skips Step 5b, So a Parke… │ (891392a4) │ ✅ done                            │ done      │ 15/15             │
+  │       The SC3 Probe Labels Every Passing … │ —          │ 🚀 ready-to-start                  │ planning  │ 0/9               │
+  │       The SC3 Sample Reads the watching B… │ (5f322a03) │ ✅ done                            │ done      │ 18/18             │
+  │       The Self-Exit Gate Counts a Card th… │ —          │ ✅ done · aborted                  │ planning  │ 0/13              │
+  │       The Self-Exit Gate Counts a Tool Ma… │ (42e8c918) │ ✅ done                            │ done      │ 11/11             │
+  │       The Session Exit Recorder Can Never… │ (d7ca2f67) │ ✅ done                            │ done      │ 6/6               │
+  │       The Session Heartbeat Endpoint Cann… │ (43a12c24) │ ✅ done                            │ done      │ 18/18             │
+  │       The Spawn Row's Reads-flag Cell Con… │ —          │ ✅ done · aborted                  │ todo      │ 0/5               │
+  │       The Stuck Family Reads Task-File Mt… │ (91e0c842) │ ✅ done                            │ done      │ 13/13             │
+  │       The Sweep Posts One Blocked-Goal Ca… │ —          │ ✅ done · aborted                  │ planning  │ 0/14              │
+  │       The Sweep Tick Stops Reaching Its S… │ (af79027a) │ ✅ done                            │ done      │ 13/13             │
+  │       The Turn-Ended Permission Arm Has N… │ (fbf9599c) │ ⌛ waiting-external                │ execution │ 4/11              │
+  │       The supervisor open --flagged Selec… │ (e8502866) │ ✅ done                            │ done      │ 14/14             │
+  │       The supervisor open --flagged Task … │ (ed2ed52f) │ ✅ done                            │ done      │ 12/12             │
+  │       claude-wrapper Wraps Claude and Exp… │ (0435a35f) │ ✅ done                            │ done      │ 16/16             │
+  │       close-worker Closes a Finished Head… │ (e4f6c5a8) │ ✅ done                            │ done      │ 14/14             │
+  │       close-worker's Tab Arm Kills a Reus… │ (3b0ecd42) │ ✅ done                            │ done      │ 13/13             │
+  │       manager-liveness --arm Erases a Del… │ (3c128543) │ ✅ done                            │ done      │ 16/16             │
+  │       manager-quiet Names No Reopen Trigg… │ (ce3f9868) │ ✅ done                            │ done      │ 15/15             │
+  │       round-readings Reports a Quiet Flee… │ (4d404484) │ ✅ done                            │ done      │ 13/13             │
+  │       session-scope.py Drops a Bare goals… │ (d437e192) │ ✅ done                            │ done      │ 13/13             │
+  │       session-self-exit Refuses a Deferre… │ (754f3981) │ ✅ done                            │ done      │ 15/15             │
+  │       session-self-exit Trusts an Inherit… │ (595ba649) │ ✅ done                            │ done      │ 17/17             │
+  │       supervisor stop Excludes the Anchor… │ (2bb76cbe) │ ✅ done                            │ done      │ 18/18             │
+  │       supervisor stop Stops a Named Topic… │ (da99f7c9) │ ✅ done                            │ done      │ 18/18             │
+  │       vault-cli goal set and topic set Ov… │ (2bc232f8) │ ✅ done                            │ done      │ 14/14             │
+  │       watching_min Accrues Across a Resum… │ (94e44bb5) │ ✅ done                            │ done      │ 14/14             │
+  │    Every Live Session Has Exactly One Kee… │ —          │ 🔄 progressing                     │ —         │ 0/7               │
+  │       A Finished Headless Worker Is Close… │ (4295ddac) │ ✅ done                            │ done      │ 14/14             │
+  │       A Keeper Census Runs Every Fleet Ro… │ (009826d0) │ ✅ done                            │ done      │ 16/16             │
+  │       A Live Session Whose Heartbeat Goes… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       A Manager's Own Operator Turns Star… │ —          │ ⌛ waiting-approval                │ todo      │ 0/2               │
+  │       A Resume Times Out Against a Health… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/10              │
+  │       A Stood-Down Manager's Session Is C… │ (e5e72e5a) │ ✅ done                            │ done      │ 15/15             │
+  │       A Test Fails When a Chain Tier Has … │ (a1a8c1a7) │ ✅ done                            │ done      │ 14/14             │
+  │       A Worker Never Parks on a Backgroun… │ (e0deb96f) │ ✅ done                            │ done      │ 13/13             │
+  │       An Idle Headless Worker Never Exits… │ (ade43a45) │ ✅ done                            │ done      │ 14/14             │
+  │       Auto-Open Admits Only Flagged Rows,… │ (c0253923) │ ✅ done                            │ done      │ 15/15             │
+  │       Every Keeper Resolves Ownership Thr… │ (d6942c8f) │ ✅ done                            │ done      │ 15/15             │
+  │       Every Session Resolves to a Known K… │ (96f48804) │ ✅ done                            │ done      │ 17/17             │
+  │       Measure the Fleet Against Its 50-Se… │ (7cefb9e7) │ ✅ done                            │ done      │ 14/14             │
+  │       Record the Dated 7-Day Census and C… │ —          │ 👤 YOURS                           │ planning  │ 1/7               │
+  │       Rename the Supervisor Spawn Config … │ (43bade33) │ ✅ done                            │ done      │ 17/17             │
+  │       Split the Fleet Cap Into Seven Soft… │ (3bb33256) │ ✅ done                            │ done      │ 15/15             │
+  │       The 50-Session Hard Cap Does Not Re… │ (3702c7ae) │ ✅ done                            │ done      │ 17/17             │
+  │       The Attention Controller Records th… │ (8f2f683c) │ ✅ done · aborted                  │ planning  │ 0/15              │
+  │       The Closer Lint Comment Names Forms… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/12              │
+  │       The Closer Lint Rejects an ISO Date… │ (02692efd) │ ✅ done                            │ done      │ 12/12             │
+  │       The Fleet Round Never Records a Ref… │ —          │ ⌛ waiting-approval                │ todo      │ 0/2               │
+  │       The Fleet Round Never Resumes a Goa… │ (620da900) │ ✅ done                            │ done      │ 14/14             │
+  │       The Handover That Closes a Stood-Do… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/14              │
+  │       The Keep-Alive Leg Reads the Fleet … │ —          │ ⌛ waiting-approval                │ todo      │ 0/12              │
+  │       The Predispatch Save Writes the Sto… │ —          │ ✅ done · aborted                  │ todo      │ 0/13              │
+  │       The Stood-Down Close Is Proved Only… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       The Topic Round's Receipt Does Not … │ (05ea4f3c) │ ✅ done                            │ done      │ 13/13             │
+  │       The close_worker Gate-Held Test Is … │ (1e90a6c4) │ ✅ done                            │ done      │ 13/13             │
+  │       Write the Keep-Alive Contract Into … │ (a228ae6c) │ ✅ done                            │ done      │ 16/16             │
+  │       close-worker Closes on One Terminal… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │    Every Board Card Renders Its Own Contr… │ —          │ 🚀 ready-to-start                  │ —         │ 0/4               │
+  │       A Card With No Jump Target Explains… │ (bf451cae) │ ✅ done                            │ done      │ 20/20             │
+  │    A Card Names the Pane, Type and Produc… │ —          │ 🚀 ready-to-start                  │ —         │ 0/4               │
+  │       A Manager Card's Producer Kind Depe… │ (0fc75c81) │ ✅ done                            │ done      │ 13/13             │
+  │       Attention Watcher - One Board Card … │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │    The Operator Inbox Is Small and Fully … │ —          │ 🔄 progressing                     │ —         │ 1/6               │
+  │       A Strategy-Prototype Record Sits in… │ —          │ ✅ done · aborted                  │ planning  │ 0/10              │
+  │       A github-update-go Record Routed to… │ (f1cae78d) │ ✅ done                            │ done      │ 16/16             │
+  │       A pr-review Record Routed to human_… │ (3a78b81a) │ ✅ done                            │ done      │ 17/17             │
+  │       Alert When Strategy-Prototype Recor… │ (d4c68ca0) │ ✅ done                            │ done      │ 10/10             │
+  │       Alert on the Redrive Cap So a Cappe… │ —          │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       Build a sentry-issue-analyzer Close… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Close the 76-Record Weekly Gap Wher… │ —          │ ⚠️ problem                          │ execution │ 7/12              │
+  │       Disposition the Open github-release… │ (a4a1ad4d) │ ✅ done                            │ done      │ 8/8               │
+  │       Disposition the pr-review Rows in t… │ (7752b4d8) │ ✅ done                            │ done      │ 13/13             │
+  │       Drain the Private-Personal Inbox to… │ —          │ ⌛ waiting-approval                │ todo      │ 8/13              │
+  │       Eleven Human-Review Records Rest Wi… │ (ca387341) │ ✅ done                            │ done      │ 14/14             │
+  │       Every Agent Task Type Has a Closer … │ (2f0c38e3) │ ✅ done                            │ done      │ 18/18             │
+  │       Every Loop Closer States the Boards… │ (727406c5) │ ✅ done                            │ done      │ 14/14             │
+  │       Fix CVE-2026-97045 Across the Go Re… │ (0d137de3) │ ✅ done                            │ done      │ 21/21             │
+  │       Forty Probe Fixtures Rest in the Op… │ (30c8caad) │ ✅ done · aborted                  │ execution │ 2/9               │
+  │       Fourteen Strategy-Prototype Records… │ (1af5e97f) │ ✅ done                            │ done      │ 14/14             │
+  │       Measure Whether the Inbox Drains as… │ (38034d7f) │ ✅ done                            │ done      │ 14/14             │
+  │       No Agent Record May Sit in a Phase … │ (069f48ba) │ ✅ done                            │ done      │ 17/17             │
+  │       Nothing Measures How Long an Agent … │ (a607f9dd) │ ✅ done                            │ done      │ 15/15             │
+  │       Prove the Controller Retains a Huma… │ (6a60d139) │ ✅ done                            │ done      │ 11/11             │
+  │       Prove the Private-Agent Inbox Is Un… │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       Record Both SC2 Bar Reads on the Go… │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       Record the Inbox Table Under the Wi… │ (b026277d) │ ✅ done                            │ done      │ 11/11             │
+  │       Run the Probe Closer Unattended and… │ (a690b7b6) │ ✅ done                            │ done      │ 8/8               │
+  │       Seven Agent Records Still Escalate … │ (f533344d) │ ✅ done                            │ done      │ 9/9               │
+  │       Strategy-Prototype Records Carry Th… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       The Controller Never Exports the Op… │ (82ba9589) │ ✅ done                            │ done      │ 11/11             │
+  │       The Daily Closer Cadence Reads priv… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       The Dev Executor Publishes a Probe … │ (5ac39a70) │ ✅ done                            │ done      │ 11/11             │
+  │       The Egress Probe Lane Declares task… │ —          │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       The Executor Never Exports Which Ph… │ (88b8daeb) │ ✅ done                            │ done      │ 15/15             │
+  │       The Executor's Probe Omits target_v… │ (f7fd7dd3) │ ✅ done                            │ done      │ 11/11             │
+  │       The Executor's Scheduled Probe Writ… │ (b76a40c7) │ ✅ done                            │ done      │ 12/12             │
+  │       The Hypothesis Agent's Strategy Loo… │ (818c2d50) │ ✅ done                            │ done      │ 18/18             │
+  │       The Probe Closer Writes an Unquoted… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/12              │
+  │       The Probe's Create-Task Refuses an … │ (af3a4fa8) │ ✅ done                            │ done      │ 10/10             │
+  │       The Probe's Update-Frontmatter Runs… │ (be5f8e0a) │ ✅ done                            │ done      │ 10/10             │
+  │       The Sentry Agents Crash on a health… │ (fc3b4921) │ ⏸️ deferred                         │ todo      │ 13/15             │
+  │       Triage the Twelve hypothesis Record… │ (45af4af3) │ ✅ done                            │ done      │ 12/12             │
+  │       Work Through Private Human-Review a… │ (3b548f25) │ ✅ done                            │ done      │ 23/23             │
+  │    Review and Merge Stop Binding           │ —          │ 🔄 progressing                     │ —         │ 2/3               │
+  │       Address the review findings on clau… │ (9e3598f1) │ ✅ done                            │ done      │ 14/14             │
+  │       Drain the Open Pull Requests the Re… │ (933db7e8) │ ✅ done                            │ done      │ 9/9               │
+  │       Drain the PRs That Set review-merge… │ (fb06a427) │ ✅ done                            │ done      │ 9/9               │
+  │       Drain the Two Real PRs That Still S… │ (c3071090) │ ✅ done                            │ done      │ 11/11             │
+  │       Fix nuke 847 check-mirror-images gu… │ (c76166f0) │ ✅ done                            │ done      │ 15/15             │
+  │       Get a real review for nuke 801 afte… │ (9fa46a6a) │ ✅ done                            │ done      │ 12/12             │
+  │       Keep Fixture-Repo PRs From Setting … │ (68e43608) │ ✅ done                            │ done      │ 12/12             │
+  │       Make the Review-Merge Queue Age Ign… │ (186bd146) │ ✅ done                            │ done      │ 18/18             │
+  │       Rebase and Merge the Eighteen Appro… │ (fdf105f0) │ ✅ done                            │ done      │ 16/16             │
+  │       Record the Two Weekly Review-Merge … │ (2d6efb8d) │ ⏸️ deferred                         │ execution │ 10/12             │
+  │       Resolve the relayed-gate closer rul… │ —          │ ✅ done                            │ done      │ 10/10             │
+  │    Auto-Merge Trust-Gated PRs              │ —          │ 🔄 progressing                     │ —         │ 5/7               │
+  │       Auto-Merge a Build-Fix PR End-to-En… │ (58d3e688) │ ✅ done                            │ done      │ 16/16             │
+  │       Auto-Update Open PRs When Master Mo… │ (161a55e7) │ ✅ done                            │ done      │ 15/15             │
+  │       Automatic Auto-Merge for Trivial PRs │ (65c6527f) │ ✅ done                            │ done      │ 15/15             │
+  │       Build the do-not-merge Carrier Clas… │ (39efd636) │ ✅ done                            │ done      │ 32/32             │
+  │       Confirm Byte-Identity of the do-not… │ (c2fc2393) │ ✅ done                            │ done      │ 10/10             │
+  │       Daily Recurring Task Merges Green A… │ (f0481f53) │ ✅ done · aborted                  │ todo      │ 4/16              │
+  │       Demonstrate the 30-Day No-Touch CI-… │ (9d23ecf1) │ ✅ done · aborted                  │ execution │ 10/17             │
+  │       Escalate Auto-Merge Refusals to the… │ (61a6517d) │ ✅ done                            │ done      │ 16/16             │
+  │       Evidence Update-Go Dep-Bump Auto-Me… │ (13186b19) │ ✅ done                            │ done      │ 13/13             │
+  │       Extend the do-not-merge Carrier Cla… │ (86d3a8a7) │ ✅ done                            │ done      │ 12/12             │
+  │       Land the Three CI-Blocked do-not-me… │ (f87d687b) │ ✅ done                            │ done      │ 14/14             │
+  │       Land the Twelve Review-Blocked do-n… │ (c0b0c31f) │ ✅ done                            │ done      │ 11/11             │
+  │       Land the k8s do-not-merge Restateme… │ (dd84a2e2) │ ✅ done                            │ done      │ 15/15             │
+  │       PRs with the do-not-merge Label Can… │ —          │ ✅ done                            │ done      │ 14/14             │
+  │       Produce the SC7 Evidence for the do… │ (a674a64a) │ ✅ done                            │ done      │ 12/12             │
+  │       Repair a Red CI Run With a Bot, Not… │ (6a910c09) │ ✅ done · aborted                  │ planning  │ 0/15              │
+  │       Repair the do-not-merge Gate Across… │ (e47584dc) │ ✅ done                            │ done      │ 13/13             │
+  │       Restate the do-not-merge Contract i… │ (75c5e3bb) │ ✅ done                            │ done      │ 15/15             │
+  │       Restate the do-not-merge Contract i… │ (31747dbf) │ ✅ done                            │ done      │ 14/14             │
+  │       Restate the do-not-merge Contract i… │ (6c9a6ab1) │ ✅ done                            │ done      │ 18/18             │
+  │       Restate the do-not-merge Contract i… │ —          │ ✅ done · aborted                  │ —         │ 0/19              │
+  │       Restate the do-not-merge Contract i… │ (f3036cc3) │ ✅ done                            │ done      │ 18/18             │
+  │       Restate the do-not-merge Contract i… │ —          │ ✅ done                            │ done      │ 15/15             │
+  │       Restate the do-not-merge Contract i… │ (7eadd251) │ ✅ done                            │ done      │ 15/15             │
+  │       Sustain 30 Consecutive Days of Bot-… │ (23ddc777) │ ✅ done · aborted                  │ execution │ 2/12              │
+  │       The do-not-merge Gate Does Not Stop… │ (15b0010f) │ ✅ done                            │ done      │ 9/9               │
+  │       Triage Every Open bborbe PR With a … │ (c4fa7c54) │ ✅ done                            │ done      │ 15/15             │
+  │       check-do-not-merge Never Detects th… │ (aaa3047d) │ ✅ done                            │ done      │ 10/10             │
+  │       tts-mcp's Required test Check Can N… │ (8bfe97db) │ ✅ done                            │ done      │ 10/10             │
+  │    An Observed Defect Reaches human_revie… │ —          │ 🚀 ready-to-start                  │ —         │ 0/5               │
+  │       Break An Observed Defect Reaches hu… │ (b1b643ee) │ ✅ done                            │ done      │ 21/21             │
+  │       Define the Defect Intake Surface     │ —          │ ⌛ waiting-approval                │ todo      │ 7/10              │
+  │       Diagnosis Still Requires the Operat… │ —          │ ⌛ waiting-approval                │ todo      │ 2/11              │
+  │       Emit the Approved-Spec Draft PR the… │ —          │ ⌛ waiting-approval                │ todo      │ 2/11              │
+  │       Intake Needs a Manual Dispatch to R… │ —          │ ⌛ waiting-approval                │ todo      │ 2/13              │
+  │       Measure the Defect Path Against the… │ —          │ ⌛ waiting-approval                │ todo      │ 1/10              │
+  │       Prove the Defect Path End-to-End on… │ —          │ ⌛ waiting-approval                │ todo      │ 1/14              │
+  │       The Spec Pipeline Only Accepts Buil… │ (3d776ed8) │ ✅ done · aborted                  │ todo      │ 2/13              │
+  │    Auto-Fix Failed bborbe GitHub Builds    │ —          │ —                                  │ —         │ 3/6               │
+  │       Auto-Close Build Tasks on Green      │ (627b6580) │ ✅ done                            │ done      │ 18/18             │
+  │       Build Fixer Agent Pattern B Job      │ (627b6580) │ ✅ done                            │ done      │ 14/14             │
+  │       Fix Build-Fix Agent Sarama Send-on-… │ (a1bdf7dd) │ ✅ done                            │ done      │ 18/18             │
+  │       Fix Build-Fix Chain Emission Missin… │ (d8973ed3) │ ✅ done                            │ done      │ 15/15             │
+  │       Fix Build-Fix Chain Task Title Reje… │ (dd311af6) │ ✅ done                            │ done      │ 16/16             │
+  │       Fix Build-Fix Planning - Model Pros… │ (6044c29f) │ ✅ done                            │ done      │ 14/14             │
+  │       Human-readable Filenames for Vault … │ —          │ ✅ done                            │ done      │ 30/30             │
+  │       Watcher Assigns Build-Failure Tasks… │ —          │ ✅ done · aborted                  │ —         │ 2/18              │
+  │    Agent Egress Is Default-Deny            │ —          │ ✅ done                            │ —         │ 12/12             │
+  │       Agent Chart Renders Sandbox Namespa… │ (fad00826) │ ✅ done                            │ done      │ 16/16             │
+  │       Agent Git Subprocesses Strip the Pr… │ (cecff0ec) │ ✅ done                            │ done      │ 15/15             │
+  │       Agent Internet Egress Goes Only Thr… │ (a08dd905) │ ✅ done                            │ done      │ 17/17             │
+  │       Agent Jobs Run in a Sandbox Namespa… │ (b02a744e) │ ✅ done                            │ done      │ 19/19             │
+  │       Agent Metrics Pushed to the Short p… │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Agent Network Policies Leave Every … │ (0b8fa15c) │ ✅ done                            │ done      │ 15/15             │
+  │       Agent Sandbox Egress Default-Deny I… │ (8f3da834) │ ✅ done                            │ done      │ 12/12             │
+  │       Build a Non-LLM Probe Job That Runs… │ (9ddae395) │ ✅ done                            │ done      │ 16/16             │
+  │       Build a sentry-sandbox Probe Config… │ (6f3d9b61) │ ✅ done                            │ done      │ 12/12             │
+  │       Claude Child Processes in Agents Do… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Close Kafka 9094 With a Local Traff… │ (4e2f68ce) │ ✅ done                            │ done      │ 23/23             │
+  │       Close the Port-9090 Peer Gap That A… │ (46207878) │ ✅ done                            │ done      │ 11/11             │
+  │       Close the quant-default Service Re-… │ —          │ ✅ done · aborted                  │ planning  │ 0/10              │
+  │       Cover Short Service Names in NO_PRO… │ (7b16445b) │ ✅ done                            │ done      │ 9/9               │
+  │       Dev and prod sentry-sandbox egress … │ (98fd68ef) │ ✅ done                            │ done      │ 8/8               │
+  │       Diagnose Why the Sandbox Egress Pro… │ (f79e14d3) │ ✅ done                            │ done      │ 14/14             │
+  │       Diagnose openclaw-ingress Failure a… │ (e442a07f) │ ✅ done                            │ done      │ 16/16             │
+  │       Document That K3s Enforces NetworkP… │ (af126b9b) │ ✅ done                            │ done      │ 12/12             │
+  │       Egress Matrix Lists Every Agent Typ… │ (fbd3b2e9) │ ✅ done                            │ done      │ 14/14             │
+  │       Executor Spawns Agent Jobs Into the… │ (100f5d70) │ ✅ done                            │ done      │ 14/14             │
+  │       Fix SC-Assistant NetworkPolicy Ingr… │ (2b43d664) │ ✅ done                            │ done      │ 19/19             │
+  │       Kafka Brokers Are Absent From Their… │ (9fdf05a7) │ ✅ done                            │ done      │ 14/14             │
+  │       Move the sun Agent Fleet Out of a2a… │ (bd5bd4ee) │ ✅ done                            │ done      │ 13/13             │
+  │       Prove Cross-Domain Egress Denial Fr… │ (320241a0) │ ✅ done                            │ done      │ 13/13             │
+  │       Prove Kafka and Proxy Egress From S… │ (71f6a445) │ ✅ done                            │ done      │ 18/18             │
+  │       Prove a Non-Allowlisted Destination… │ (eabc4da6) │ ✅ done                            │ done      │ 17/17             │
+  │       Prove the Egress Proxy on Nuke Prod  │ (eabc4da6) │ ✅ done                            │ done      │ 11/11             │
+  │       Rebase and Merge the Egress Proxy e… │ (7a7b692a) │ ✅ done · aborted                  │ execution │ 7/14              │
+  │       Reintroduce an Ingress Policy for t… │ (59edc145) │ ✅ done                            │ done      │ 16/16             │
+  │       Remove the Five Endpoint-Less Servi… │ (9d003aef) │ ✅ done                            │ done      │ 16/16             │
+  │       Restore Sandbox Egress Policies on … │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Restrict Strimzi Kafka Listeners to… │ (8f7e7814) │ ✅ done                            │ done      │ 20/20             │
+  │       Revert Dev and Sun Agents to the Un… │ —          │ ✅ done · aborted                  │ todo      │ 0/11              │
+  │       Revert nuke dev agents to the unsan… │ —          │ ✅ done · aborted                  │ todo      │ 0/10              │
+  │       Sandbox Egress Is Scoped per Agent … │ (0af63e19) │ ✅ done                            │ done      │ 10/10             │
+  │       Sentry Analyzer Jobs Cannot Reach b… │ (01dbc7ed) │ ✅ done                            │ done      │ 15/15             │
+  │       The Dark-Factory Agent Still Strips… │ (37f92c6b) │ ✅ done                            │ done      │ 12/12             │
+  │       The Dev PR Reviewer Publishes Tasks… │ —          │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │    Run Every Worker Agent Inside the Clus… │ —          │ —                                  │ —         │ 0/4               │
+  │       Deploy the Vault Grooming Agent on … │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       Redact API Tokens From Agent Subpro… │ —          │ ✅ done                            │ done      │ 11/11             │
+  │    A2A k8s Workers Are Prod-Ready          │ —          │ 🔄 progressing                     │ —         │ 2/4               │
+  │       A Cluster Pod's Vault-Write Helper … │ (706a4004) │ ✅ done                            │ done      │ 14/14             │
+  │       A Cold k8s A2A Worker Cannot Finish… │ —          │ —                                  │ todo      │ 10/14             │
+  │       A Retried k8s Create Spawns a Secon… │ (a5dca4b9) │ ✅ done                            │ done      │ 13/13             │
+  │       A Sun A2A Worker's Turn Lands Nothi… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       Controller-Created cc-private-claud… │ (c3c0ae25) │ ✅ done                            │ done      │ 10/10             │
+  │       Document That a k8s A2A Worker's St… │ —          │ ⌛ waiting-approval                │ todo      │ 0/4               │
+  │       Give the claude-interactive Pod a V… │ (de385d71) │ ✅ done                            │ done      │ 18/18             │
+  │       Persist Each A2A Worker's Token So … │ (6a36a90e) │ ✅ done                            │ done      │ 14/14             │
+  │       Publish an agent-claude Image at Ea… │ (b43007b4) │ ✅ done                            │ done      │ 12/12             │
+  │       Route the Implementation Backlog to… │ (5bb63dc6) │ ✅ done                            │ done      │ 11/11             │
+  │       The Agent Chart Cannot Move Past 0.… │ (f4b618cd) │ ✅ done                            │ done      │ 15/15             │
+  │       The Sun Prod Build Dies Permanently… │ —          │ ⌛ waiting-approval                │ todo      │ 7/11              │
+  │       The claude-headless Cluster Pod Can… │ (4ff5a6fb) │ ✅ done                            │ done      │ 16/16             │
+  │       Verify the Current agent-claude Rel… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       bborbe-agent-claude's Lint Fails on… │ (1d0f676d) │ ✅ done                            │ done      │ 12/12             │
+  │    A Wrapper-Spawned Session Is Drivable … │ —          │ ✅ done                            │ —         │ 4/4               │
+  │       Carry wrapper_session_id Through th… │ (2090f72f) │ ✅ done                            │ done      │ 14/14             │
+  │       Run a Multi-Command Sequence to Com… │ (510025c7) │ ✅ done                            │ done      │ 15/15             │
+  │       The Attention Watcher Answers a Rou… │ (f84543ac) │ ✅ done                            │ done      │ 15/15             │
+  │       Wire claude-wrapper Into the Headle… │ (2890983b) │ ✅ done                            │ done      │ 20/20             │
+  │    The Weekly Trading Rebuild Runs on the… │ —          │ ✅ done                            │ —         │ 5/5               │
+  │       A Manual Image Build Runs as a Buil… │ (4662dc10) │ ✅ done                            │ done      │ 15/15             │
+  │       Add a BUILD_TARGET Arm to the Tradi… │ (8903c9b2) │ ✅ done                            │ done      │ 13/13             │
+  │       Build the Monorepo BuildKit Job Bui… │ (bfae44b9) │ ✅ done                            │ done      │ 13/13             │
+  │       Close the Guard's Dockerignore and … │ —          │ ⌛ waiting-approval                │ todo      │ 0/14              │
+  │       Cut the 2026W45 Rebuild Over to Job… │ (aefeab92) │ ✅ done                            │ done      │ 17/17             │
+  │       Dry-Run the Job Rebuild Against the… │ (a997020c) │ ✅ done · aborted                  │ execution │ 14/18             │
+  │       Give the BuildKit Clone Step a Git … │ (fbed2a9b) │ ✅ done                            │ done      │ 16/16             │
+  │       Harden the BuildKit Bootstrap Scrip… │ (c79ba609) │ ✅ done                            │ done      │ 16/16             │
+  │       Make a Finished Build Run Observabl… │ (2915d533) │ ✅ done                            │ done      │ 21/21             │
+  │       Make the Dockerfile COPY Guard Pass… │ (043b321f) │ ✅ done                            │ done      │ 20/20             │
+  │       Make the Job Fan-Out Respect Base-I… │ (6040cad5) │ ✅ done                            │ done      │ 14/14             │
+  │       Move the Trading Builds to Module M… │ (326701fe) │ ✅ done                            │ done      │ 18/18             │
+  │       Pass the Registry and Branch Build … │ (20b16848) │ ✅ done                            │ done      │ 17/17             │
+  │       Probe One Service Through a BuildKi… │ (cef7243e) │ ✅ done                            │ done      │ 13/13             │
+  │       Prove a Wedged Build Dies Inside It… │ (94a1d7e1) │ ✅ done                            │ done      │ 16/16             │
+  │       Prove core-backtest-agent Builds Th… │ (f77689db) │ ✅ done                            │ done      │ 13/13             │
+  │       Prove the Host Stays Idle During a … │ (7b667cf5) │ ✅ done                            │ done      │ 17/17             │
+  │       Prove the Push Credential Appears N… │ (4f871af4) │ ✅ done                            │ done      │ 17/17             │
+  │       Stop frontend-data's Dockerignore F… │ (7c3c0829) │ ✅ done                            │ done      │ 15/15             │
+  │       Teach the Dockerfile COPY Guard to … │ (eb612fc8) │ ✅ done                            │ done      │ 20/20             │
+  │       Wire a Git Credential Into the Job … │ —          │ ✅ done · aborted                  │ planning  │ 0/13              │
+  │    Nuke Workers Stay Under Their Pod Ceil… │ —          │ 🔄 progressing                     │ —         │ 0/2               │
+  │       Add Per-Symbol Observability and Re… │ —          │ 🔄 progressing                     │ execution │ 0/12              │
+  │       Build a Per-Broker Candle Service T… │ —          │ 🔄 progressing                     │ execution │ 0/14              │
+  │       Candle Command Handler Writes Each … │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Candle Partitioner Merge Drops Form… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/17              │
+  │       Clear the Nuke Dev Pending Queue — … │ (6fd77fa6) │ ✅ done                            │ done      │ 15/15             │
+  │       Consolidate the 118 Per-Symbol fron… │ (de7362ad) │ ✅ done · aborted                  │ execution │ 6/16              │
+  │       Delete the 118 Legacy frontend-cand… │ —          │ —                                  │ todo      │ 0/12              │
+  │       Delete the Per-Symbol Candle Topics… │ —          │ ⏸️ blocked/upstream                 │ planning  │ 0/14              │
+  │       Design a Storage Architecture That … │ (0d362547) │ ✅ done                            │ done      │ 17/17             │
+  │       Dev Cluster Cannot Schedule — 76 Po… │ (5bd04574) │ ✅ done                            │ done      │ 14/14             │
+  │       Drop the mt5 Tick Requester's Redun… │ (6f77e811) │ ✅ done                            │ done      │ 14/14             │
+  │       Dual-Publish Per-Broker Candle Even… │ —          │ 🔄 progressing                     │ execution │ 0/12              │
+  │       Enable AMD AVIC on the Nuke Host to… │ —          │ —                                  │ todo      │ 3/18              │
+  │       Group the Candle Command and Fronte… │ (103ae3c8) │ ⏸️ deferred                         │ execution │ 2/15              │
+  │       Measure Pod Baselines and List Jobs… │ (ea2fcc91) │ ✅ done                            │ done      │ 8/8               │
+  │       Move Frontend, Gateway, MCP Replay … │ —          │ ⏸️ blocked/upstream                 │ planning  │ 0/12              │
+  │       Reduce Pod Density on nuke-k3s-prod… │ (0c21ec41) │ ✅ done · aborted                  │ planning  │ 0/23              │
+  │       Reduce nuke-prod Pod Count by Conso… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/14              │
+  │       Revert the Per-Broker Candle-Handle… │ (0fc953bc) │ ✅ done                            │ done      │ 16/16             │
+  │       Review candle-command-handler per-s… │ —          │ ⌛ waiting-approval                │ todo      │ 3/4               │
+  │       Right-Size Dev Handler Memory Reque… │ (4e19a0d5) │ ✅ done                            │ done      │ 14/14             │
+  │       Run One Signal Finder per Broker on… │ —          │ ⏸️ blocked/upstream                 │ planning  │ 0/14              │
+  │       Ship the Four Candle Defect Fixes B… │ —          │ ⏸️ blocked/upstream                 │ planning  │ 0/14              │
+  │       Snapshot Every Candle Store Nightly… │ —          │ ⏸️ blocked/upstream                 │ planning  │ 0/12              │
+  │       Stand up per-env monitoring on new … │ —          │ ✅ done                            │ done      │ 6/6               │
+  │    Running Dark-Factory on k8s Is as Easy… │ —          │ ✅ done                            │ —         │ 4/4               │
+  │       A Worker Parented to a Topic Manage… │ (b121dd7a) │ ✅ done                            │ done      │ 10/10             │
+  │       Builds Are Not Tied to the Mac       │ (f84e3161) │ ✅ done                            │ done      │ 11/11             │
+  │       Confirm Both Ship Routes Stay Docum… │ (9927231c) │ ✅ done                            │ done      │ 8/8               │
+  │       Confirm Every Success Criterion Car… │ (140dbcae) │ ✅ done                            │ done      │ 9/9               │
+  │       Dark-Factory Runs on a Branch With … │ —          │ ⌛ waiting-approval                │ todo      │ 0/7               │
+  │       Every Dark-Factory Agent Job Fails … │ (e8046c4d) │ ✅ done                            │ done      │ 12/12             │
+  │       Exercise the nuke dev Dark-Factory … │ (16f0cbe8) │ ✅ done                            │ done      │ 14/14             │
+  │       Find Easily Freed Capacity on the N… │ (e24c6f5e) │ ✅ done                            │ done      │ 13/13             │
+  │       Find Where the Nuke Host's 50 Perce… │ (2a364746) │ ✅ done                            │ done      │ 12/12             │
+  │       Find Why the Mac's Idle Load Reads … │ (ec0e0a54) │ ✅ done                            │ done      │ 11/11             │
+  │       Measure Free Capacity on the Nuke D… │ (4b4875d3) │ ✅ done                            │ done      │ 14/14             │
+  │       Move Builds and Worker Load Off the… │ (bd881750) │ ✅ done                            │ done      │ 18/18             │
+  │       Observe One Prod Dark-Factory Job o… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       One Command Runs a Dark-Factory Spe… │ (37f92c6b) │ ✅ done                            │ done      │ 16/16             │
+  │       Point the Cluster Route's Eligibili… │ (b0cb2b59) │ ✅ done                            │ done      │ 13/13             │
+  │       Promote the Fixed Dark-Factory Agen… │ (61a2411e) │ ✅ done                            │ done      │ 12/12             │
+  │       Prove a Go Build Compiles and Runs … │ (21b5ea82) │ ✅ done                            │ done      │ 5/5               │
+  │       Right-Size the nuke Prod and Dev Wo… │ (7769254c) │ ✅ done · aborted                  │ execution │ 1/18              │
+  │       Rotate the AnthropicAuthToken the D… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       Stop the Dark-Factory Agent Printin… │ (fd09ed99) │ ✅ done                            │ done      │ 15/15             │
+  │       Sun's Dark-Factory Agent Claims Tas… │ —          │ ✅ done · aborted                  │ todo      │ 0/15              │
+  │       Sweep Counts Every Checked Spec as … │ (b79b0522) │ ✅ done                            │ done      │ 13/13             │
+  │       Take the Third SC4 Load Sample at 2… │ (9ee354ea) │ ✅ done                            │ done      │ 15/15             │
+  │       The Cluster Dark-Factory Agent Cann… │ (df33a080) │ ✅ done                            │ done      │ 12/12             │
+  │       The Cluster Dark-Factory Agent Hand… │ (5b5dfeda) │ ✅ done                            │ done      │ 16/16             │
+  │       The Cluster Dark-Factory Agent's ai… │ —          │ ✅ done · aborted                  │ todo      │ 0/11              │
+  │       The Dark-Factory Agent Pushes Witho… │ (37f92c6b) │ ✅ done                            │ done      │ 10/10             │
+  │       The Dark-Factory Agent Reports Plan… │ (57c9c4c9) │ ✅ done · aborted                  │ execution │ 0/14              │
+  │       The Dark-Factory Agent's Setup Fetc… │ (c7967334) │ ✅ done                            │ done      │ 16/16             │
+  │       The nuke Prod k8s-apply Service Can… │ —          │ ⌛ waiting-approval                │ todo      │ 1/7               │
+  │       The nuke agent Prod Apply Cannot Pa… │ —          │ ✅ done · aborted                  │ todo      │ 0/8               │
+  │       Unfold the Task-Tool CHANGELOG Bull… │ —          │ ⌛ waiting-approval                │ todo      │ 8/9               │
+  │       Verify the Dark Factory Cluster Age… │ (0563543f) │ ✅ done                            │ done      │ 15/15             │
+  │       `make apply` in nuke-dark-factory C… │ (0607737f) │ ✅ done                            │ done      │ 9/9               │
+  │    Sun On-Demand k3s Cluster Adds Agent W… │ —          │ ✅ done                            │ —         │ 7/7               │
+  │       Agent Tasks Carry a cluster Field S… │ (0c0f15e6) │ ✅ done                            │ done      │ 17/17             │
+  │       Analyse Where sun's Update-Go Jobs … │ (2b590647) │ ✅ done                            │ done      │ 11/11             │
+  │       Count Agent Task Runs on sun-k3s on… │ (9251d4de) │ ✅ done                            │ done      │ 16/16             │
+  │       Create the sun Deploy Repo Mirrorin… │ (693889d7) │ ✅ done                            │ done      │ 18/18             │
+  │       Create the sun-k3s VMs and Their Bu… │ (f56616ce) │ ✅ done                            │ done      │ 18/18             │
+  │       Deploy the A2A Worker Controller on… │ (87b562b9) │ ✅ done                            │ done      │ 19/19             │
+  │       Give sun-k3s Agents the Prod GitHub… │ (f1e852a4) │ ✅ done                            │ done      │ 11/11             │
+  │       Give sun-k3s Ingress, DNS and Wildc… │ (957138a1) │ ✅ done                            │ done      │ 15/15             │
+  │       Install k3s on the sun-k3s Cluster … │ (32787763) │ ✅ done                            │ done      │ 13/13             │
+  │       Install the Agent Operator on sun-k… │ (e8d4db0e) │ ✅ done                            │ done      │ 20/20             │
+  │       Load-Test Six Workers and Cold-Boot… │ (a6844b01) │ ✅ done                            │ done      │ 11/11             │
+  │       Make the Model Router Reachable Fro… │ (bf01365b) │ ✅ done                            │ done      │ 9/9               │
+  │       Push sun-k3s claude-code-router Met… │ (ab266a1a) │ ✅ done                            │ done      │ 13/13             │
+  │       Route Nuke Prod Update-Go Tasks to … │ —          │ —                                  │ todo      │ 0/12              │
+  │       Route the sun-k3s Subnet to Quant K… │ (cd078fc1) │ ✅ done                            │ done      │ 15/15             │
+  │       Run One Real Agent Task on sun-k3s … │ (870d3e08) │ ✅ done                            │ done      │ 12/12             │
+  │       Run a Docker Registry on sun-k3s fo… │ (3fcf84f7) │ ✅ done                            │ done      │ 14/14             │
+  │       Run a Single-Node Kafka on sun-k3s … │ (67193cf1) │ ✅ done                            │ done      │ 16/16             │
+  │       Switch Nuke Prod Agents to DeepSeek… │ (e81dc8d1) │ ✅ done                            │ done      │ 11/11             │
+  │       agent-task-executor Reconcile Pass … │ (f6432fe0) │ ✅ done                            │ done      │ 12/12             │
+  │       agent-task-executor Reconcile Reads… │ —          │ ✅ done · aborted                  │ todo      │ 0/7               │
+  │       agent-task-executor Reconcile Redri… │ (193b99fa) │ ✅ done                            │ done      │ 14/14             │
+  │       sun agent-task-executor Kafka Path … │ —          │ ✅ done · aborted                  │ todo      │ 0/8               │
+  │       sun-loadtest-1                       │ (654a5bae) │ ✅ done · aborted                  │ execution │ 0/2               │
+  │       sun-loadtest-2                       │ (d68f2806) │ ✅ done · aborted                  │ execution │ 0/2               │
+  │       sun-loadtest-3                       │ (ba1e5dc7) │ ✅ done · aborted                  │ execution │ 0/2               │
+  │       sun-loadtest-4                       │ (6b3ee895) │ ✅ done · aborted                  │ execution │ 0/2               │
+  │       sun-loadtest-5                       │ (37c114cb) │ ✅ done · aborted                  │ execution │ 0/2               │
+  │    Agent Tasks Are Scheduled Across Clust… │ —          │ ✅ done                            │ —         │ 4/4               │
+  │       A Cluster Assigner Moves Unpublishe… │ (20b97b69) │ ✅ done · aborted                  │ execution │ 4/21              │
+  │       A Cluster Powering Off Mid-Run Lose… │ (b7f94d2e) │ ✅ done · aborted                  │ execution │ 4/23              │
+  │       A Published pr-review Task Never Re… │ —          │ ✅ done · aborted                  │ planning  │ 0/6               │
+  │       Agent Task Types Re-Run Safely Afte… │ (5e0c73e7) │ ✅ done                            │ done      │ 12/12             │
+  │       Agent-Task-Executor Survives a Fail… │ —          │ ✅ done · aborted                  │ todo      │ 0/11              │
+  │       Design the Typed Vault REST API      │ (790b7f22) │ ✅ done                            │ done      │ 14/14             │
+  │       Prove git-rest and GitHub Accept Le… │ (7a6ee44d) │ ✅ done                            │ done      │ 13/13             │
+  │       Sun k3s Delivers Config CRD Watch E… │ (a78cc20b) │ ✅ done · aborted                  │ execution │ 0/9               │
+  │       Why the Update-Go Release Create-Ta… │ (758ce346) │ ✅ done                            │ done      │ 7/7               │
+  │       agent Chart Rolls Pods When Their S… │ —          │ —                                  │ todo      │ 0/7               │
+  │       agent-task-executor Applies a Chang… │ (3171f16f) │ ✅ done                            │ done      │ 7/7               │
+  │       agent-task-executor Concurrency Cap… │ (4ca0e0f8) │ ✅ done                            │ done      │ 12/12             │
+  │       agent-task-executor Config Can Mark… │ —          │ ✅ done · aborted                  │ todo      │ 0/12              │
+  │       agent-task-executor Deferred Respaw… │ (aac9d221) │ ✅ done                            │ done      │ 11/11             │
+  │       agent-task-executor Rebuilds Its Ta… │ (e91829a5) │ ✅ done                            │ done      │ 21/21             │
+  │       agent-task-executor Survives a Task… │ (b3e6532c) │ ✅ done                            │ done      │ 13/13             │
+  │       bborbe agent Chart Config CRD Carri… │ (2535b8f7) │ ✅ done                            │ done      │ 9/9               │
+  │       bborbe agent Chart Renders rerunOnL… │ (5a0c0b40) │ ✅ done                            │ done      │ 10/10             │
+  │       git-rest Serves Leased Claim Ref Op… │ (a3548b49) │ ✅ done                            │ done      │ 22/22             │
+  │       github-dark-factory-agent Adopts an… │ (aaac9485) │ ✅ done                            │ done      │ 13/13             │
+  │       github-update-go-agent Opens Its PR… │ (314e2c81) │ ✅ done                            │ done      │ 15/15             │
+  │    Every Agent Stage Pool Reports Its Que… │ —          │ 🚀 ready-to-start                  │ —         │ 0/4               │
+  │       Add Observability Metrics for Agent… │ —          │ —                                  │ todo      │ 0/3               │
+  │    sun Powers On When the Prod Backlog Ne… │ —          │ 🚀 ready-to-start                  │ —         │ 0/4               │
+  │       Nuke Dev and Prod Run Everything an… │ (f1060bc4) │ ⏸️ blocked/hold                     │ execution │ 14/21             │
+  │       Prove sun's Agent Controller Surviv… │ —          │ ⌛ waiting-approval                │ todo      │ 0/12              │
+  │       Prove sun-k3s Survives an Unattende… │ —          │ —                                  │ todo      │ 0/5               │
+  │    Zero Open Agent Tasks                   │ —          │ ✅ done                            │ —         │ 5/5               │
+  │       277 prod Records Are Tagged for a D… │ —          │ ✅ done                            │ done      │ 9/9               │
+  │       A Claimed github-update-go Job Cras… │ (f47d285c) │ ✅ done                            │ done      │ 16/16             │
+  │       A Duplicated task_identifier Makes … │ (74e6bc93) │ ✅ done                            │ done      │ 12/12             │
+  │       A Failed Agent Task Stays Claimable… │ (21c0b4ff) │ ✅ done                            │ done      │ 15/15             │
+  │       A Fork PR Record Names the Fork Own… │ (07a194ca) │ ✅ done                            │ done      │ 20/20             │
+  │       A Job Spawned for a Record With No … │ (08301a98) │ ✅ done                            │ done      │ 12/12             │
+  │       A Published Create Command Sometime… │ (e938a127) │ ✅ done                            │ execution │ 24/24             │
+  │       A Release Record Reaches completed … │ (e6c8f793) │ ✅ done                            │ done      │ 12/12             │
+  │       A pr-review Job That Exceeds Its De… │ (0bdbe114) │ ✅ done                            │ done      │ 14/14             │
+  │       Add the Labels the Four-State Split… │ (dc3bdd50) │ ✅ done                            │ done      │ 13/13             │
+  │       Agents Strand Tasks Forever Because… │ (6387f465) │ ✅ done                            │ done      │ 16/16             │
+  │       An llm Record Is Never Evaluated Wh… │ —          │ ✅ done · aborted                  │ todo      │ 0/12              │
+  │       Audit Every Agent Type's Open Popul… │ (fb07fb30) │ ✅ done                            │ done      │ 12/12             │
+  │       Build the Four-State Panels on the … │ (2ee59eab) │ ✅ done                            │ done      │ 11/11             │
+  │       Claim or Retire the Unclaimed Agent… │ (392300b1) │ ✅ done                            │ done      │ 11/11             │
+  │       Close Out Every Linked Task With a … │ (8d7864dd) │ ✅ done                            │ done      │ 16/16             │
+  │       Close a pr-review Record When Its V… │ (9aeaa47b) │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       Close the 83 Merged-PR Agent Records │ (ff7c8268) │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │       Confirm a Real Fork PR's Record Car… │ —          │ ✅ done · aborted                  │ todo      │ 0/8               │
+  │       Deploy agent-task-controller v0.22.… │ (d7340bd5) │ ✅ done · aborted                  │ execution │ 2/13              │
+  │       Deploy the Retry Counter and Escala… │ (cac1c288) │ ✅ done                            │ done      │ 10/10             │
+  │       Diagnose Why Agent Tasks Stall Betw… │ (e9e678cc) │ ✅ done                            │ done      │ 13/13             │
+  │       Dispatchable Prod Records Sit Uncla… │ —          │ ✅ done                            │ done      │ 12/12             │
+  │       Dispose the Non-Running Remainder S… │ (42e1db23) │ ✅ done                            │ done      │ 17/17             │
+  │       Disposition the 55 Unticked Rows on… │ (ebdf2deb) │ ✅ done                            │ done      │ 17/17             │
+  │       Drain the Prod Agent Board to Zero … │ (7b4fd17c) │ ✅ done                            │ done      │ 13/13             │
+  │       Eight Agent-Assigned Records Are Re… │ (30410c29) │ ✅ done                            │ done      │ 14/14             │
+  │       Fix the Hub and Flow Pages for the … │ (fed12cc4) │ ✅ done                            │ done      │ 18/18             │
+  │       Fix the Hub and Flow Pages for the … │ —          │ ✅ done · aborted                  │ todo      │ 0/16              │
+  │       Fix the Hub and Flow Pages for the … │ —          │ ✅ done · aborted                  │ todo      │ 0/16              │
+  │       Give the Agent Controller a Termina… │ —          │ ✅ done · aborted                  │ planning  │ 0/11              │
+  │       Make human_review Dispatchable for … │ (f5015072) │ ✅ done                            │ done      │ 14/14             │
+  │       Measure and Fix the task_type Vocab… │ —          │ ⌛ waiting-approval                │ todo      │ 0/14              │
+  │       Merge the Mechanical Pull Request B… │ (ea217758) │ ✅ done · aborted                  │ planning  │ 0/16              │
+  │       Observe One Classified Capped Recor… │ —          │ ✅ done · aborted                  │ planning  │ 0/10              │
+  │       Observe a Real Resume Refusal on a … │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       Observe the Prod PR Reviewer Denyin… │ (6760c642) │ ✅ done                            │ done      │ 8/8               │
+  │       Observe the Retired retry_count Sta… │ —          │ ✅ done · aborted                  │ planning  │ 0/6               │
+  │       Observe the Trigger Cap Escalation … │ (cac1c288) │ ✅ done · aborted                  │ planning  │ 2/11              │
+  │       Probe Records Have No Terminal Path… │ (50a7121b) │ ✅ done                            │ done      │ 11/11             │
+  │       Prod pr-review Posting Fails at pr_… │ (2c611256) │ ✅ done                            │ done      │ 13/13             │
+  │       Re-Measure the pr-review Leftover P… │ —          │ ✅ done · aborted                  │ todo      │ 0/8               │
+  │       Recurring Instances Are Never Creat… │ —          │ ✅ done · aborted                  │ todo      │ 0/11              │
+  │       Redrive Streak Has No Release Path … │ (5c4b3cd7) │ ✅ done                            │ done      │ 17/17             │
+  │       Remove the Dead retry_count Writer … │ (df4f9c07) │ ✅ done                            │ done      │ 18/18             │
+  │       Repoint the Loop Closers at private… │ —          │ ✅ done                            │ done      │ 12/12             │
+  │       Resolve the Agent Records Whose Rep… │ —          │ ✅ done                            │ done      │ 10/10             │
+  │       Roll the Retired retry_count Out to… │ —          │ ✅ done · aborted                  │ planning  │ 0/6               │
+  │       Suppress Duplicate Update-Go Emissi… │ (4cf6110b) │ ✅ done                            │ done      │ 6/6               │
+  │       The Agent task_type Vocabulary Is I… │ —          │ ✅ done · aborted                  │ planning  │ 0/26              │
+  │       The Executor Never Writes current_j… │ —          │ ✅ done · aborted                  │ todo      │ 0/12              │
+  │       The Executor Never Writes current_j… │ (5414e990) │ ✅ done                            │ done      │ 13/13             │
+  │       The Open Agent Tasks Dashboard Coun… │ (24541a4d) │ ✅ done                            │ done      │ 16/16             │
+  │       The Personal Task Controller Writes… │ —          │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │       The Phase Vocabulary Diverges Betwe… │ —          │ ✅ done · aborted                  │ planning  │ 0/19              │
+  │       The Reconcile Filter Refuses Two Re… │ (b6e447e4) │ ✅ done                            │ done      │ 17/17             │
+  │       The Reconcile Floor Abandons Record… │ (6ca9c14a) │ ✅ done                            │ done      │ 13/13             │
+  │       The retry_count Contract Is Broken … │ (124a9894) │ ✅ done                            │ done      │ 17/17             │
+  │       Trust the GitHub Actions Bot on the… │ (a7da936f) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain     │ (65d79ed4) │ ✅ done                            │ done      │ 13/13             │
+  │       Watch the Prod Agent Board Drain - … │ (198e22bf) │ ✅ done                            │ done      │ —                 │
+  │       Watch the Prod Agent Board Drain - … │ —          │ ✅ done · aborted                  │ done      │ —                 │
+  │       Watch the Prod Agent Board Drain - … │ —          │ ✅ done · aborted                  │ done      │ —                 │
+  │       Watch the Prod Agent Board Drain - … │ —          │ ✅ done · aborted                  │ done      │ —                 │
+  │       Watch the Prod Agent Board Drain - … │ (f2db2d06) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (f02c2c42) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (c8e0bd8b) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (9dea1379) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (91cd0eef) │ ✅ done                            │ done      │ 16/16             │
+  │       github-releaser ai_review Closes a … │ (31d335a5) │ ✅ done                            │ done      │ 11/11             │
+  │    Every Agent-Assigned Record Reaches a … │ —          │ 🔄 progressing                     │ —         │ 3/3               │
+  │       A Command Success Acknowledgement I… │ [0eb42d6a] │ ⌛ parked-on-unregistered-gate     │ execution │ 3/13              │
+  │       A Crash Leaves Records Untracked Wh… │ (a7112620) │ ✅ done                            │ done      │ 9/9               │
+  │       A Create-Task Is Refused Because th… │ (7b1502a7) │ ✅ done                            │ done      │ 16/16             │
+  │       A Failed recordTriggerSpawn Leaves … │ (a24f66a7) │ ✅ done                            │ done      │ 14/14             │
+  │       A Ghost on a Human-Assigned Record … │ (354ca129) │ ⌛ waiting-external                │ execution │ 2/13              │
+  │       A Headless Worker Finishes Its Turn… │ (cfc4632d) │ ✅ done                            │ done      │ 12/12             │
+  │       A Job Killed by Its Deadline Never … │ (ac4dfdeb) │ ✅ done                            │ done      │ 10/10             │
+  │       A Pin-Changing Prod Roll Is Refused… │ (b7df146a) │ ✅ done                            │ done      │ 7/7               │
+  │       A Probe Record That Parks Can Never… │ (dbe91e76) │ ✅ done                            │ done      │ 12/12             │
+  │       A Published Release Task Is Indexed… │ (f0c9ca41) │ ✅ done                            │ done      │ 15/15             │
+  │       A Re-Spawned Agent Run Keeps Its Se… │ (0890fbfc) │ ✅ done                            │ done      │ 11/11             │
+  │       A Record Absent From the Vault Loop… │ (2565791b) │ ✅ done                            │ done      │ 15/15             │
+  │       A Review Run That Dies Without Post… │ (025d4518) │ ⏸️ deferred                         │ execution │ 11/16             │
+  │       A Stuck Healthcheck Probe Is Visibl… │ (f9c97956) │ ✅ done                            │ done      │ 12/12             │
+  │       A View-Vault Divergence Leaves a Re… │ (429140a2) │ ✅ done                            │ done      │ 8/8               │
+  │       A Worker's Permission Channel Dies … │ (195c6c72) │ ✅ done                            │ done      │ 13/13             │
+  │       A current_job Naming a Job That No … │ (42b9e166) │ ✅ done                            │ done      │ 15/15             │
+  │       An Active Job Is Published Without … │ (a6ddd7ec) │ ✅ done                            │ done      │ 13/13             │
+  │       An Egress Proxy Filters an Agent's … │ (f7881e7b) │ ✅ done                            │ done      │ 7/7               │
+  │       An Empty target_vault Mints a Revie… │ (b18cd005) │ ✅ done                            │ done      │ 17/17             │
+  │       An Expired defer_date Leaves a Task… │ (04471e9a) │ ✅ done                            │ done      │ 15/15             │
+  │       Demote the Per-Event Unknown-Assign… │ (2e30de3a) │ ✅ done                            │ done      │ 11/11             │
+  │       Deploy the github-releaser Re-Plan … │ (2674da27) │ ⚠️ problem                          │ execution │ 0/7               │
+  │       Deploy the github-releaser ai_revie… │ (e0ed1151) │ ✅ done                            │ done      │ 11/11             │
+  │       Detect a Record Claimed by Two Clus… │ (344287b2) │ ✅ done                            │ done      │ 8/8               │
+  │       Dispose of the Two Legacy Assigned … │ (bfd75f86) │ ✅ done                            │ done      │ 9/9               │
+  │       Every pr-review Claim Fails With Le… │ (171627be) │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │       Give the Board-Drain Template Succe… │ (0b7d28a7) │ ✅ done                            │ done      │ 14/14             │
+  │       Give the Three Uncovered Task Types… │ —          │ ✅ done                            │ done      │ 8/8               │
+  │       Guard the Deploy Against a Declared… │ (1e6ec07e) │ ✅ done                            │ done      │ 10/10             │
+  │       Healthcheck and llm Records Read an… │ (848ad0dd) │ ✅ done                            │ done      │ 29/29             │
+  │       Hypothesis Agent Jobs Cannot Resolv… │ (8bdd62d1) │ ✅ done                            │ done      │ 15/15             │
+  │       Inject the Clock Into the pr-review… │ [053af61f] │ ⌛ waiting-on-human                │ execution │ 11/13             │
+  │       Install the pr-reviewer Job Log Cap… │ (8f54edfa) │ ✅ done                            │ done      │ 8/8               │
+  │       Make the Ghost-Claim Metric Read Bo… │ (290f520b) │ ✅ done                            │ done      │ 10/10             │
+  │       Port Moot-Test Fix Into the Watch P… │ (75881442) │ ✅ done                            │ done      │ 8/8               │
+  │       Prove No Assigned Record Stays Uncl… │ (d154f578) │ ✅ done                            │ done      │ 13/13             │
+  │       Prove a Build Failure Command Is Pu… │ (921c7b99) │ ✅ done                            │ done      │ 10/10             │
+  │       Prove the Agent Chart's Keel Policy… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/9               │
+  │       Prove the Budget-Expiry Trace With … │ (b5b2b111) │ ✅ done                            │ done      │ 12/12             │
+  │       Re-Measure the Agent-Assigned Prod … │ (acbb6973) │ ✅ done                            │ done      │ 11/11             │
+  │       Re-Probe and Dispose the Assigned-a… │ (c360cbad) │ ✅ done                            │ done      │ 11/11             │
+  │       Reconcile the Stale private-agent C… │ (49317a6f) │ ✅ done                            │ done      │ 9/9               │
+  │       Record the Pinned Baseline and Clos… │ (243dbb3c) │ ✅ done                            │ done      │ 14/14             │
+  │       Redrive Streak Refs Vanish in Bulk … │ (b206eca9) │ ✅ done                            │ done      │ 10/10             │
+  │       Resuming a Long-Lived Session Resto… │ (ecd77bea) │ ✅ done                            │ done      │ 11/11             │
+  │       Roll the vault-api claude_session_i… │ —          │ ✅ done · aborted                  │ done      │ 0/10              │
+  │       Route the Twelve Misrouted Agent Re… │ —          │ ✅ done · aborted                  │ planning  │ 0/14              │
+  │       Settle the Residual Vault-Api Accep… │ —          │ ✅ done · aborted                  │ planning  │ 0/8               │
+  │       Split the Open Agent Tasks Dashboar… │ (31f131c3) │ ✅ done                            │ done      │ 20/20             │
+  │       Sun Runs a 15-Day-Old Executor So E… │ (9d8de0b6) │ ✅ done                            │ done      │ 10/10             │
+  │       Sun Still Leaves a Stale current_jo… │ —          │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │       The Agent Chart Hardcodes keel.sh p… │ (9aaa739f) │ ✅ done                            │ done      │ 11/11             │
+  │       The Capped-Idle Sweep Only Sees Rec… │ (b1f9f478) │ ✅ done                            │ done      │ 14/14             │
+  │       The Daily Cleanup Ends Without Aski… │ (d2c82e14) │ ✅ done                            │ done      │ 18/18             │
+  │       The Drive Leg Reports Its Hand-Back… │ —          │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │       The Executor's Spawn Refusals Are S… │ (54fcdee7) │ ⏸️ deferred                         │ execution │ 12/16             │
+  │       The Freshness Guard Measures Commit… │ (1fededcd) │ 🚀 ready-to-start                  │ planning  │ 0/14              │
+  │       The Go Supervisor Writes a Spawn-On… │ (304701e1) │ ✅ done                            │ done      │ 11/11             │
+  │       The Headless Worker Liveness Harnes… │ (33ca5e7b) │ ✅ done                            │ done      │ 11/11             │
+  │       The Image Check Is Inert for Repos … │ (2597c6a4) │ ✅ done                            │ done      │ 13/13             │
+  │       The Open-Tasks Gauge Cannot Express… │ (8c4b5d1e) │ ✅ done                            │ done      │ 13/13             │
+  │       The Openclaw Executor's Container L… │ (fd27234f) │ ✅ done                            │ done      │ 12/12             │
+  │       The Post-Turn Liveness Fix Is Unver… │ (f173eccb) │ ✅ done                            │ done      │ 13/13             │
+  │       The Regression Metric Counts Post-F… │ —          │ ✅ done · aborted                  │ todo      │ 0/3               │
+  │       The Release Regression Metric Silen… │ —          │ ⌛ waiting-approval                │ todo      │ 0/6               │
+  │       The Releaser Re-Plans the Next Vers… │ (003536f9) │ ✅ done                            │ done      │ 11/11             │
+  │       The Success-Store Fallback Is Per-P… │ (9a9a4b83) │ ⚠️ problem                          │ execution │ 0/12              │
+  │       The Terminal Clear Is Gated on Proc… │ —          │ ✅ done                            │ done      │ 13/13             │
+  │       The Update-Go Agent Opens a Deps-On… │ —          │ ✅ done                            │ done      │ 11/11             │
+  │       The Update-Go Stuck Gauge Reads Zer… │ (19a20e4b) │ ✅ done                            │ done      │ 12/12             │
+  │       The Watcher's Publish Path Goes Sil… │ (d8227545) │ ✅ done                            │ done      │ 13/13             │
+  │       The Wrapper Terminates a Headless S… │ (bf5346a7) │ ✅ done                            │ done      │ 9/9               │
+  │       The Writer Freshness Guard Is Repo-… │ (00dc1601) │ 🚀 ready-to-start                  │ planning  │ 0/12              │
+  │       Triage the 26 Linked Tasks So DoD 3… │ —          │ ✅ done · aborted                  │ todo      │ 0/13              │
+  │       Vault-API Refuses a Task Patch Carr… │ (efcd4d84) │ ✅ done                            │ done      │ 11/11             │
+  │       Vault-API Refuses last_result_statu… │ (0dcef210) │ ✅ done                            │ done      │ 10/10             │
+  │       Watch the First Behind-Repo Go Rele… │ (7a6ae70b) │ ⏸️ deferred                         │ execution │ 6/14              │
+  │       Watch the Prod Agent Board Drain - … │ —          │ ✅ done · aborted                  │ done      │ 0/16              │
+  │       Watch the Prod Agent Board Drain - … │ (cd89b94e) │ ✅ done                            │ done      │ 17/17             │
+  │       Watch the Prod Agent Board Drain - … │ (42c9f7c5) │ ✅ done                            │ done      │ 17/17             │
+  │       Watch the Prod Agent Board Drain - … │ (b2ae33ba) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (f6ef2965) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (725bdff2) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (8bff22dd) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (63a01c12) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (1672a367) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (c0b074f7) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (f8d08e8d) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (98351396) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (ef16669b) │ ✅ done                            │ done      │ 16/16             │
+  │       Watch the Prod Agent Board Drain - … │ (557b19ba) │ ✅ done                            │ done      │ 16/16             │
+  │       git-rest Spawns One cat-file per Cl… │ (35810372) │ ✅ done                            │ done      │ 17/17             │
+  │       pr-reviewer Records Churn Claims an… │ (4878fdcf) │ ✅ done                            │ done      │ 14/14             │
+  │       watch-prod-agent-board-drain — Port… │ (c870e041) │ 🚀 ready-to-start                  │ planning  │ 1/19              │
+  │    GitHub Rate Limits Never Stall the Age… │ —          │ 🔄 progressing                     │ —         │ 0/5               │
+  │       A Live PR Review Is Dismissed Inste… │ (e2b986e9) │ ✅ done · aborted                  │ execution │ 2/16              │
+  │       Add GitHub API Counters to claude-i… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to github-d… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to github-d… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to github-p… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to github-r… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to github-r… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to the Go U… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to the Sent… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add GitHub API Counters to the Sun … │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Add Per-Caller GitHub API Counters … │ (43be0aec) │ ✅ done                            │ done      │ 15/15             │
+  │       Alert When a Service Is Blocked by … │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       Capture a 7-Day Window of Non-2xx G… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       Classify the 429s in a Captured Win… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       Classify the GitHub 429s the Fleet … │ (19561716) │ ✅ done                            │ done      │ 7/7               │
+  │       Confirm Sun Cluster Metrics Reachab… │ (3ac33bda) │ ✅ done                            │ done      │ 9/9               │
+  │       Emit GitHub API Counters from githu… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Emit GitHub API Counters from open-… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/13              │
+  │       Inventory Every GitHub API Caller a… │ (0ccdf348) │ ✅ done                            │ done      │ 12/12             │
+  │       Log Non-2xx GitHub Responses at Eve… │ (a6ba1e7d) │ ✅ done                            │ done      │ 13/13             │
+  │       Make Every GitHub-Calling Service B… │ —          │ ⌛ waiting-approval                │ todo      │ 0/12              │
+  │       Skip the pr-reviewer Dismiss-List R… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       The pr-reviewer Drops Reviews on Gi… │ (c2e283b0) │ ⏸️ deferred                         │ execution │ 0/15              │
+  │       Verify 24 Hours With No GitHub Rate… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │    Reduce the Resource Footprint of Deplo… │ —          │ ✅ done                            │ —         │ 5/5               │
+  │       Bound frontend-data Node Memory Exp… │ (7b4121dc) │ ✅ done                            │ done      │ 24/24             │
+  │       Bound the a2a-worker-controller A2A… │ (b6caf678) │ ✅ done                            │ done      │ 16/16             │
+  │       Bring the candle-handler Cutover Gu… │ —          │ ✅ done                            │ done      │ 7/7               │
+  │       Bump the Sun Cluster Agent Task Con… │ —          │ —                                  │ todo      │ 0/9               │
+  │       Check Whether the Two Candle Fleets… │ (14b23791) │ ✅ done                            │ done      │ 13/13             │
+  │       Classify the Persistent Store of Ev… │ (6be4d217) │ ✅ done                            │ done      │ 11/11             │
+  │       Classify the Persistent Store of Go… │ (236b1bf7) │ ✅ done                            │ done      │ 14/14             │
+  │       Close Out the Footprint Goal by Rec… │ (06e2e5dc) │ ✅ done                            │ done      │ 13/13             │
+  │       Consume Each candle-handler Topic O… │ (d4d5f4ca) │ ✅ done                            │ done      │ 15/15             │
+  │       Design the Medium Tier for the Tick… │ (60abe9fe) │ ✅ done                            │ done      │ 13/13             │
+  │       Design the Quick-Win Tier for the T… │ (b847a419) │ ✅ done                            │ done      │ 13/13             │
+  │       Design the Target Tick and Candle A… │ (5cd4d085) │ ✅ done                            │ done      │ 16/16             │
+  │       Disable Result Writing at Every Com… │ (61ae11a2) │ ✅ done                            │ done      │ 16/16             │
+  │       Drop the Retired Tick Services from… │ (d58fff9a) │ ✅ done                            │ done      │ 9/9               │
+  │       Explain the 331 MiB Memory Spike on… │ —          │ ✅ done                            │ done      │ 11/11             │
+  │       File Dark-Factory Tasks for the Hig… │ (4230c21d) │ ✅ done                            │ done      │ 12/12             │
+  │       Find CPU and Memory Savings in trad… │ (7b11bc37) │ ✅ done                            │ done      │ 7/7               │
+  │       Inventory Every Go Service Running … │ (1670c5a5) │ ✅ done                            │ done      │ 15/15             │
+  │       Lower core-expectedtrade-controller… │ (da56021e) │ ✅ done · aborted                  │ execution │ 1/16              │
+  │       Lower core-signal-finder CPU Reques… │ (b806db4a) │ ✅ done                            │ done      │ 17/17             │
+  │       Lower frontend-actualtrade CPU Requ… │ (1127c501) │ ✅ done                            │ done      │ 19/19             │
+  │       Lower mt5-tick-converter Memory Req… │ (4c358c50) │ ✅ done                            │ done      │ 19/19             │
+  │       Lower mt5-tick-requester Memory Req… │ (42c92bd5) │ ✅ done                            │ done      │ 18/18             │
+  │       Make -coding -check-guides Find go-… │ —          │ —                                  │ todo      │ 0/6               │
+  │       Map the Complete Tick and Candle Da… │ (17c43e93) │ ✅ done                            │ done      │ 13/13             │
+  │       Measure BoltDB Size, Memory and Reb… │ (4d77b35f) │ ✅ done                            │ done      │ 12/12             │
+  │       Measure Candle Store Size, Per-Pod … │ —          │ ✅ done                            │ done      │ 11/11             │
+  │       Merge Four Drafts Into One Efficien… │ (c5c7327a) │ ✅ done                            │ done      │ 16/16             │
+  │       Pilot the Service Analysis Agent on… │ (a6cf8e59) │ ✅ done                            │ done      │ 12/12             │
+  │       Pin frontend-data Behaviour With a … │ (15acae5a) │ ✅ done                            │ done      │ 15/15             │
+  │       Pin mt5-tick-requester Behaviour Wi… │ (1efabb76) │ ✅ done                            │ done      │ 13/13             │
+  │       Profile candle-handler Heap and Set… │ (07a1636a) │ ✅ done                            │ done      │ 15/15             │
+  │       Prove Behaviour Is Identical on Eve… │ (dae2b71b) │ ✅ done                            │ done      │ 11/11             │
+  │       Prove Nothing Else Writes to core-t… │ (ede1e2df) │ ✅ done                            │ done      │ 10/10             │
+  │       Prove frontend-candle-handler Behav… │ (675aaa9b) │ ✅ done                            │ done      │ 13/13             │
+  │       Prune the Trading Repo Worktrees an… │ (d3779fcf) │ ✅ done                            │ done      │ 11/11             │
+  │       Publish Per-Symbol Candle Events Fr… │ (642c02cf) │ ✅ done · aborted                  │ planning  │ 0/18              │
+  │       Remove the Pass-Through Tick Comman… │ (63a8a505) │ ✅ done                            │ done      │ 15/15             │
+  │       Retire the Four Idle acg Candle Pods │ (521af2f6) │ ✅ done                            │ done      │ 20/20             │
+  │       Run the Service Analysis Agent Acro… │ (a45b69fc) │ ✅ done                            │ done      │ 14/14             │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done · aborted                  │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done · aborted                  │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done · aborted                  │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done · aborted                  │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - Store Classifica… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - a2a-worker-contr… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - agent-claude CPU… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - agent-pi CPU and… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - agent-task-execu… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - alert-controller… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - attention-contro… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - claude-code-rout… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - core-candle-comm… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - core-expectedtra… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - core-signal-find… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - core-signal-find… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - core-tick-comman… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - frontend-actualt… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - frontend-candle-… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - frontend-data CP… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - frontend-equity … │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - frontend-expecte… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - frontend-notific… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - git-rest opencla… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - github-vuln-watc… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - hue CPU and Memo… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - k8s-apply CPU an… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - k8s-pod-status C… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - mt5-tick-convert… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - mt5-tick-request… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis - vault-api CPU an… │ —          │ ✅ done                            │ done      │ —                 │
+  │       Service Analysis Jobs Crash Before … │ —          │ ✅ done · aborted                  │ todo      │ 0/16              │
+  │       Stop Writing Unread Result Events F… │ (aae4fa1f) │ ✅ done · aborted                  │ planning  │ 0/14              │
+  │       Stop Writing Unread Result Events f… │ (06eea902) │ ✅ done                            │ done      │ 14/14             │
+  │       Stop the Client Reading 800 Files p… │ (9cf1dc58) │ ✅ done                            │ done      │ 14/14             │
+  │       Take the Five Cluster Readings That… │ —          │ ✅ done                            │ done      │ 17/17             │
+  │       Tighten core-tick-command-handler M… │ (2af66da1) │ ✅ done · aborted                  │ planning  │ 0/18              │
+  │       Verify frontend-actualtrade CPU Req… │ (e7f4a9f7) │ ✅ done                            │ done      │ 12/12             │
+  │    An Agent Rebases Every Open PR onto Ma… │ —          │ ✅ done                            │ —         │ 5/5               │
+  │       Build the Agent That Rebases Every … │ (e21792fc) │ ✅ done                            │ done      │ 17/17             │
+  │       Fix the Six Findings From the Rebas… │ —          │ ⌛ waiting-approval                │ todo      │ 0/20              │
+  │       Measure the Approved Queue Drains A… │ (cc590efd) │ ✅ done                            │ done      │ 13/13             │
+  │       Re-scope the Goal DoD Clause That N… │ (32a73f39) │ ✅ done                            │ done      │ 11/11             │
+  │       Resolve the Content Conflict That B… │ —          │ ✅ done · aborted                  │ done      │ 0/12              │
+  │    The Supervisor Runs in Go Inside claud… │ —          │ ✅ done                            │ —         │ 7/7               │
+  │       A Restart Re-Adopts 34 of 41 Sessio… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/7               │
+  │       An Executable Guard Fails When a Su… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Capture a Config-Digest Baseline Be… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       Close Out the Supervisor Go-Port Go… │ (e8c40569) │ ✅ done                            │ done      │ 15/15             │
+  │       Every claude Session Starts Its Own… │ (7d1ba39b) │ ✅ done                            │ done      │ 11/11             │
+  │       No Page Records Which Supervisor Sl… │ (f138c85e) │ ✅ done                            │ done      │ 9/9               │
+  │       Port the Spawn Limit Module Into cl… │ (982c4e2f) │ ✅ done                            │ done      │ 23/23             │
+  │       Reduce Live-Child Replay Buffer Ret… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       Remove the supervisor Server Direct… │ —          │ ⌛ waiting-approval                │ todo      │ 0/8               │
+  │       Restart the Sessions Still Holding … │ —          │ ✅ done · aborted                  │ done      │ 1/6               │
+  │       Serve the Supervisor's Tools From c… │ (4f111bc6) │ ✅ done                            │ done      │ 15/15             │
+  │       Supervisor Tool Parity - Lifecycle … │ —          │ ⌛ waiting-approval                │ todo      │ 0/12              │
+  │       Supervisor Tool Parity - Park and M… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Supervisor Tool Parity - Read Surfa… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       The Go Spawn Path Ignores spawn.mod… │ —          │ ✅ done                            │ done      │ 9/9               │
+  │       The Plugin Still Ships a stdio supe… │ —          │ ⌛ waiting-approval                │ todo      │ 0/10              │
+  │       The claude-wrapper Daemon Has No Gr… │ (3bc56dd6) │ ✅ done                            │ done      │ 19/19             │
+  │       Verify the Remaining Goal Criteria … │ (cdfe1a41) │ ✅ done                            │ done      │ 14/14             │
+  │       claude-wrapper Applies the Supervis… │ (ee272831) │ ✅ done                            │ done      │ 12/12             │
+  │       claude-wrapper Holds a 1.2 GB Footp… │ (4c63d787) │ ✅ done                            │ done      │ 16/16             │
+  │       claude-wrapper Pulls Cluster Worker… │ (1197c23e) │ ✅ done                            │ done      │ 16/16             │
+  │       claude-wrapper Serves the Superviso… │ (0ccb764c) │ ✅ done                            │ done      │ 14/14             │
+  │       claude-wrapper Spawns A2A Workers f… │ (8bb0a04f) │ ✅ done                            │ done      │ 12/12             │
+  │       claude-wrapper Spawns and Steers Ta… │ (ece4aaf2) │ ✅ done                            │ done      │ 16/16             │
+  │       manager-predispatch --write-tracked… │ —          │ ⌛ waiting-approval                │ todo      │ 0/6               │
+  │    Update-Go Jobs Finish Fast              │ —          │ ✅ done                            │ —         │ 3/3               │
+  │       A Stale agent-sun Apply Cannot Dele… │ (595494d2) │ ✅ done                            │ done      │ 9/9               │
+  │       Collapse the Update-Go Queue to One… │ (ecf55455) │ ✅ done                            │ done      │ 13/13             │
+  │       Find Why Update-Go Planning Fails o… │ —          │ ✅ done · aborted                  │ todo      │ 0/11              │
+  │       Measure End-to-End Update-Go Job Du… │ (32b24e88) │ ✅ done                            │ done      │ 11/11             │
+  │       Run the update-go Agent as Non-Root  │ (d8b153f8) │ ✅ done                            │ done      │ 15/15             │
+  │       Share GOMODCACHE and GOCACHE Across… │ (4854dc59) │ ✅ done                            │ done      │ 15/15             │
+  │       Stop the Update-Go Exec LLM Running… │ (43ccbf7b) │ ✅ done                            │ done      │ 10/10             │
+  │       sun update-go-cache PVC Stuck Termi… │ (dee1b1f2) │ ✅ done                            │ done      │ 9/9               │
+  │       vault-cli resume-block-card-rule-te… │ (6cfd84c4) │ ✅ done                            │ done      │ 9/9               │
+  │    Accepted Changes Stick Without a Follo… │ —          │ 🔄 progressing                     │ —         │ 1/4               │
+  │       Diagnose What the 29 Percent Rework… │ (3ab20831) │ ✅ done                            │ done      │ 12/12             │
+  │       Ignore Shared Bookkeeping Files in … │ (77b529b8) │ ✅ done                            │ done      │ 14/14             │
+  │       Require a Fix PR to Cite the Change… │ —          │ 🚀 ready-to-start                  │ planning  │ 0/11              │
+  │       Require a PR's Scope Statement to N… │ (c18c5538) │ ✅ done                            │ done      │ 14/14             │
+  │       Verify Generated Artifacts Render R… │ (f9a7b196) │ ✅ done                            │ done      │ 13/13             │
+  │    Manager Rounds Cost What They Change    │ —          │ ✅ done                            │ —         │ 3/3               │
+  │       A Manager Round Reports Its Own Spe… │ (133916cc) │ ✅ done                            │ done      │ 10/10             │
+  │       Make the Round's Two Legs Proportio… │ (25234a25) │ ✅ done                            │ done      │ 14/14             │
+  │    Manager Token Overhead Falls and the W… │ —          │ 🔄 progressing                     │ —         │ 1/5               │
+  │       A Spawn Notification Lands Two of F… │ (d98c8649) │ ✅ done                            │ done      │ 16/16             │
+  │       Abort the Sweep Gate Wake Path on a… │ —          │ ✅ done · aborted                  │ todo      │ 0/3               │
+  │       Anchor Remote Agent Sessions So No … │ (28ed73c4) │ ✅ done                            │ done      │ 15/15             │
+  │       Arm the No-Change Tick Gate for Eve… │ (f638e291) │ ✅ done                            │ done      │ 7/7               │
+  │       Chart the Manager and Worker Split … │ (e74452c5) │ ✅ done                            │ done      │ 15/15             │
+  │       Classify Suffix-Less Topic Managers… │ (ae0b4ebf) │ ✅ done                            │ done      │ 10/10             │
+  │       Deploy vault-api v0.22.9 to Nuke Pr… │ (0a2ebab6) │ ✅ done                            │ done      │ 11/11             │
+  │       Enumerate the Levers That Move the … │ (ff9fac2d) │ ✅ done                            │ done      │ 10/10             │
+  │       Explain Why the Census and the Acti… │ (1cf36571) │ ✅ done                            │ done      │ 11/11             │
+  │       Grant the Prod Apply Role the Grafa… │ —          │ ✅ done                            │ done      │ 11/11             │
+  │       Make the Role Label Measure Manager… │ (773fdfe9) │ ✅ done                            │ done      │ 10/10             │
+  │       Open the Goal's Measurement Record … │ (18bbf114) │ ✅ done                            │ done      │ 11/11             │
+  │       Publish Per-Session Output Tokens W… │ (9f7a476d) │ ✅ done                            │ done      │ 14/14             │
+  │       Record the Goal's Weekly Ratio Read… │ (101513a9) │ ⏸️ deferred                         │ execution │ 1/11              │
+  │       Record the Goals-Delivered Baseline… │ (55daab55) │ ✅ done                            │ done      │ 10/10             │
+  │       Record the Post-Change Weeks' Token… │ —          │ ⏸️ deferred                         │ planning  │ 0/14              │
+  │       Route claim-dead to the Fleet Manag… │ —          │ ✅ done                            │ done      │ 9/9               │
+  │       Stop Foreign Gates Waking Managers … │ (c1cce81b) │ ✅ done                            │ done      │ 12/12             │
+  │       Stop the Sweep Gate Enumerating Sub… │ (6060c8f5) │ ✅ done                            │ done      │ 9/9               │
+  │       The Fleet Manager Runs All Day Beca… │ [336ba779] │ 🔄 progressing                     │ execution │ 3/15              │
+  │       The Frozen-Tree Predicate and the A… │ (c47d818c) │ ⚠️ problem                          │ execution │ 0/15              │
+  │       The Goal Drive Leg Holds Future-Def… │ —          │ 🚀 ready-to-start                  │ planning  │ 5/9               │
+  │       The Quiet Check Sleeps a Subject Wh… │ (ebcb5fd3) │ ✅ done                            │ done      │ 11/11             │
+  │       The Sweep Gate's Wake Resolves No P… │ —          │ ✅ done                            │ done      │ 11/11             │
+  │       The Sweep Reader's Bucket Ignores t… │ —          │ ✅ done · aborted                  │ planning  │ 0/12              │
+  │       The github-update-go Repo Trigger S… │ (9062b8b0) │ ✅ done                            │ done      │ 9/9               │
+  │       Trim the Manager Round's Status Tab… │ —          │ ✅ done · aborted                  │ todo      │ 0/9               │
+  │       Wire the Sweep Gate Verdict Into th… │ (8ded9a51) │ ✅ done                            │ done      │ 14/14             │
+  │    Changelog Entries Come From the Author… │ —          │ 🚀 ready-to-start                  │ —         │ 0/5               │
+  │       Build the Changelog From Commit Mes… │ —          │ ⌛ waiting-approval                │ todo      │ 0/13              │
+  │       Pilot the New Changelog on One auto… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       Point github-update-go-agent at the… │ —          │ ⌛ waiting-approval                │ todo      │ 0/9               │
+  │       Retire the Changelog Hot Line in th… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  │       Teach dark-factory's Release Watche… │ —          │ ⌛ waiting-approval                │ todo      │ 0/11              │
+  └────────────────────────────────────────────┴────────────┴────────────────────────────────────┴───────────┴───────────────────┘
+  🚀 READY TO START: A Headless Worker's Vault Write Parks or Lands Depending on What It Ran Earlier — start a session: /supervisor:open "A Headless Worker's Vault Write Parks or Lands Depending on What It Ran Earlier"
+  🚀 READY TO START: A Restart Re-Adopts 34 of 41 Sessions and Reports None of the Seven It Loses — start a session: /supervisor:open "A Restart Re-Adopts 34 of 41 Sessions and Reports None of the Seven It Loses"
+  🚀 READY TO START: A Resume Request Passes the Guard and Then Silently Produces No Session — start a session: /supervisor:open "A Resume Request Passes the Guard and Then Silently Produces No Session"
+  🚀 READY TO START: A Resume Times Out Against a Healthy Daemon While a Fresh Spawn Succeeds — start a session: /supervisor:open "A Resume Times Out Against a Healthy Daemon While a Fresh Spawn Succeeds"
+  🚀 READY TO START: Add GitHub API Counters to claude-interactive and pr-merge-agent — start a session: /supervisor:open "Add GitHub API Counters to claude-interactive and pr-merge-agent"
+  🚀 READY TO START: Add GitHub API Counters to github-dark-factory-agent — start a session: /supervisor:open "Add GitHub API Counters to github-dark-factory-agent"
+  🚀 READY TO START: Add GitHub API Counters to github-dark-factory-watcher — start a session: /supervisor:open "Add GitHub API Counters to github-dark-factory-watcher"
+  🚀 READY TO START: Add GitHub API Counters to github-pr-review-agent — start a session: /supervisor:open "Add GitHub API Counters to github-pr-review-agent"
+  🚀 READY TO START: Add GitHub API Counters to github-release-watcher — start a session: /supervisor:open "Add GitHub API Counters to github-release-watcher"
+  🚀 READY TO START: Add GitHub API Counters to github-releaser-agent — start a session: /supervisor:open "Add GitHub API Counters to github-releaser-agent"
+  🚀 READY TO START: Add GitHub API Counters to the Go Updater Binary — start a session: /supervisor:open "Add GitHub API Counters to the Go Updater Binary"
+  🚀 READY TO START: Add GitHub API Counters to the Sentry Agent Binary — start a session: /supervisor:open "Add GitHub API Counters to the Sentry Agent Binary"
+  🚀 READY TO START: Add GitHub API Counters to the Sun Cluster Agent Lanes — start a session: /supervisor:open "Add GitHub API Counters to the Sun Cluster Agent Lanes"
+  🚀 READY TO START: Candle Command Handler Writes Each Candle Twice Through an Echo Consumer — start a session: /supervisor:open "Candle Command Handler Writes Each Candle Twice Through an Echo Consumer"
+  🚀 READY TO START: Candle Partitioner Merge Drops Forming-Minute Updates From the 1m View — start a session: /supervisor:open "Candle Partitioner Merge Drops Forming-Minute Updates From the 1m View"
+  🚀 READY TO START: Convert a Live Tab Worker to Headless Without the Task-Not-Terminal Refusal — start a session: /supervisor:open "Convert a Live Tab Worker to Headless Without the Task-Not-Terminal Refusal"
+  🚀 READY TO START: Decide the SC8 Question-Family Criterion Against the 2026-11-09 Re-Scope — start a session: /supervisor:open "Decide the SC8 Question-Family Criterion Against the 2026-11-09 Re-Scope"
+  🚀 READY TO START: Emit GitHub API Counters from github-update-go-skew-check — start a session: /supervisor:open "Emit GitHub API Counters from github-update-go-skew-check"
+  🚀 READY TO START: Emit GitHub API Counters from open-pr-check — start a session: /supervisor:open "Emit GitHub API Counters from open-pr-check"
+  🚀 READY TO START: Exercise the Kind-d Close-Then-Resume Path With a Deliberately Eligible Candidate — start a session: /supervisor:open "Exercise the Kind-d Close-Then-Resume Path With a Deliberately Eligible Candidate"
+  🚀 READY TO START: Give the mcp Answer Reach Leg a Round-Time Producer — start a session: /supervisor:open "Give the mcp Answer Reach Leg a Round-Time Producer"
+  🚀 READY TO START: Make Manager Enumeration Cheap Enough for a Sub-Minute Detection Loop — start a session: /supervisor:open "Make Manager Enumeration Cheap Enough for a Sub-Minute Detection Loop"
+  🚀 READY TO START: Port _leaked_pending_turn Into the Go idle_reaper Handler — start a session: /supervisor:open "Port _leaked_pending_turn Into the Go idle_reaper Handler"
+  🚀 READY TO START: Prove the Agent Chart's Keel Policy Value Survives a Prod Apply — start a session: /supervisor:open "Prove the Agent Chart's Keel Policy Value Survives a Prod Apply"
+  🚀 READY TO START: Re-read Tokens per Finished Task 7 Days After the Drive-Coverage Deploy — start a session: /supervisor:open "Re-read Tokens per Finished Task 7 Days After the Drive-Coverage Deploy"
+  🚀 READY TO START: Reduce nuke-prod Pod Count by Consolidating Per-Symbol Workloads — start a session: /supervisor:open "Reduce nuke-prod Pod Count by Consolidating Per-Symbol Workloads"
+  🚀 READY TO START: Repair the Missing Regression Metric on A Park Wake That Finds No Session Cannot Tell a Dead Session From an Invisible One — start a session: /supervisor:open "Repair the Missing Regression Metric on A Park Wake That Finds No Session Cannot Tell a Dead Session From an Invisible One"
+  🚀 READY TO START: Repair the Missing Regression Metric on A Record Absent From the Vault Loops on Claim 404 Forever — start a session: /supervisor:open "Repair the Missing Regression Metric on A Record Absent From the Vault Loops on Claim 404 Forever"
+  🚀 READY TO START: Repair the Missing Regression Metric on Observe a Real Manager Loop Stop Detected Within Two Observed Periods — start a session: /supervisor:open "Repair the Missing Regression Metric on Observe a Real Manager Loop Stop Detected Within Two Observed Periods"
+  🚀 READY TO START: Repair the Missing Regression Metric on Plan the Weekly-Target Rung - Yearly Targets Become Approved Fleet Work in the Planned Share — start a session: /supervisor:open "Repair the Missing Regression Metric on Plan the Weekly-Target Rung - Yearly Targets Become Approved Fleet Work in the Planned Share"
+  🚀 READY TO START: Repair the Missing Regression Metric on Skip the pr-reviewer Dismiss-List Read When No Prior Review Exists — start a session: /supervisor:open "Repair the Missing Regression Metric on Skip the pr-reviewer Dismiss-List Read When No Prior Review Exists"
+  🚀 READY TO START: Repair the Missing Regression Metric on The Keep-Alive Leg Reads the Fleet as Full From a Number No Cap Is Computed From — start a session: /supervisor:open "Repair the Missing Regression Metric on The Keep-Alive Leg Reads the Fleet as Full From a Number No Cap Is Computed From"
+  🚀 READY TO START: Repair the Missing Regression Metric on The Merge Gate Now Rests on a Hook That Is Not in Git — start a session: /supervisor:open "Repair the Missing Regression Metric on The Merge Gate Now Rests on a Hook That Is Not in Git"
+  🚀 READY TO START: Repair the Missing Regression Metric on The Quiet Check Sleeps a Subject Whose Soak Only Wakes Can Advance — start a session: /supervisor:open "Repair the Missing Regression Metric on The Quiet Check Sleeps a Subject Whose Soak Only Wakes Can Advance"
+  🚀 READY TO START: Repair the Missing Regression Metric on The Residual File-Write Class Must Reach Zero for SC1 to Pass — start a session: /supervisor:open "Repair the Missing Regression Metric on The Residual File-Write Class Must Reach Zero for SC1 to Pass"
+  🚀 READY TO START: Require a Fix PR to Cite the Change It Fixes — start a session: /supervisor:open "Require a Fix PR to Cite the Change It Fixes"
+  🚀 READY TO START: Stop the Model Composing the sync-progress Arrow Closer — start a session: /supervisor:open "Stop the Model Composing the sync-progress Arrow Closer"
+  🚀 READY TO START: The Bare Commit Shape Still Prompts and Its Fix Is Not a Guard Widening — start a session: /supervisor:open "The Bare Commit Shape Still Prompts and Its Fix Is Not a Guard Widening"
+  🚀 READY TO START: The Closer Bar Measures Emissions Not Blocked Stops So a Working Guard Reads Non-Zero — start a session: /supervisor:open "The Closer Bar Measures Emissions Not Blocked Stops So a Working Guard Reads Non-Zero"
+  🚀 READY TO START: The Closer Lint Comment Names Forms It Actually Accepts — start a session: /supervisor:open "The Closer Lint Comment Names Forms It Actually Accepts"
+  🚀 READY TO START: The Feed Emits Every Headless Park Because an Unresolved Session Defeats the Goal Scope — start a session: /supervisor:open "The Feed Emits Every Headless Park Because an Unresolved Session Defeats the Goal Scope"
+  🚀 READY TO START: The Freshness Guard Measures Commit Recency, So a Healthy Idle Writer Voids Every Read — start a session: /supervisor:open "The Freshness Guard Measures Commit Recency, So a Healthy Idle Writer Voids Every Read"
+  🚀 READY TO START: The Goal Drive Leg Holds Future-Deferred Rows So a Parked Row Is Never Offered — start a session: /supervisor:open "The Goal Drive Leg Holds Future-Deferred Rows So a Parked Row Is Never Offered"
+  🚀 READY TO START: The Handover That Closes a Stood-Down Manager Also Hides Its Topic From the Keep-Alive Leg — start a session: /supervisor:open "The Handover That Closes a Stood-Down Manager Also Hides Its Topic From the Keep-Alive Leg"
+  🚀 READY TO START: The Probe Closer Writes an Unquoted aborted_reason, So the Record It Closes Never Parses — start a session: /supervisor:open "The Probe Closer Writes an Unquoted aborted_reason, So the Record It Closes Never Parses"
+  🚀 READY TO START: The SC3 Probe Labels Every Passing Zero as Undecided — start a session: /supervisor:open "The SC3 Probe Labels Every Passing Zero as Undecided"
+  🚀 READY TO START: The Writer Freshness Guard Is Repo-Wide, So a Stale Lineage Passes a Read It Should Void — start a session: /supervisor:open "The Writer Freshness Guard Is Repo-Wide, So a Stale Lineage Passes a Read It Should Void"
+  🚀 READY TO START: Twenty-Eight Allow Rules in permissions.allow Carry Mid-Pattern Wildcards and Match Nothing — start a session: /supervisor:open "Twenty-Eight Allow Rules in permissions.allow Carry Mid-Pattern Wildcards and Match Nothing"
+  🚀 READY TO START: Verify Goal-Round Row 4d Files a Task on a Live Round — start a session: /supervisor:open "Verify Goal-Round Row 4d Files a Task on a Live Round"
+  🚀 READY TO START: Verify the Manager Stand-Down Live Once the Drive Leg No Longer Hangs — start a session: /supervisor:open "Verify the Manager Stand-Down Live Once the Drive Leg No Longer Hangs"
+  🚀 READY TO START: watch-prod-agent-board-drain — Port the Adjudicated Change Into Its Schedule Template — start a session: /supervisor:open "watch-prod-agent-board-drain — Port the Adjudicated Change Into Its Schedule Template"
+  🚀 READY TO START: worker-drive §8 Requires a Modal While the Same Clause Allows None — start a session: /supervisor:open "worker-drive §8 Requires a Modal While the Same Clause Allows None"
+  👤 YOURS: Record the Dated 7-Day Census and Closer Readings — not a spawn target
+  👤 YOURS: Run supervisor fleet-reset on a Real Fleet — not a spawn target
+  ⏸️ BLOCKED UPSTREAM: Delete the Per-Symbol Candle Topics After the Per-Broker Cutover — blocked_by Dual-Publish Per-Broker Candle Event and Latest Topics From the Grouped Handler unshipped — no action until it lands
+  ⏸️ BLOCKED UPSTREAM: Manager and Fleet Drive Rounds Read the Measured Progress Window — blocked_by Drive Rounds Judge a Session''s Last 15 Minutes From Disk, Not From Its Own Account unshipped — no action until it lands
+  ⏸️ BLOCKED UPSTREAM: Move Frontend, Gateway, MCP Replay and Backtests to the Candle Service API — blocked_by Build a Per-Broker Candle Service That Builds Candles From Ticks in a Bug-Compatible Mode unshipped — no action until it lands
+  ⏸️ BLOCKED UPSTREAM: Run One Signal Finder per Broker on the Per-Broker Candle Topic With API Warm-Up — blocked_by Dual-Publish Per-Broker Candle Event and Latest Topics From the Grouped Handler unshipped — no action until it lands
+  ⏸️ BLOCKED UPSTREAM: Ship the Four Candle Defect Fixes Behind Separate Flags — blocked_by Build a Per-Broker Candle Service That Builds Candles From Ticks in a Bug-Compatible Mode unshipped — no action until it lands
+  ⏸️ BLOCKED UPSTREAM: Snapshot Every Candle Store Nightly Off the Node and Prove a Restore — blocked_by Group the Candle Command and Frontend Handlers Into One Process per Broker With One Bolt File per Symbol unshipped — no action until it lands
+  ⌛ PARKED-ON-UNREGISTERED-GATE: A Command Success Acknowledgement Is Not a Completion Signal — no feed row and the file has not moved for ≥2 intervals — SendMessage a check-in: "booted? first step? or parked on a gate?"
+  ⏸️ HOLD: Nuke Dev and Prod Run Everything and Sun Is Only Spare Capacity — parked
+  ◦ BACKLOG: A Cold k8s A2A Worker Cannot Finish a Repo's make check Inside Its Turn — someday, no action
+  ◦ BACKLOG: A Worker's Gate Is Re-Shown on Every Manager Closer — someday, no action
+  ◦ BACKLOG: Add Observability Metrics for Agent Platform — someday, no action
+  ◦ BACKLOG: Agent Workers Whose Tasks Need No Watching Spawn Headless by Default — someday, no action
+  ◦ BACKLOG: Bump the Sun Cluster Agent Task Controller Past the Read-Load Fix — someday, no action
+  ◦ BACKLOG: Delete the 118 Legacy frontend-candle PVCs After 7 Clean Days — someday, no action
+  ◦ BACKLOG: Enable AMD AVIC on the Nuke Host to Cut KVM Exit Overhead — someday, no action
+  ◦ BACKLOG: Make -coding -check-guides Find go-efficient-service-guide — someday, no action
+  ◦ BACKLOG: Observe a Natural Leaked pending_turns Counter Being Reaped on the Deployed Build — someday, no action
+  ◦ BACKLOG: Prove sun-k3s Survives an Unattended Cold Boot — someday, no action
+  ◦ BACKLOG: Prove the 700k Compact Tier Delivers Live for a Shell-Holding Session — someday, no action
+  ◦ BACKLOG: Route Nuke Prod Update-Go Tasks to sun-k3s — someday, no action
+  ◦ BACKLOG: Ship One Permission-Escalation Fix Per Week From the Measured Top Cause — someday, no action
+  ◦ BACKLOG: The Liveness Period-Collapse Probe Reads the Same With and Without the Tail Store — someday, no action
+  ◦ BACKLOG: The No Reply Needed Here Closer Still Mints a Board Card, and Class 3 Still Reaches the Board — someday, no action
+  ◦ BACKLOG: agent Chart Rolls Pods When Their Secret Changes — someday, no action
