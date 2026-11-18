@@ -55,6 +55,12 @@ func (s *vaultSnapshotter) Snapshot(ctx context.Context, subject string) (Snapsh
 func ResolveSubject(ctx context.Context, vault, subject string) (
 	branch string, members []string, err error,
 ) {
+	// The subject is joined straight into a vault path and then STAT-ED and READ,
+	// so an unvalidated one is a file-read oracle outside the vault. Slug refuses
+	// this shape for state-dir paths; the same refusal belongs here.
+	if err := RefuseUnsafeSubject(ctx, subject); err != nil {
+		return "", nil, err
+	}
 	goalPath := filepath.Join(vault, "24 Goals", subject+".md")
 	topicPath := filepath.Join(vault, "23 Topics", subject+".md")
 	isGoal := fileExists(goalPath)
