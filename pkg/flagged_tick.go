@@ -250,6 +250,10 @@ type FlaggedTick struct {
 	// Ledger supplies the spawn times the recently-spawned guard reads. A nil
 	// ledger disables that half of the guard rather than refusing every row.
 	Ledger LedgerReader
+	// Parked is the park gate. A nil gate is inactive, which is what a test that
+	// predates it gets and what the daemon gets when the state directories cannot
+	// be resolved.
+	Parked ParkedHold
 	// Sessions is the wrapper's own durable child table — the half of the
 	// recently-spawned guard that still answers while the attention-controller is
 	// down. Nil resolves it from the state directory, which `Home` and `Getenv`
@@ -464,6 +468,48 @@ func (t *FlaggedTick) Tick(ctx context.Context) (FlaggedTickResult, error) {
 	return t.tickFromRows(ctx, rows), nil
 }
 
+// rowAction is what the pre-cap guards decide for one row.
+type rowAction int
+
+const (
+	// rowEligible means the row may proceed to the caps and the reopener.
+	rowEligible rowAction = iota
+	// rowSkipped means the row is eligible but not due; it is a skip, not a
+	// refusal, and it spends no reservation.
+	rowSkipped
+	// rowRefused means the predicate's own provenance verdict refuses the row.
+	rowRefused
+)
+
+// classify applies the guards that run before any cap is consulted: the
+// eligibility decision, then the park gate.
+//
+// The order is load-bearing. Provenance is checked before liveness so an
+// agent-set flag is reported as REFUSED rather than skipped, and the park gate
+// runs only for a row the decision would otherwise open. A hold is a SKIP, not
+// a refusal: the row is eligible but the observable its last session parked on
+// has not moved, so it must not spend a reservation, must not halt the opening
+// pass, and must not count against the per-tick row budget.
+func (t *FlaggedTick) classify(
+	ctx context.Context,
+	row FlaggedRow,
+	recent map[string]time.Time,
+	now time.Time,
+) (string, rowAction) {
+	if reason, refused, skipped := decision(row, recent, now); refused || skipped {
+		if skipped {
+			return reason, rowSkipped
+		}
+		return reason, rowRefused
+	}
+	if t.Parked != nil {
+		if reason, held := t.Parked.Hold(ctx, row); held {
+			return reason, rowSkipped
+		}
+	}
+	return "", rowEligible
+}
+
 // tickFromRows is the decision pass, separated from the read so the running loop
 // can feed it a cached row set.
 func (t *FlaggedTick) tickFromRows(
@@ -501,11 +547,12 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
-		if reason, refused, skipped := decision(row, recent, now); refused || skipped {
-			if skipped {
-				result.Skipped = append(result.Skipped, row.Key()+": "+reason)
-				continue
-			}
+		reason, action := t.classify(ctx, row, recent, now)
+		if action == rowSkipped {
+			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
+			continue
+		}
+		if action == rowRefused {
 			result.Refused = append(result.Refused, row.Key()+": "+reason)
 			continue
 		}
@@ -541,6 +588,12 @@ func (t *FlaggedTick) tickFromRows(
 		}
 		if neverOpened(row) {
 			t.rememberOpened(row, now)
+		}
+		// The reopen succeeded, so the park gate may commit the baseline a movement
+		// produced. This is the only place it is committed — a row refused by caps or
+		// rate above never reaches here and keeps its old fingerprint, so it retries.
+		if t.Parked != nil {
+			t.Parked.Opened(ctx, row)
 		}
 		result.Opened = append(result.Opened, row.Key())
 		recordResumeDelay(&result, row, ended, now)
