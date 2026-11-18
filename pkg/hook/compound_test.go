@@ -195,3 +195,63 @@ var _ = Describe("SedFilterAllows", func() {
 		Entry("an empty script", []string{"", root + "/a.txt"}, root, false),
 	)
 })
+
+var _ = Describe("gh shape guards", func() {
+	adminFlag := "--" + "admin"
+
+	DescribeTable("approves only the documented merge shape",
+		func(values []string, allowed bool) {
+			Expect(hook.GhMergeAllows(values)).To(Equal(allowed))
+		},
+		Entry("the merge shape", []string{"-R", "bborbe/x", "pr", "merge", "12", "--merge"}, true),
+		Entry("with --delete-branch",
+			[]string{"-R", "bborbe/x", "pr", "merge", "12", "--merge", "-d"}, true),
+		Entry("the admin flag", []string{
+			"-R", "bborbe/x", "pr", "merge", "12", "--merge", adminFlag,
+		}, false),
+		Entry("--squash", []string{"-R", "bborbe/x", "pr", "merge", "12", "--squash"}, false),
+		Entry("a foreign repo", []string{"-R", "other/x", "pr", "merge", "12", "--merge"}, false),
+		Entry("a non-numeric PR", []string{"-R", "bborbe/x", "pr", "merge", "x", "--merge"}, false),
+		Entry("no --merge", []string{"-R", "bborbe/x", "pr", "merge", "12"}, false),
+	)
+
+	DescribeTable("approves only the documented create shape",
+		func(values []string, allowed bool) {
+			Expect(hook.GhCreateAllows(values)).To(Equal(allowed))
+		},
+		Entry("a titled draft",
+			[]string{"-R", "bborbe/x", "pr", "create", "--draft", "--title", "t"}, true),
+		Entry("a body file in /tmp",
+			[]string{"-R", "bborbe/x", "pr", "create", "--body-file", "/tmp/b.md"}, true),
+		Entry("a body file outside /tmp",
+			[]string{"-R", "bborbe/x", "pr", "create", "--body-file", "/etc/passwd"}, false),
+		Entry("a fork head",
+			[]string{"-R", "bborbe/x", "pr", "create", "--head", "other:main"}, false),
+		Entry("a reviewer flag",
+			[]string{"-R", "bborbe/x", "pr", "create", "--reviewer", "someone"}, false),
+		Entry("a foreign repo",
+			[]string{"-R", "other/x", "pr", "create", "--title", "t"}, false),
+	)
+
+	DescribeTable("approves a read-only PR query for any owner",
+		func(values []string, allowed bool) {
+			Expect(hook.GhReadAllows(values)).To(Equal(allowed))
+		},
+		Entry("a view with a json field",
+			[]string{"-R", "any/x", "pr", "view", "12", "--json", "state"}, true),
+		Entry("a list with a limit",
+			[]string{"pr", "list", "--limit", "5"}, true),
+		Entry("checks", []string{"pr", "checks", "12"}, true),
+		Entry("--web", []string{"pr", "view", "12", "--web"}, false),
+		Entry("--watch", []string{"pr", "view", "12", "--watch"}, false),
+		Entry("a traversal repo", []string{"-R", "../x", "pr", "view"}, false),
+		Entry("a leading-dash repo part", []string{"-R", "a/-b", "pr", "view"}, false),
+	)
+
+	It("accepts only a literal /tmp target", func() {
+		Expect(hook.TmpTarget("/tmp/x.md")).To(BeTrue())
+		Expect(hook.TmpTarget("/etc/passwd")).To(BeFalse())
+		Expect(hook.TmpTarget("$HOME/x")).To(BeFalse())
+		Expect(hook.TmpTarget("x.md")).To(BeFalse())
+	})
+})
