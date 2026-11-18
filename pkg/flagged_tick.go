@@ -525,7 +525,14 @@ func (t *FlaggedTick) tickFromRows(
 		// a row could vanish with no trace at all — the accounting defect this tick
 		// had measured 2026-11-16. The remaining rows are now recorded as
 		// unconsidered, which is the honest description of what happened to them.
-		if err := t.Caps.CheckWorker(ctx, row.Mode, false); err != nil {
+		// The third argument is the row's own provenance verdict, never a constant.
+		// `decision` has already refused every row carrying a `Refused` entry, so
+		// what arrives here is operator-flagged or legacy-operator-opened and counts
+		// as operator-named (operator ruling 2026-11-17): it may open up to the hard
+		// limit. Passing `false` refused every one of them at the soft cap — the
+		// fleet stood at 51 live against 50 allowed on 2026-11-18 00:58 and 28 rows
+		// went unconsidered.
+		if err := t.Caps.CheckWorker(ctx, row.Mode, row.OperatorNamed()); err != nil {
 			halted = reasonUnconsidered
 			result.Refused = append(result.Refused, row.Key()+": "+reasonCapsRefused+": "+err.Error())
 			continue

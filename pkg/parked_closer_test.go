@@ -77,6 +77,11 @@ var _ = ginkgo.Describe("parked closer", func() {
 			{"sun:22 answers", ParkedOnHost},
 			{"192.168.178.38:22 accepts a connection", ParkedOnHost},
 			{"192.168.178.38 answers", ParkedOnHost},
+			// ⚠️ A declaration carrying BOTH a host token and a clock must bound at the
+			// clock, because ClassifyParked checks the clock before the host. The class
+			// alone distinguishes correct from inverted precedence: ParkedUntil here,
+			// ParkedOnHost if the two blocks were swapped.
+			{"sun:22 answers by 2026-11-18T14:30", ParkedUntil},
 			{"2026-11-18T09:00:00+01:00", ParkedUntil},
 			// ⚠️ The date-time shape the live declarations actually write. Class alone
 			// cannot distinguish the fixed code from the pre-fix code — both return

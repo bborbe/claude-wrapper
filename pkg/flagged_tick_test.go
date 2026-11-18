@@ -492,6 +492,97 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 		})
 	})
 
+	// A row that reaches the cap check has already passed the provenance gate, so
+	// it counts as operator-named (operator ruling 2026-11-17). These tests run the
+	// REAL cap enforcer over a scratch config, so the soft and hard limits are the
+	// ones the daemon reads, not a fake that would pass whatever it was handed.
+	ginkgo.Describe("asserts the row's operator provenance to the caps", func() {
+		// liveHeadlessFleet is a fleet of n live headless workers, built the way the
+		// cap enforcer counts one: a ledger row per session, each marked live by the
+		// heartbeat store.
+		liveHeadlessFleet := func(n int) (LedgerReader, HeartbeatReader) {
+			rows := make([]LedgerRow, n)
+			beats := make([]HeartbeatRow, n)
+			for i := 0; i < n; i++ {
+				id := fmt.Sprintf("live-%d", i)
+				rows[i] = LedgerRow{SessionID: id, Mode: SpawnModeHeadless, Role: RoleAgent}
+				beats[i] = liveBeat(id)
+			}
+			return fakeLedgerRows{rows: rows}, &stubHeartbeats{rows: beats}
+		}
+
+		ginkgo.It("opens an operator-flagged row at the soft cap, below the hard cap", func() {
+			// soft 2 / hard 3 make the headless axis 1 soft and 2 hard.
+			ledger, heartbeats := liveHeadlessFleet(1)
+			caps := testCaps(ledger, heartbeats, writeSpawnConfig(workerAxisConfig(2, 3)),
+				ginkgo.GinkgoT().TempDir())
+			reopener := &recordingReopener{}
+			// Refused is empty: the predicate attributed this flag to an opening actor.
+			result, err := newTick(
+				staticSource{rows: []FlaggedRow{rowWith("agent", "headless", "flagged")}},
+				reopener, caps,
+			).Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("opened=%v refused=%v\n", result.Opened, result.Refused)
+			gomega.Expect(reopener.snapshot()).To(gomega.HaveLen(1))
+			gomega.Expect(result.Opened).To(gomega.HaveLen(1))
+			gomega.Expect(result.Refused).To(gomega.BeEmpty())
+		})
+
+		ginkgo.It("refuses the same row at the hard cap, naming the hard axis", func() {
+			ledger, heartbeats := liveHeadlessFleet(2)
+			caps := testCaps(ledger, heartbeats, writeSpawnConfig(workerAxisConfig(2, 3)),
+				ginkgo.GinkgoT().TempDir())
+			reopener := &recordingReopener{}
+			result, err := newTick(
+				staticSource{rows: []FlaggedRow{rowWith("agent", "headless", "flagged")}},
+				reopener, caps,
+			).Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("refused=%v\n", result.Refused)
+			gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+			gomega.Expect(result.Opened).To(gomega.BeEmpty())
+			gomega.Expect(result.Refused).To(gomega.HaveLen(1))
+			gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring(reasonCapsRefused))
+			// The hard cap's own key, not the soft one: the refusal must say which
+			// axis refused an operator-named row.
+			gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring("spawn.maxHeadlessHard"))
+		})
+
+		ginkgo.It("refuses a provenance-refused row before any cap check", func() {
+			// The fleet is AT the hard cap, so a cap check that ran first would be the
+			// reason recorded. The provenance reason proves the ordering.
+			ledger, heartbeats := liveHeadlessFleet(2)
+			caps := testCaps(ledger, heartbeats, writeSpawnConfig(workerAxisConfig(2, 3)),
+				ginkgo.GinkgoT().TempDir())
+			reopener := &recordingReopener{}
+			row := rowWith("agent", "headless", "agent-set")
+			row.Refused = []string{"agent-set-flag"}
+			result, err := newTick(staticSource{rows: []FlaggedRow{row}}, reopener, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("refused=%v\n", result.Refused)
+			gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+			gomega.Expect(result.Refused).To(gomega.HaveLen(1))
+			gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring("agent-set-flag"))
+			gomega.Expect(result.Refused[0]).NotTo(gomega.ContainSubstring(reasonCapsRefused))
+		})
+
+		ginkgo.It("still skips a LIVE row without asking the caps at all", func() {
+			caps := &recordingCaps{}
+			row := rowWith("agent", "headless", "live")
+			row.Liveness = "LIVE"
+			result, err := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("skipped=%v caps=%v\n", result.Skipped, caps.modes())
+			gomega.Expect(result.Opened).To(gomega.BeEmpty())
+			gomega.Expect(result.Skipped).To(gomega.HaveLen(1))
+			gomega.Expect(result.Skipped[0]).To(gomega.ContainSubstring(reasonNotAbsent))
+			gomega.Expect(caps.modes()).To(gomega.BeEmpty())
+		})
+	})
+
 	ginkgo.Describe("cancels a slow predicate", func() {
 		ginkgo.It("returns context.Canceled rather than hanging", func() {
 			ctx, cancel := context.WithCancel(context.Background())
