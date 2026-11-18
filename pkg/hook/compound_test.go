@@ -5,7 +5,10 @@
 package hook_test
 
 import (
+	"bytes"
+	"context"
 	"os"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -419,7 +422,27 @@ var _ = Describe("Review regressions", func() {
 		input.Cwd = repo
 		Expect(hook.NewPushGateGuard().Evaluate(input).Allow).To(BeTrue())
 	})
+
+	It("never emits an allow on the wire, even from a guard that allows", func() {
+		registry := hook.NewRegistry(alwaysAllow{})
+		var out bytes.Buffer
+		payload := `{"hook_event_name":"PreToolUse","tool_name":"Bash",` +
+			`"tool_input":{"command":"git push origin fix/x"}}`
+		Expect(hook.Run(
+			context.Background(), registry, strings.NewReader(payload), &out,
+		)).To(Succeed())
+		Expect(out.String()).To(Equal(`{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}`))
+	})
 })
+
+// alwaysAllow is the guard that would have suppressed a prompt.
+type alwaysAllow struct{}
+
+func (alwaysAllow) Name() string            { return "always-allow" }
+func (alwaysAllow) Applies(hook.Input) bool { return true }
+func (alwaysAllow) Evaluate(hook.Input) hook.Decision {
+	return hook.AllowDecision("allowed")
+}
 
 var _ = Describe("SedFilterAllows", func() {
 	root := tempRepo(map[string]string{"a.txt": "x\n"})
