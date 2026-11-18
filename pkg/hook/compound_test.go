@@ -5,7 +5,6 @@
 package hook_test
 
 import (
-	"context"
 	"os"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -198,23 +197,24 @@ var _ = Describe("GitMergeAllows", func() {
 })
 
 var _ = Describe("CompoundTreeAllows", func() {
-	ctx := context.Background()
 	rules := hook.CompoundRules{
 		Allow: []string{"pwd", "ls", "make build:*"},
 		Gated: []string{"ls -R"},
 	}
+	cwd := tempRepo(map[string]string{})
+	roots := []string{cwd}
 
 	DescribeTable("allows only a fully modelled tree whose every call matches a rule",
 		func(command string, allowed bool) {
-			Expect(hook.CompoundTreeAllows(ctx, command, rules)).To(Equal(allowed))
+			Expect(hook.CompoundTreeAllows(command, rules, cwd, roots)).To(Equal(allowed))
 		},
 		Entry("one allowlisted call", "pwd", true),
 		Entry("two allowlisted calls", "pwd && ls", true),
 		Entry("a word-list for loop", "for f in a b; do ls; done", true),
+		Entry("a read-only git call through the shape guard", "git status", true),
 		Entry("a call matching no rule", "curl example.com", false),
 		Entry("a gated call", "ls -R", false),
-		Entry("a wrapper program is refused even with a rule",
-			"git status", false),
+		Entry("a wrapper program with no shape", "git push", false),
 		Entry("a while loop is unbounded", "while true; do ls; done", false),
 		Entry("an assignment prefix", "PATH=/evil ls", false),
 		Entry("a command substitution", "ls $(date)", false),
@@ -225,6 +225,38 @@ var _ = Describe("CompoundTreeAllows", func() {
 		Entry("a background job", "ls &", false),
 		Entry("an unparsable command", "ls &&", false),
 	)
+})
+
+var _ = Describe("CompoundBashGuard", func() {
+	rules := hook.CompoundRules{
+		Allow: []string{"pwd", "ls", "make build:*"},
+		Gated: []string{"ls -R"},
+	}
+	guard := hook.NewCompoundBashGuardWithRules(
+		func(string) (hook.CompoundRules, error) { return rules, nil },
+	)
+
+	DescribeTable("allows a compound only when every part is already permitted",
+		func(command string, allow bool) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			Expect(guard.Evaluate(input).Allow).To(Equal(allow))
+		},
+		Entry("two allowlisted parts", "pwd && ls", true),
+		Entry("a prefix rule", "make build && pwd", true),
+		Entry("a part matching no rule", "pwd && curl example.com", false),
+		Entry("a gated part", "pwd && ls -R", false),
+		Entry("a substitution", "pwd && ls $(date)", false),
+		Entry("nine parts", "pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd", false),
+	)
+
+	It("makes no decision for a single command", func() {
+		Expect(guard.Evaluate(bashInput("pwd")).Allow).To(BeFalse())
+	})
+
+	It("names the script it replaces", func() {
+		Expect(guard.Name()).To(Equal("allow-compound-bash.py"))
+	})
 })
 
 var _ = Describe("SedFilterAllows", func() {

@@ -5,7 +5,6 @@
 package hook
 
 import (
-	"context"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -18,14 +17,19 @@ import (
 // expansion this walker does not explicitly model is refused. That direction is
 // the only safe one for a tree pass — a shape it fails to model must fall back to
 // the normal permission prompt, never to an allow the script would not have given.
-func CompoundTreeAllows(ctx context.Context, command string, rules CompoundRules) bool {
+func CompoundTreeAllows(
+	command string,
+	rules CompoundRules,
+	cwd string,
+	roots []string,
+) bool {
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).
 		Parse(strings.NewReader(command), "")
 	if err != nil {
 		return false
 	}
-	walker := &compoundWalker{rules: rules}
-	if err := walker.walk(ctx, file); err != nil {
+	walker := &compoundWalker{rules: rules, cwd: cwd, roots: roots}
+	if err := walker.walk(file); err != nil {
 		return false
 	}
 	return walker.calls > 0
@@ -34,13 +38,15 @@ func CompoundTreeAllows(ctx context.Context, command string, rules CompoundRules
 // compoundWalker accumulates the verdict while walking one parsed file.
 type compoundWalker struct {
 	rules CompoundRules
+	cwd   string
+	roots []string
 	calls int
 }
 
 // walk visits the file's statements.
-func (w *compoundWalker) walk(ctx context.Context, file *syntax.File) error {
+func (w *compoundWalker) walk(file *syntax.File) error {
 	for _, stmt := range file.Stmts {
-		if err := w.stmt(ctx, stmt); err != nil {
+		if err := w.stmt(stmt); err != nil {
 			return err
 		}
 	}
@@ -48,7 +54,7 @@ func (w *compoundWalker) walk(ctx context.Context, file *syntax.File) error {
 }
 
 // stmt visits one statement.
-func (w *compoundWalker) stmt(ctx context.Context, stmt *syntax.Stmt) error {
+func (w *compoundWalker) stmt(stmt *syntax.Stmt) error {
 	if stmt == nil {
 		return nil
 	}
@@ -58,31 +64,31 @@ func (w *compoundWalker) stmt(ctx context.Context, stmt *syntax.Stmt) error {
 	if err := w.redirects(stmt.Redirs); err != nil {
 		return err
 	}
-	return w.command(ctx, stmt.Cmd)
+	return w.command(stmt.Cmd)
 }
 
 // command visits one command node.
-func (w *compoundWalker) command(ctx context.Context, cmd syntax.Command) error {
+func (w *compoundWalker) command(cmd syntax.Command) error {
 	switch node := cmd.(type) {
 	case *syntax.CallExpr:
 		return w.call(node)
 	case *syntax.Block:
-		return w.stmts(ctx, node.Stmts)
+		return w.stmts(node.Stmts)
 	case *syntax.Subshell:
-		return w.stmts(ctx, node.Stmts)
+		return w.stmts(node.Stmts)
 	case *syntax.BinaryCmd:
-		if err := w.stmt(ctx, node.X); err != nil {
+		if err := w.stmt(node.X); err != nil {
 			return err
 		}
-		return w.stmt(ctx, node.Y)
+		return w.stmt(node.Y)
 	case *syntax.IfClause:
-		return w.stmts(ctx, node.Cond)
+		return w.stmts(node.Cond)
 	case *syntax.ForClause:
 		// A word-list `for` is bounded; a C-style loop is not.
 		if _, ok := node.Loop.(*syntax.WordIter); !ok {
 			return errCompoundUnmodelled
 		}
-		return w.stmts(ctx, node.Do)
+		return w.stmts(node.Do)
 	case *syntax.WhileClause:
 		// No bound on the iteration count: `while true; do <allowlisted>; done`
 		// would spin the Bash tool.
@@ -93,9 +99,9 @@ func (w *compoundWalker) command(ctx context.Context, cmd syntax.Command) error 
 }
 
 // stmts visits a statement list.
-func (w *compoundWalker) stmts(ctx context.Context, stmts []*syntax.Stmt) error {
+func (w *compoundWalker) stmts(stmts []*syntax.Stmt) error {
 	for _, stmt := range stmts {
-		if err := w.stmt(ctx, stmt); err != nil {
+		if err := w.stmt(stmt); err != nil {
 			return err
 		}
 	}
@@ -121,10 +127,14 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 		words = append(words, value)
 	}
 	segment := strings.Join(words, " ")
-	if wrapperProgram(words[0]) {
+	if matchesAnyPattern(segment, w.rules.Gated) {
 		return errCompoundUnmodelled
 	}
-	if matchesAnyPattern(segment, w.rules.Gated) {
+	if compoundShapeAllows(words, w.cwd, w.roots) {
+		w.calls++
+		return nil
+	}
+	if wrapperProgram(words[0]) {
 		return errCompoundUnmodelled
 	}
 	if !matchesAnyPattern(segment, w.rules.Allow) {
@@ -187,6 +197,25 @@ func isDupTarget(target string) bool {
 		return true
 	}
 	return allDigits(target)
+}
+
+// compoundShapeAllows reports whether a shape guard approves this call without an
+// allow rule. The caller checks the gated rules first, so a deny or ask still wins.
+func compoundShapeAllows(words []string, cwd string, roots []string) bool {
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "git":
+		return GitShapeAllows(words[1:], cwd, roots) ||
+			GitMergeAllows(words[1:], DefaultMergeRoots())
+	case "sed":
+		return SedFilterAllows(words[1:], cwd, roots)
+	case "gh":
+		return GhMergeAllows(words[1:]) || GhCreateAllows(words[1:]) ||
+			GhReadAllows(words[1:])
+	}
+	return false
 }
 
 // matchesAnyPattern reports whether segment matches any pattern.
