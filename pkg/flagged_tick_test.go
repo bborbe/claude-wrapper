@@ -1004,9 +1004,13 @@ func (h keyedParkedHold) Hold(_ context.Context, row FlaggedRow) (string, bool) 
 // baseline, so there is nothing for a successful reopen to commit.
 func (h keyedParkedHold) Opened(_ context.Context, _ FlaggedRow) {}
 
-// runPRTicks drives one tick three times against one pull request observable:
-// the first records the baseline, the second repeats the same reading, and the
-// third moves the head.
+// runPRTicks drives one tick four times against one pull request observable:
+// the first records the baseline, the second repeats the same reading, the third
+// moves the head, and the fourth repeats the moved reading.
+//
+// ⚠️ The fourth tick is the regression guard. Committing the advanced baseline
+// only after a successful open is what makes tick 4 hold; recording it inside
+// Hold made tick 4 hold too, but a row refused by caps in between never retried.
 func runPRTicks(tick *FlaggedTick, runner *recordingRunner) []FlaggedTickResult {
 	ctx := context.Background()
 	runner.out = []byte(`{"headRefOid":"aaa","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
@@ -1014,7 +1018,8 @@ func runPRTicks(tick *FlaggedTick, runner *recordingRunner) []FlaggedTickResult 
 	second, _ := tick.Tick(ctx)
 	runner.out = []byte(`{"headRefOid":"bbb","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
 	third, _ := tick.Tick(ctx)
-	return []FlaggedTickResult{first, second, third}
+	fourth, _ := tick.Tick(ctx)
+	return []FlaggedTickResult{first, second, third, fourth}
 }
 
 var _ = ginkgo.Describe("flagged tick park gate", func() {
@@ -1061,6 +1066,9 @@ var _ = ginkgo.Describe("flagged tick park gate", func() {
 		gomega.Expect(results[0].Opened).To(gomega.BeEmpty())
 		gomega.Expect(results[1].Opened).To(gomega.BeEmpty())
 		gomega.Expect(results[2].Opened).To(gomega.ConsistOf(firstID))
+		// The moved reading repeats, so the row holds again: the advanced baseline
+		// was committed by the successful open above.
+		gomega.Expect(results[3].Opened).To(gomega.BeEmpty())
 		gomega.Expect(argv).To(gomega.Equal(
 			"pr view 412 --repo bborbe/claude-wrapper --json headRefOid,reviewDecision,state",
 		))
