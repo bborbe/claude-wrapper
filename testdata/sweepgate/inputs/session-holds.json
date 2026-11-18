@@ -1,0 +1,8 @@
+{
+  "holds": {
+    "held-session-0001": {
+      "reason": "operator parked it",
+      "held_at": "not-a-timestamp"
+    }
+  }
+}
