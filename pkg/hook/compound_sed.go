@@ -133,9 +133,12 @@ func readableOperand(path string, cwd string, roots []string) bool {
 			full = filepath.Join(home, strings.TrimPrefix(path, "~/"))
 		}
 	}
+	if hasDotDot(full) {
+		return false
+	}
 	real, err := filepath.EvalSymlinks(full)
 	if err != nil {
-		real = full
+		return false
 	}
 	if strings.HasPrefix(real, "/tmp/") || strings.HasPrefix(real, "/private/tmp/") {
 		return true

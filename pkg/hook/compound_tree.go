@@ -146,6 +146,11 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 		w.calls++
 		return nil
 	}
+	if singleShapeHeads[words[0]] {
+		// git / sed / gh are approved by their shape guard or not at all: a broad
+		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
+		return errCompoundUnmodelled
+	}
 	if wrapperProgram(words[0]) {
 		return errCompoundUnmodelled
 	}
@@ -196,11 +201,21 @@ func literalWord(word *syntax.Word) (string, bool) {
 	if word == nil || len(word.Parts) != 1 {
 		return "", false
 	}
-	lit, ok := word.Parts[0].(*syntax.Lit)
-	if !ok {
-		return "", false
+	switch part := word.Parts[0].(type) {
+	case *syntax.Lit:
+		return part.Value, true
+	case *syntax.DblQuoted:
+		// `"/x/y"` with no expansion inside is the same single word as `/x/y`.
+		if len(part.Parts) != 1 {
+			return "", false
+		}
+		lit, ok := part.Parts[0].(*syntax.Lit)
+		if !ok || strings.ContainsAny(lit.Value, "\\$`") {
+			return "", false
+		}
+		return lit.Value, true
 	}
-	return lit.Value, true
+	return "", false
 }
 
 // isDupTarget reports whether a descriptor target is a digit or `-`.
@@ -214,7 +229,7 @@ func isDupTarget(target string) bool {
 // compoundShapeAllows reports whether a shape guard approves this call without an
 // allow rule. The caller checks the gated rules first, so a deny or ask still wins.
 func compoundShapeAllows(words []string, cwd string, roots []string) bool {
-	if len(words) == 0 {
+	if len(words) == 0 || !unexpandedWords(words) {
 		return false
 	}
 	switch words[0] {
@@ -228,6 +243,24 @@ func compoundShapeAllows(words []string, cwd string, roots []string) bool {
 			GhReadAllows(words[1:])
 	}
 	return false
+}
+
+// unexpandedWords reports whether no word is subject to glob or tilde expansion,
+// which turns a planted file name like `--output=x` into an option. A leading
+// `~/` is the one tilde form allowed: UnderRoots resolves it itself.
+func unexpandedWords(words []string) bool {
+	for _, word := range words {
+		if strings.ContainsAny(word, "*?[") {
+			return false
+		}
+		if strings.Contains(word, "~") && !strings.HasPrefix(word, "~/") {
+			return false
+		}
+		if strings.Contains(strings.TrimPrefix(word, "~/"), "~") {
+			return false
+		}
+	}
+	return true
 }
 
 // matchesAnyPattern reports whether segment matches any pattern.

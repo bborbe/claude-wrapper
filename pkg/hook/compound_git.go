@@ -82,12 +82,37 @@ func GitShapeAllows(values []string, cwd string, roots []string) bool {
 	}
 	if values[index] == "ls-remote" {
 		for _, value := range values[index+1:] {
-			if strings.Contains(value, ":") {
+			// `-u` is the short `--upload-pack` on older git.
+			if strings.Contains(value, ":") || strings.HasPrefix(value, "-u") {
 				return false
 			}
 		}
 	}
+	if gitDiffFamily[values[index]] && gitShortOutput(values[index+1:]) {
+		return false
+	}
+	if !gitOperandsInRoots(values[index+1:], roots) {
+		return false
+	}
 	return gitReadOnlyArgs(values[index+1:])
+}
+
+// gitDiffFamily are the subcommands where `-o <file>` is the short `--output`.
+var gitDiffFamily = map[string]bool{"log": true, "show": true, "diff": true}
+
+// gitShortOutput reports whether a short-option cluster carries `o`, which in the
+// diff family writes the output to a file (`-o/tmp/x`, `-po /tmp/x`).
+func gitShortOutput(args []string) bool {
+	for _, value := range args {
+		if value == "--" {
+			return false
+		}
+		if strings.HasPrefix(value, "-") && !strings.HasPrefix(value, "--") &&
+			strings.Contains(value[1:], "o") {
+			return true
+		}
+	}
+	return false
 }
 
 // gitReadOnlyArgs reports whether every argument of a read-only subcommand is static.
@@ -177,12 +202,15 @@ func UnderRoots(path string, roots []string) bool {
 			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
 		}
 	}
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) || hasDotDot(path) {
 		return false
 	}
+	// A path that does not resolve is refused, never matched raw. A `..` component
+	// is refused outright: a lexical Clean folds `<root>/link/..` back into the root
+	// while the kernel follows the link first and walks out of it.
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		real = path
+		return false
 	}
 	real += string(os.PathSeparator)
 	for _, root := range roots {
@@ -195,6 +223,54 @@ func UnderRoots(path string, roots []string) bool {
 		}
 	}
 	return false
+}
+
+// hasDotDot reports whether path carries a `..` component.
+func hasDotDot(path string) bool {
+	for _, part := range strings.Split(path, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// gitOperandsInRoots reports whether every path-shaped argument stays in roots.
+// Git reads a file named on its command line whatever the subcommand: `diff` turns
+// into `--no-index` for a path outside the work tree, `grep -f` and `blame -S`
+// read a pattern or revs file. A short option carrying a path, and any `..`, is
+// refused; a long `--opt=<path>` value and an absolute operand must be under roots.
+func gitOperandsInRoots(args []string, roots []string) bool {
+	for _, value := range args {
+		if value == "--" {
+			continue
+		}
+		if hasDotDot(value) || strings.HasPrefix(value, "..") {
+			return false
+		}
+		if strings.HasPrefix(value, "--") {
+			if _, rest, ok := strings.Cut(value, "="); ok && pathShaped(rest) &&
+				!UnderRoots(rest, roots) {
+				return false
+			}
+			continue
+		}
+		if strings.HasPrefix(value, "-") {
+			if strings.Contains(value, "/") {
+				return false
+			}
+			continue
+		}
+		if pathShaped(value) && !UnderRoots(value, roots) {
+			return false
+		}
+	}
+	return true
+}
+
+// pathShaped reports whether value names an absolute or home-relative path.
+func pathShaped(value string) bool {
+	return strings.HasPrefix(value, "/") || strings.HasPrefix(value, "~")
 }
 
 // DefaultGitRoots returns the two directories a read-only git call may read from.

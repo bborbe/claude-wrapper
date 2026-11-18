@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// maxCompoundSegments bounds how many subcommands a compound may carry. A single
-// command is the rules' own job, and a long chain is not something to compose.
+// maxCompoundSegments bounds how many subcommands a compound may carry; a long
+// chain is not something to compose.
 const maxCompoundSegments = 8
 
 // compoundAllowReason is the allow reason the script emits.
@@ -39,6 +39,9 @@ func NewCompoundBashGuardWithRules(
 	return &CompoundBashGuard{loadRules: load}
 }
 
+// MayAllow grants this guard allow authority; see Registry.Evaluate.
+func (g *CompoundBashGuard) MayAllow() bool { return true }
+
 // Name returns the script this guard replaces.
 func (g *CompoundBashGuard) Name() string { return "allow-compound-bash.py" }
 
@@ -51,24 +54,56 @@ func (g *CompoundBashGuard) Applies(input Input) bool {
 	return strings.TrimSpace(command) != ""
 }
 
-// Evaluate allows a compound whose every subcommand is already permitted.
+// singleShapeHeads are the programs whose single-command form only a shape guard
+// can approve. Any other single command is the permission rules' own job.
+var singleShapeHeads = map[string]bool{"git": true, "sed": true, "gh": true}
+
+// Evaluate allows a compound whose every subcommand is already permitted, and a
+// single `git` / `sed` / `gh` call a shape guard approves — `git -C <root> status`
+// matches no `Bash(git <sub>:*)` rule, so only the shape guard can approve it.
 func (g *CompoundBashGuard) Evaluate(input Input) Decision {
-	command, _ := input.BashCommand()
-	if !strings.ContainsAny(command, ";&|") {
-		return Decision{}
+	original, _ := input.BashCommand()
+	command := original
+	substituted, rewritten := SubstituteLiterals(original)
+	if rewritten {
+		body, ok := dropLiteralPrefix(original, substituted)
+		if !ok {
+			return Decision{}
+		}
+		command = body
 	}
-	if UnsafeSyntax(command) {
+	// The rewritten text carries the syntax check; the original only has to be
+	// free of a substitution, since its `${NAME}` words are what got rewritten.
+	if UnsafeSyntax(command) || strings.Contains(original, "`") ||
+		strings.Contains(original, "$(") {
 		return Decision{}
 	}
 	segments, ok := SplitCompound(command)
-	if !ok || len(segments) < 2 || len(segments) > maxCompoundSegments {
+	if !ok || len(segments) < 1 || len(segments) > maxCompoundSegments {
+		return Decision{}
+	}
+	if len(segments) == 1 && !singleShapeHeads[firstWord(segments[0])] {
 		return Decision{}
 	}
 	rules, err := g.loadRules(input.Cwd)
 	if err != nil {
 		return Decision{}
 	}
+	if rewritten && originalGated(original, rules) {
+		return Decision{}
+	}
 	roots := DefaultGitRoots()
+	if len(segments) == 1 {
+		// A single command is approved by a shape guard or not at all; matching it
+		// against the allow rules is Claude Code's own job, and a second matcher
+		// that disagrees with it is a bypass.
+		words := unquoteStaticWords(strings.Fields(segments[0]))
+		if matchesAnyPattern(segments[0], rules.Gated) || !staticWords(words) ||
+			!compoundShapeAllows(words, input.Cwd, roots) {
+			return Decision{}
+		}
+		return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
+	}
 	if compoundTextAllows(segments, rules, input.Cwd, roots) {
 		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
 	}
@@ -76,6 +111,73 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
 	}
 	return Decision{}
+}
+
+// shellReadNames are the variables the shell itself reads, so assigning one changes
+// what a later command does even unexported.
+var shellReadNames = map[string]bool{
+	"PATH": true, "IFS": true, "CDPATH": true, "HOME": true, "ENV": true,
+	"PS4": true, "SHELLOPTS": true, "BASHOPTS": true, "GLOBIGNORE": true,
+	"PROMPT_COMMAND": true, "PWD": true, "OLDPWD": true, "TMPDIR": true,
+	"FPATH": true, "ZDOTDIR": true,
+}
+
+// envRedirectPrefixes name the tool variables that redirect where a tool reads.
+var envRedirectPrefixes = []string{"GIT_", "DOCKER_", "AWS_", "XDG_", "LD_", "DYLD_", "BASH_"}
+
+// dropLiteralPrefix returns the substituted command without its leading
+// assignments. Every assignment is an unexported local whose value now sits in the
+// words that read it, so dropping it leaves the command the shell runs. It refuses
+// a name the shell or a tool reads, and a value the shell would glob or expand.
+func dropLiteralPrefix(original string, substituted string) (string, bool) {
+	prefix := compoundAssignPrefix.FindString(original)
+	if prefix == "" || !strings.HasPrefix(substituted, prefix) {
+		return "", false
+	}
+	for _, pair := range compoundAssignPair.FindAllStringSubmatch(prefix, -1) {
+		if shellReadName(pair[1]) || strings.ContainsAny(pair[2], "*?[]~!#") {
+			return "", false
+		}
+	}
+	return substituted[len(prefix):], true
+}
+
+// shellReadName reports whether assigning name changes what the shell or a tool
+// reads.
+func shellReadName(name string) bool {
+	if shellReadNames[name] {
+		return true
+	}
+	for _, prefix := range envRedirectPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstWord returns the program word of a segment.
+func firstWord(segment string) string {
+	words := strings.Fields(segment)
+	if len(words) == 0 {
+		return ""
+	}
+	return words[0]
+}
+
+// originalGated reports whether any segment of the unrewritten text matches a
+// deny or ask rule, so a substitution can never release a gate.
+func originalGated(original string, rules CompoundRules) bool {
+	segments, ok := SplitCompound(original)
+	if !ok {
+		return true
+	}
+	for _, segment := range segments {
+		if matchesAnyPattern(segment, rules.Gated) {
+			return true
+		}
+	}
+	return false
 }
 
 // staticWords reports whether every word is a plain literal. The shape guards were
@@ -90,6 +192,23 @@ func staticWords(words []string) bool {
 	return true
 }
 
+// unquoteStaticWords strips the double quotes from a word that is nothing but a
+// quoted literal — `"/x/y"` is the same single word as `/x/y`. Any other word is
+// left as it is, so staticWords still refuses it.
+func unquoteStaticWords(words []string) []string {
+	out := make([]string, len(words))
+	for i, word := range words {
+		inner := strings.TrimSuffix(strings.TrimPrefix(word, `"`), `"`)
+		if len(word) >= 2 && word[0] == '"' && word[len(word)-1] == '"' &&
+			!strings.ContainsAny(inner, "$`'\"\\") {
+			out[i] = inner
+			continue
+		}
+		out[i] = word
+	}
+	return out
+}
+
 // compoundTextAllows reports whether every segment is permitted on its own.
 func compoundTextAllows(
 	segments []string,
@@ -98,7 +217,7 @@ func compoundTextAllows(
 	roots []string,
 ) bool {
 	for _, segment := range segments {
-		words := strings.Fields(segment)
+		words := unquoteStaticWords(strings.Fields(segment))
 		if len(words) == 0 {
 			return false
 		}
@@ -108,7 +227,12 @@ func compoundTextAllows(
 		if compoundShapeAllows(words, cwd, roots) && staticWords(words) {
 			continue
 		}
-		if wrapperProgram(words[0]) {
+		if singleShapeHeads[words[0]] {
+		// git / sed / gh are approved by their shape guard or not at all: a broad
+		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
+		return false
+	}
+	if wrapperProgram(words[0]) {
 			return false
 		}
 		if !matchesAnyPattern(segment, rules.Allow) {
