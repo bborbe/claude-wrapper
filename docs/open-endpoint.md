@@ -40,6 +40,9 @@ wrapper executes those rules. It does not re-decide them.
 | `window_key`, `window_id` | role-map key and id; set only when `path` is `tab` |
 | `session_id`, `pane_id` | set when known |
 | `reason`, `remedy` | set only when `branch` is `refused` |
+| `message` | free text: the refusal's detail, or a best-effort start-command note on an opened tab |
+
+A field that is not decided for a row (a row refused at the page read has no role yet) is the empty string; `window_id` is null unless the row opened a tab.
 
 `reason` tokens: `missing-row`, `row-unreadable`, `undecidable-role`, `manager-mode-headless`,
 `truncated-id`, `liveness-unreadable`, `answer-path`, `role-map-key-missing`, `hold-window`,

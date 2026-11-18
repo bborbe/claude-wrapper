@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [005-open-endpoint]
+summary: Added the pure open decision core (DecideOpen, ResolveOpenWindow, FormatOpenLogLine) with every refusal reason and 72 passing Ginkgo specs, documented the verdict message field, and added an Unreleased changelog entry.
+execution_id: 9881bf24-5a56-5157-8303-c8eca57d0834-exec-009-spec-005-open-decision
+dark-factory-version: dev
 created: "2026-11-18T18:59:25Z"
 queued: "2026-11-18T19:12:27Z"
+started: "2026-11-18T19:14:19Z"
+completed: "2026-11-18T19:22:59Z"
 ---
 
 # Pure open decision: row facts to one verdict, with window resolution and every refusal
