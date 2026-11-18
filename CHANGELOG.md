@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: pkg/sweepgate renders the sweep frame in Go — byte-identical box table, grouped rows, action lines and the tick mode, with the parity fixture as the proof and no subprocess for the table
 - feat: pkg/sweepgate ports the covered-subject invariant — open-card attribution, the blocked-on-operator predicate, the row-set re-arm guard, and an always-zero exit contract
 - feat: claude-wrapper owns the sweep gate — one flag group, four CLI modes with their own exit codes, and one daemon goroutine ticking every configured subject
+- docs: docs/sweep-gate.md records the gate's boundary, its four mode contracts, its state-file layout and its refusal table, with a test that binds every listed refusal to the test carrying it
 
 ## v0.34.1
 

@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-sweep-gate-port]
+summary: Added docs/sweep-gate.md with the boundary, four mode contracts, state-file layout, divergences and a 41-row sweep-derived refusal table, plus a binding test and tests for previously uncarried guards
+execution_id: claude-wrapper-sweep-gate-exec-007-spec-003-sweepgate-docs
+dark-factory-version: v0.198.17
 created: "2026-11-18T00:35:03Z"
 queued: "2026-11-18T01:08:39Z"
+started: "2026-11-18T01:38:28Z"
+completed: "2026-11-18T01:48:12Z"
 ---
 
 # sweepgate documentation: the boundary, the contracts and the refusal table
