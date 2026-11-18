@@ -67,6 +67,11 @@ const (
 	//     registering.
 	recentlySpawnedWindow = 90 * time.Minute
 
+	// idleNudgeWindow is how long a nudged session is left alone before it may be
+	// nudged again. A worker that closes its turn at once — nothing left it can do
+	// — would otherwise be prodded on every tick, spending a turn each time.
+	idleNudgeWindow = 30 * time.Minute
+
 	// predicateTimeout bounds one predicate read.
 	//
 	// ⚠️ Twice raised from measurement, not estimate. At 2 minutes the first live
@@ -102,6 +107,9 @@ const (
 type FlaggedTickResult struct {
 	// Opened holds the key of every row this tick opened.
 	Opened []string
+	// Nudged holds the key of every row whose idle, already-held child this tick
+	// sent a new turn to. It is not Opened: no process was spawned.
+	Nudged []string
 	// Refused holds `key: reason` for every row the tick would not open.
 	Refused []string
 	// Skipped holds `key: reason` for every row that was eligible but not due.
@@ -162,6 +170,9 @@ func (r FlaggedTickResult) Line() string {
 		len(r.Opened), len(r.Refused), len(r.Skipped), r.Considered,
 		strings.Join(r.Opened, ","),
 	)
+	if len(r.Nudged) > 0 {
+		line += fmt.Sprintf(" nudged=%d nudged_rows=%s", len(r.Nudged), strings.Join(r.Nudged, ","))
+	}
 	if counts := formatCounts(r.Refused); counts != "" {
 		line += " refused_by_reason=" + counts
 	}
@@ -285,6 +296,38 @@ type FlaggedTick struct {
 	// names this daemon ever opened fresh; expired entries are ignored by the
 	// window check, not pruned.
 	opened map[string]time.Time
+
+	// Idle re-drives a row whose child this process holds idle. Nil disables the
+	// branch: such a row is skipped `not-absent`, as before.
+	Idle FlaggedIdleNudger
+	// nudgedMutex guards nudged.
+	nudgedMutex sync.Mutex
+	// nudged maps a session id to when this process last nudged it.
+	nudged map[string]time.Time
+}
+
+// idleNudgeDue reports whether a not-absent row should be nudged now.
+func (t *FlaggedTick) idleNudgeDue(ctx context.Context, row FlaggedRow, now time.Time) bool {
+	if t.Idle == nil {
+		return false
+	}
+	t.nudgedMutex.Lock()
+	at, ok := t.nudged[row.SessionID]
+	t.nudgedMutex.Unlock()
+	if ok && now.Sub(at) < idleNudgeWindow {
+		return false
+	}
+	return t.Idle.HoldsIdleChild(ctx, row)
+}
+
+// rememberNudged records a session this process just nudged.
+func (t *FlaggedTick) rememberNudged(sessionID string, at time.Time) {
+	t.nudgedMutex.Lock()
+	defer t.nudgedMutex.Unlock()
+	if t.nudged == nil {
+		t.nudged = map[string]time.Time{}
+	}
+	t.nudged[sessionID] = at
 }
 
 // rememberOpened records a never-opened row this process just opened.
@@ -479,6 +522,9 @@ const (
 	rowSkipped
 	// rowRefused means the predicate's own provenance verdict refuses the row.
 	rowRefused
+	// rowNudge means the row reads not-absent only because this process holds its
+	// child idle; it gets a new turn on that child, and spends no reservation.
+	rowNudge
 )
 
 // classify applies the guards that run before any cap is consulted: the
@@ -497,10 +543,10 @@ func (t *FlaggedTick) classify(
 	now time.Time,
 ) (string, rowAction) {
 	if reason, refused, skipped := decision(row, recent, now); refused || skipped {
-		if skipped {
-			return reason, rowSkipped
+		if refused {
+			return reason, rowRefused
 		}
-		return reason, rowRefused
+		return t.classifySkip(ctx, row, reason, now)
 	}
 	if t.Parked != nil {
 		if reason, held := t.Parked.Hold(ctx, row); held {
@@ -508,6 +554,34 @@ func (t *FlaggedTick) classify(
 		}
 	}
 	return "", rowEligible
+}
+
+// classifySkip turns a not-absent skip into a nudge when this process holds the
+// row's child idle. The park gate still applies: a parked row is not nudged.
+func (t *FlaggedTick) classifySkip(
+	ctx context.Context, row FlaggedRow, reason string, now time.Time,
+) (string, rowAction) {
+	if reason != reasonNotAbsent || !t.idleNudgeDue(ctx, row, now) {
+		return reason, rowSkipped
+	}
+	if t.Parked != nil {
+		if parkReason, held := t.Parked.Hold(ctx, row); held {
+			return parkReason, rowSkipped
+		}
+	}
+	return "", rowNudge
+}
+
+// nudgeRow sends the row's work turn to its idle child and records the outcome.
+func (t *FlaggedTick) nudgeRow(
+	ctx context.Context, row FlaggedRow, now time.Time, result *FlaggedTickResult,
+) {
+	if err := t.Idle.Nudge(ctx, row); err != nil {
+		result.Refused = append(result.Refused, row.Key()+": nudge failed: "+err.Error())
+		return
+	}
+	t.rememberNudged(row.SessionID, now)
+	result.Nudged = append(result.Nudged, row.Key())
 }
 
 // tickFromRows is the decision pass, separated from the read so the running loop
@@ -543,17 +617,20 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+halted)
 			continue
 		}
-		if len(result.Opened) >= maxRowsPerTick {
+		if len(result.Opened)+len(result.Nudged) >= maxRowsPerTick {
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
 		reason, action := t.classify(ctx, row, recent, now)
-		if action == rowSkipped {
+		switch action {
+		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
 			continue
-		}
-		if action == rowRefused {
+		case rowRefused:
 			result.Refused = append(result.Refused, row.Key()+": "+reason)
+			continue
+		case rowNudge:
+			t.nudgeRow(ctx, row, now, &result)
 			continue
 		}
 		// A cap or rate refusal ENDS the tick's opening rather than being retried
