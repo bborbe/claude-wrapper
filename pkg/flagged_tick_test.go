@@ -8,6 +8,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -1108,5 +1109,341 @@ var _ = ginkgo.Describe("flagged tick resume delay", func() {
 		// Absent, never zero: a zero would read as an instant resume.
 		gomega.Expect(result.ResumeDelays).To(gomega.BeEmpty())
 		gomega.Expect(result.Line()).NotTo(gomega.ContainSubstring("resume_delay="))
+	})
+})
+
+// tickParkedCards is this file's fake OpenCardReader. The name is deliberately
+// specific so it cannot collide with the card fake another test file defines,
+// and both the open set and the error are settable between ticks.
+type tickParkedCards struct {
+	ids map[string]struct{}
+	err error
+}
+
+func (c *tickParkedCards) OpenSessionIDs(context.Context) (map[string]struct{}, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.ids, nil
+}
+
+// parkedRow builds an ABSENT row with a UUID session id, the shape the park
+// gate reads a closer for.
+func parkedRow(sessionID, name string) FlaggedRow {
+	return FlaggedRow{
+		Kind: "task", Vault: "private-personal", Name: name,
+		Role: "agent", Mode: "headless",
+		SessionID: sessionID, Liveness: "ABSENT", Branch: "resume",
+	}
+}
+
+// newTickWithParkedGate builds a tick wired to the REAL park gate over real temp
+// sessions and parked directories, writing a real events.jsonl for every row's
+// session id. Only the card reader and the `gh` runner are fakes.
+func newTickWithParkedGate(
+	rows []FlaggedRow,
+	closers map[string]string,
+	cards OpenCardReader,
+	runner CommandRunner,
+	clock libtime.CurrentDateTimeGetter,
+) *FlaggedTick {
+	sessionsDir := ginkgo.GinkgoT().TempDir()
+	parkedDir := ginkgo.GinkgoT().TempDir()
+	for _, row := range rows {
+		if row.SessionID == "" {
+			continue
+		}
+		writeSessionCloser(sessionsDir, row.SessionID, closers[row.SessionID])
+	}
+	tick := newTick(staticSource{rows: rows}, &recordingReopener{}, &recordingCaps{})
+	tick.Now = clock
+	tick.Parked = NewParkedGate(sessionsDir, parkedDir, cards, runner, clock)
+	return tick
+}
+
+// newTickWithParkedGateAndCaps is newTickWithParkedGate with the tick's reopener
+// and caps supplied by the caller, so one spec can make the tick refuse a row and
+// then open the same row on a later tick against the same park gate.
+func newTickWithParkedGateAndCaps(
+	rows []FlaggedRow,
+	closers map[string]string,
+	cards OpenCardReader,
+	runner CommandRunner,
+	clock libtime.CurrentDateTimeGetter,
+	reopener *recordingReopener,
+	caps *recordingCaps,
+) *FlaggedTick {
+	sessionsDir := ginkgo.GinkgoT().TempDir()
+	parkedDir := ginkgo.GinkgoT().TempDir()
+	for _, row := range rows {
+		if row.SessionID == "" {
+			continue
+		}
+		writeSessionCloser(sessionsDir, row.SessionID, closers[row.SessionID])
+	}
+	tick := newTick(staticSource{rows: rows}, reopener, caps)
+	tick.Now = clock
+	tick.Parked = NewParkedGate(sessionsDir, parkedDir, cards, runner, clock)
+	return tick
+}
+
+// keyedParkedHold is a stub ParkedHold that holds exactly one row key.
+type keyedParkedHold struct {
+	key string
+}
+
+func (h keyedParkedHold) Hold(_ context.Context, row FlaggedRow) (string, bool) {
+	if row.Key() == h.key {
+		return string(ParkedOnCard), true
+	}
+	return "", false
+}
+
+// Opened is the no-op half of the interface: this stub never produces a pending
+// baseline, so there is nothing for a successful reopen to commit.
+func (h keyedParkedHold) Opened(_ context.Context, _ FlaggedRow) {}
+
+// runPRTicks drives one tick four times against one pull request observable:
+// the first records the baseline, the second repeats the same reading, the third
+// moves the head, and the fourth repeats the moved reading.
+//
+// ⚠️ The fourth tick is the regression guard. Committing the advanced baseline
+// only after a successful open is what makes tick 4 hold; recording it inside
+// Hold made tick 4 hold too, but a row refused by caps in between never retried.
+func runPRTicks(tick *FlaggedTick, runner *recordingRunner) []FlaggedTickResult {
+	ctx := context.Background()
+	runner.out = []byte(`{"headRefOid":"aaa","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
+	first, _ := tick.Tick(ctx)
+	second, _ := tick.Tick(ctx)
+	runner.out = []byte(`{"headRefOid":"bbb","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
+	third, _ := tick.Tick(ctx)
+	fourth, _ := tick.Tick(ctx)
+	return []FlaggedTickResult{first, second, third, fourth}
+}
+
+var _ = ginkgo.Describe("flagged tick park gate", func() {
+	base := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	ginkgo.It("holds a row parked on an unanswered card until the card is answered", func() {
+		sessionID := "123e4567-e89b-12d3-a456-426614174001"
+		row := parkedRow(sessionID, "card row")
+		cards := &tickParkedCards{ids: map[string]struct{}{sessionID: {}}}
+		tick := newTickWithParkedGate(
+			[]FlaggedRow{row},
+			map[string]string{sessionID: "⏰ Ends: card 3f9a1c7e answered"},
+			cards, &recordingRunner{}, fixedNow(base),
+		)
+
+		first, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=1 %s\n", first.Line())
+		gomega.Expect(first.Opened).To(gomega.BeEmpty())
+		gomega.Expect(first.Line()).To(gomega.ContainSubstring("skipped_by_reason=parked-on-card:1"))
+
+		cards.ids = map[string]struct{}{}
+		second, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=2 %s\n", second.Line())
+		gomega.Expect(second.Opened).To(gomega.ConsistOf(sessionID))
+	})
+
+	ginkgo.It("holds a row parked on a pull request until the pull request changes", func() {
+		firstID := "123e4567-e89b-12d3-a456-426614174002"
+		runner := &recordingRunner{}
+		tick := newTickWithParkedGate(
+			[]FlaggedRow{parkedRow(firstID, "pr row")},
+			map[string]string{firstID: "⏰ Ends: bborbe/claude-wrapper#412 merges"},
+			nil, runner, fixedNow(base),
+		)
+		results := runPRTicks(tick, runner)
+		for n, result := range results {
+			fmt.Printf("tick=%d %s\n", n+1, result.Line())
+		}
+		argv := strings.Join(runner.argv[1:], " ")
+		fmt.Printf("argv=%s\n", argv)
+		gomega.Expect(results[0].Opened).To(gomega.BeEmpty())
+		gomega.Expect(results[1].Opened).To(gomega.BeEmpty())
+		gomega.Expect(results[2].Opened).To(gomega.ConsistOf(firstID))
+		// The moved reading repeats, so the row holds again: the advanced baseline
+		// was committed by the successful open above.
+		gomega.Expect(results[3].Opened).To(gomega.BeEmpty())
+		gomega.Expect(argv).To(gomega.Equal(
+			"pr view 412 --repo bborbe/claude-wrapper --json headRefOid,reviewDecision,state",
+		))
+
+		secondID := "123e4567-e89b-12d3-a456-426614174003"
+		other := &recordingRunner{}
+		otherTick := newTickWithParkedGate(
+			[]FlaggedRow{parkedRow(secondID, "other pr row")},
+			map[string]string{secondID: "⏰ Ends: bborbe/other-repo#9 merges"},
+			nil, other, fixedNow(base),
+		)
+		otherResults := runPRTicks(otherTick, other)
+		otherArgv := strings.Join(other.argv[1:], " ")
+		fmt.Printf("other-argv=%s\n", otherArgv)
+		gomega.Expect(otherResults[2].Opened).To(gomega.ConsistOf(secondID))
+		gomega.Expect(otherArgv).To(gomega.Equal(
+			"pr view 9 --repo bborbe/other-repo --json headRefOid,reviewDecision,state",
+		))
+
+		// A terminal state satisfies the wait on its own, whatever the head is.
+		for _, state := range []string{"MERGED", "CLOSED"} {
+			other.out = []byte(fmt.Sprintf(
+				`{"headRefOid":"ccc-%s","reviewDecision":"","state":%q}`, state, state,
+			))
+			result, err := otherTick.Tick(ctx)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			fmt.Printf("state=%s opened=%t\n", state, len(result.Opened) == 1)
+			gomega.Expect(result.Opened).To(gomega.HaveLen(1))
+		}
+	})
+
+	ginkgo.It("retries a moved park the caps refused instead of committing it", func() {
+		// The trap this guards: Hold runs BEFORE the caps and rate guards, so a
+		// movement committed inside Hold would be written by a row that was then
+		// refused — the old fingerprint gone, and a `parked-on-pr` row (no expiry)
+		// held on the moved reading for good. The pending baseline makes the
+		// refusal cost one tick, not the row.
+		sessionID := "123e4567-e89b-12d3-a456-426614174004"
+		runner := &recordingRunner{}
+		reopener := &recordingReopener{}
+		caps := &recordingCaps{}
+		tick := newTickWithParkedGateAndCaps(
+			[]FlaggedRow{parkedRow(sessionID, "caps-refused pr row")},
+			map[string]string{sessionID: "⏰ Ends: bborbe/claude-wrapper#412 merges"},
+			nil, runner, fixedNow(base), reopener, caps,
+		)
+
+		runner.out = []byte(`{"headRefOid":"aaa","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
+		first, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=1 %s\n", first.Line())
+		gomega.Expect(first.Opened).To(gomega.BeEmpty())
+		gomega.Expect(first.Skipped).To(gomega.HaveLen(1))
+		gomega.Expect(reasonClass(first.Skipped[0])).To(gomega.Equal(string(ParkedOnPR)))
+		gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+
+		// The head moves, but the caps refuse the row: nothing opens, and the
+		// advanced reading must stay pending rather than being committed.
+		runner.out = []byte(`{"headRefOid":"bbb","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
+		caps.workerErr = stderrors.New("maxConcurrent reached")
+		second, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=2 %s\n", second.Line())
+		gomega.Expect(second.Opened).To(gomega.BeEmpty())
+		gomega.Expect(second.Refused).To(gomega.HaveLen(1))
+		gomega.Expect(reasonClass(second.Refused[0])).To(gomega.Equal(reasonCapsRefused))
+		gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+
+		// Caps clear: the SAME moved reading opens, which proves the old fingerprint
+		// survived the refusal and the movement was re-detected on this tick.
+		caps.workerErr = nil
+		third, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=3 %s\n", third.Line())
+		gomega.Expect(third.Opened).To(gomega.ConsistOf(sessionID))
+		gomega.Expect(third.Refused).To(gomega.BeEmpty())
+		gomega.Expect(reopener.snapshot()).To(gomega.HaveLen(1))
+		gomega.Expect(reopener.snapshot()[0].Key()).To(gomega.Equal(sessionID))
+	})
+
+	ginkgo.It("resolves a host and a clock park", func() {
+		live, err := net.Listen("tcp", "127.0.0.1:0")
+		gomega.Expect(err).To(gomega.BeNil())
+		defer func() { _ = live.Close() }()
+		liveAddr, ok := live.Addr().(*net.TCPAddr)
+		gomega.Expect(ok).To(gomega.BeTrue())
+
+		dead, err := net.Listen("tcp", "127.0.0.1:0")
+		gomega.Expect(err).To(gomega.BeNil())
+		deadAddr, ok := dead.Addr().(*net.TCPAddr)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(dead.Close()).To(gomega.Succeed())
+
+		cases := []struct {
+			name    string
+			closer  string
+			open    bool
+			skipped string
+		}{
+			{"unreachable-host", fmt.Sprintf("⏰ Ends: wait for 127.0.0.1:%d", deadAddr.Port),
+				false, string(ParkedOnHost)},
+			{"reachable-host", fmt.Sprintf("⏰ Ends: wait for 127.0.0.1:%d", liveAddr.Port),
+				true, ""},
+			{"future-clock", "⏰ Ends: " + base.Add(time.Hour).Format(time.RFC3339),
+				false, string(ParkedUntil)},
+			{"past-clock", "⏰ Ends: " + base.Add(-time.Hour).Format(time.RFC3339),
+				true, ""},
+		}
+		for i, tc := range cases {
+			sessionID := fmt.Sprintf("123e4567-e89b-12d3-a456-4266141740%02d", i)
+			tick := newTickWithParkedGate(
+				[]FlaggedRow{parkedRow(sessionID, tc.name)},
+				map[string]string{sessionID: tc.closer},
+				nil, &recordingRunner{}, fixedNow(base),
+			)
+			result, tickErr := tick.Tick(ctx)
+			gomega.Expect(tickErr).NotTo(gomega.HaveOccurred())
+			reason := ""
+			if len(result.Skipped) > 0 {
+				reason = reasonClass(result.Skipped[0])
+			}
+			fmt.Printf("case=%s opened=%t skipped=%s\n", tc.name, len(result.Opened) == 1, reason)
+			gomega.Expect(len(result.Opened) == 1).To(gomega.Equal(tc.open))
+			gomega.Expect(reason).To(gomega.Equal(tc.skipped))
+		}
+	})
+
+	ginkgo.It("fails closed on an unreadable probe", func() {
+		cardID := "123e4567-e89b-12d3-a456-426614174010"
+		cardTick := newTickWithParkedGate(
+			[]FlaggedRow{parkedRow(cardID, "card row")},
+			map[string]string{cardID: "⏰ Ends: card 3f9a1c7e answered"},
+			&tickParkedCards{err: stderrors.New("store unavailable")},
+			&recordingRunner{}, fixedNow(base),
+		)
+		cardResult, err := cardTick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		cardReopener, ok := cardTick.Reopener.(*recordingReopener)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		cardReason := reasonClass(cardResult.Skipped[0])
+		fmt.Printf("reopens=%d skipped=%s\n", len(cardReopener.snapshot()), cardReason)
+		gomega.Expect(cardReopener.snapshot()).To(gomega.BeEmpty())
+		gomega.Expect(cardReason).To(gomega.Equal(string(ParkedOnCard)))
+
+		prID := "123e4567-e89b-12d3-a456-426614174011"
+		prTick := newTickWithParkedGate(
+			[]FlaggedRow{parkedRow(prID, "pr row")},
+			map[string]string{prID: "⏰ Ends: bborbe/claude-wrapper#412 merges"},
+			nil, &recordingRunner{err: stderrors.New("exit status 1")}, fixedNow(base),
+		)
+		prResult, err := prTick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		prReopener, ok := prTick.Reopener.(*recordingReopener)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		prReason := reasonClass(prResult.Skipped[0])
+		fmt.Printf("reopens=%d skipped=%s\n", len(prReopener.snapshot()), prReason)
+		gomega.Expect(prReopener.snapshot()).To(gomega.BeEmpty())
+		gomega.Expect(prReason).To(gomega.Equal(string(ParkedOnPR)))
+	})
+
+	ginkgo.It("skips a parked row without spending a reservation", func() {
+		first := rowWith("agent", "headless", "parked-row")
+		second := rowWith("agent", "headless", "eligible-row")
+		reopener := &recordingReopener{}
+		caps := &recordingCaps{}
+		tick := newTick(staticSource{rows: []FlaggedRow{first, second}}, reopener, caps)
+		tick.Parked = keyedParkedHold{key: first.Key()}
+
+		result, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("%s\n", result.Line())
+		gomega.Expect(result.Line()).
+			To(gomega.ContainSubstring("opened=1 refused=0 skipped=1 considered=2"))
+		opened := reopener.snapshot()
+		gomega.Expect(opened).To(gomega.HaveLen(1))
+		gomega.Expect(opened[0].Key()).To(gomega.Equal(second.Key()))
+		gomega.Expect(caps.modes()).To(gomega.HaveLen(1))
 	})
 })

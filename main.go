@@ -163,19 +163,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The sweep gate's one-shot modes run before the supervisor is built, so they
-	// never bind the listener and can be invoked beside the live daemon — the same
-	// reason the fleet-pusher probe runs here.
-	if *sweepGate.mode != "" {
-		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
-	}
-
-	// The scoped probe: one wake tick, then exit. It runs before the supervisor is
-	// built, so it never binds the listener and can be invoked beside the live
-	// daemon. It also never writes the heartbeat — a probe must not make the
-	// watchdog believe the production cadence is alive.
-	if *fleetPusher.once {
-		runFleetPusherOnce(ctx, *attentionURL, *fleetPusher.sessions, *fleetPusher.send)
+	// Both one-shot modes run before the supervisor is built, so they never bind
+	// the listener and can be invoked beside the live daemon.
+	if runOneShotMode(ctx, sweepGate, fleetPusher, *attentionURL) {
 		return
 	}
 
@@ -185,6 +175,7 @@ func main() {
 	// half-open files.
 	decider := &pkg.PermissionDecider{Log: pkg.NewPermissionLog(*permissionLog, now), Now: now}
 	store := pkg.NewSessionStore(*stateDir)
+	parkedGate := newParkedGate(*stateDir, *attentionURL, now)
 	supervisor, ledger := newSupervisor(
 		ctx, *claudeBin, *listen, *attentionURL, store, decider, *permissionTimeout, now,
 		taskResolverFromFlag(*closeOnTerminalTaskDirs),
@@ -213,7 +204,7 @@ func main() {
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
 		*flagged.interval, *flagged.script,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
-		*fleetPusher.heartbeat,
+		*fleetPusher.heartbeat, parkedGate,
 	)
 
 	startDaemonJobs(ctx, supervisor, sweepGate)
@@ -307,6 +298,23 @@ func openCardsFromURL(attentionURL string) pkg.OpenCardReader {
 		return nil
 	}
 	return pkg.NewBoardOpenCards(pkg.NewBoardStore(attentionURL, nil))
+}
+
+// newParkedGate builds the flagged tick's park gate, or nil when the state
+// directories cannot be resolved — a nil gate is an inactive gate.
+func newParkedGate(
+	stateDir string,
+	attentionURL string,
+	now libtime.CurrentDateTimeGetter,
+) pkg.ParkedHold {
+	sessionsDir, parkedDir, err := pkg.StateDirs(stateDir)
+	if err != nil {
+		log.Printf("WARNING: parked gate disabled: %v", err)
+		return nil
+	}
+	return pkg.NewParkedGate(
+		sessionsDir, parkedDir, openCardsFromURL(attentionURL), pkg.ExecCommandRunner{}, now,
+	)
 }
 
 // taskResolverFromFlag builds the close-on-terminal-task resolver; an empty
@@ -561,6 +569,7 @@ func startFleetFaces(
 	fleetPusherWatchInterval time.Duration,
 	fleetPusherWatchMaxAge time.Duration,
 	fleetPusherHeartbeat string,
+	parked pkg.ParkedHold,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
@@ -634,6 +643,7 @@ func startFleetFaces(
 		caps,
 		ledger,
 		now,
+		parked,
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
@@ -752,6 +762,30 @@ func newFleetPusher(
 // It is the probe entry point: `--sessions A,B --send` types only into A and B, so
 // the operator's live sessions are untouched, and the default without `--send` is
 // a dry run that types nothing at all.
+// runOneShotMode runs the sweep-gate and fleet-pusher probe modes, both of which
+// must run before the supervisor is built so they never bind the listener and can
+// be invoked beside the live daemon.
+//
+// It reports whether one ran, in which case the caller must stop: the sweep-gate
+// mode exits the process itself with its own status, and the fleet-pusher probe
+// is a single wake tick with no daemon behind it. Neither writes a heartbeat — a
+// probe must not make the watchdog believe the production cadence is alive.
+func runOneShotMode(
+	ctx context.Context,
+	sweepGate sweepGateFlags,
+	fleetPusher fleetPusherFlags,
+	attentionURL string,
+) bool {
+	if *sweepGate.mode != "" {
+		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
+	}
+	if !*fleetPusher.once {
+		return false
+	}
+	runFleetPusherOnce(ctx, attentionURL, *fleetPusher.sessions, *fleetPusher.send)
+	return true
+}
+
 func runFleetPusherOnce(
 	ctx context.Context,
 	attentionURL string,
@@ -883,6 +917,7 @@ func startFlaggedTick(
 	caps pkg.SpawnCaps,
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
+	parked pkg.ParkedHold,
 ) {
 	if interval <= 0 {
 		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
@@ -893,6 +928,7 @@ func startFlaggedTick(
 		Reopener: reopener,
 		Caps:     caps,
 		Ledger:   ledger,
+		Parked:   parked,
 		Now:      now,
 		Interval: interval,
 	}
