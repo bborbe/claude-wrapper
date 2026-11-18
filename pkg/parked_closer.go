@@ -285,15 +285,20 @@ func octetsValid(octets []string) bool {
 	return true
 }
 
-// parkedDeadline returns the first token that parses as RFC3339 or as a local
-// date, or nil when no token names a clock.
+// parkedDeadline returns the first token that parses as a clock, or nil when no
+// token names one.
+//
+// ⚠️ `2006-01-02T15:04` is accepted alongside RFC3339 because the live
+// declarations write that shape — `2026-11-18T14:30` parsed as neither RFC3339
+// nor a bare date, so it fell to the MAX_AGE_S expiry instead of the clock it
+// named. Measured 2026-11-18 in review.
 func parkedDeadline(text string) *time.Time {
+	layouts := []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04", "2006-01-02"}
 	for _, token := range strings.Fields(text) {
-		if deadline, err := time.Parse(time.RFC3339, token); err == nil {
-			return &deadline
-		}
-		if deadline, err := time.ParseInLocation("2006-01-02", token, time.Local); err == nil {
-			return &deadline
+		for _, layout := range layouts {
+			if deadline, err := time.ParseInLocation(layout, token, time.Local); err == nil {
+				return &deadline
+			}
 		}
 	}
 	return nil
