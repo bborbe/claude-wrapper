@@ -54,6 +54,21 @@ func (r FlaggedRow) Key() string {
 	return r.Vault + "/" + r.Kind + "/" + r.Name
 }
 
+// OperatorNamed reports whether the operator's own flag put this row here.
+//
+// The predicate refuses every row it cannot attribute to an opening actor, and
+// `decision` refuses those rows before any cap check, so a row that reaches the
+// cap check carries no provenance refusal at all — it is operator-flagged, or it
+// is a legacy flag the operator opened. Operator ruling 2026-11-17: such a row
+// counts as operator-named and may open up to the HARD headless limit.
+//
+// ⚠️ The predicate stays the single home of "who may set a flag" — this method
+// reads its verdict and never re-derives OPENING_ACTORS, for the same reason
+// `Refused` documents.
+func (r FlaggedRow) OperatorNamed() bool {
+	return len(r.Refused) == 0
+}
+
 // FlaggedRowSource answers the eligible flagged rows.
 //
 // An interface rather than a direct exec so the decision rule can be tested

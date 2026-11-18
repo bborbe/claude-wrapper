@@ -109,6 +109,15 @@ type FlaggedTickResult struct {
 	// Considered is how many rows the tick was handed. It is the number the
 	// three buckets must add up to; without it a dropped row is invisible.
 	Considered int
+	// ResumeDelays holds `key=<delay>` for every row this tick opened, where the
+	// delay is measured from the ledger's own `ended_at` — the instant the turn
+	// that produced the stop closed. It is the per-resume measurement: the row's
+	// dead time between becoming able to continue and being resumed.
+	//
+	// A row with no `ended_at` is ABSENT rather than zero. An absent entry means
+	// the delay was not measurable; a zero would read as an instant resume, which
+	// is the one reading this measurement exists to distinguish.
+	ResumeDelays []string
 }
 
 // Line renders the summary line a tick writes.
@@ -140,6 +149,12 @@ func (r FlaggedTickResult) Line() string {
 	}
 	if counts := formatCounts(r.Skipped); counts != "" {
 		line += " skipped_by_reason=" + counts
+	}
+	// `resume_delay=` is the per-resume measurement, and it sits on the summary
+	// line for the same reason `rows=` does: a row's dead time has to be readable
+	// next to the tick that ended it, or the delay cannot be attributed to a tick.
+	if len(r.ResumeDelays) > 0 {
+		line += " resume_delay=" + strings.Join(r.ResumeDelays, ",")
 	}
 	return line
 }
@@ -425,8 +440,13 @@ func (t *FlaggedTick) tickFromRows(
 	var result FlaggedTickResult
 	ordered := orderFlaggedRows(rows)
 	result.Considered = len(ordered)
-	recent := t.recentlySpawned(ctx)
+	// One ledger read serves both the recently-spawned guard and the resume-delay
+	// measurement: two reads of the same store in one tick could disagree, and the
+	// measurement would then describe a fleet state the decision never saw.
+	ledger := t.ledgerRows(ctx)
+	recent := recentlySpawned(ledger)
 	t.mergeOpened(recent)
+	ended := endedAtBySession(ledger)
 	now := t.now()
 	// halted is the fleet-level refusal that ended this tick's opening pass. It
 	// is a reason string, not a bool, because the rows it leaves behind are still
@@ -458,7 +478,14 @@ func (t *FlaggedTick) tickFromRows(
 		// a row could vanish with no trace at all — the accounting defect this tick
 		// had measured 2026-11-16. The remaining rows are now recorded as
 		// unconsidered, which is the honest description of what happened to them.
-		if err := t.Caps.CheckWorker(ctx, row.Mode, false); err != nil {
+		// The third argument is the row's own provenance verdict, never a constant.
+		// `decision` has already refused every row carrying a `Refused` entry, so
+		// what arrives here is operator-flagged or legacy-operator-opened and counts
+		// as operator-named (operator ruling 2026-11-17): it may open up to the hard
+		// limit. Passing `false` refused every one of them at the soft cap — the
+		// fleet stood at 51 live against 50 allowed on 2026-11-18 00:58 and 28 rows
+		// went unconsidered.
+		if err := t.Caps.CheckWorker(ctx, row.Mode, row.OperatorNamed()); err != nil {
 			halted = reasonUnconsidered
 			result.Refused = append(result.Refused, row.Key()+": "+reasonCapsRefused+": "+err.Error())
 			continue
@@ -476,8 +503,32 @@ func (t *FlaggedTick) tickFromRows(
 			t.rememberOpened(row, now)
 		}
 		result.Opened = append(result.Opened, row.Key())
+		recordResumeDelay(&result, row, ended, now)
 	}
 	return result
+}
+
+// recordResumeDelay appends `key=<delay>` for a row this tick just opened, where
+// the delay is measured from the ledger's own `ended_at` — the instant the turn
+// that produced the stop closed.
+//
+// A row with no ended_at — never stopped, or a spawn row whose turn never closed
+// — is omitted rather than recorded as zero: a zero would read as an instant
+// resume, which is the one reading this measurement exists to distinguish. A
+// future ended_at is skipped for the same reason, since clock skew would
+// otherwise print a negative delay.
+func recordResumeDelay(
+	result *FlaggedTickResult,
+	row FlaggedRow,
+	ended map[string]time.Time,
+	now time.Time,
+) {
+	at, ok := ended[row.SessionID]
+	if !ok || at.After(now) {
+		return
+	}
+	result.ResumeDelays = append(result.ResumeDelays,
+		row.Key()+"="+now.Sub(at).Round(time.Second).String())
 }
 
 // readRows bounds one predicate read.
@@ -498,21 +549,65 @@ func (t *FlaggedTick) readRows(ctx context.Context) ([]FlaggedRow, error) {
 	return rows, nil
 }
 
-// recentlySpawned maps session id — and, for a never-opened row, labelKey(task
-// name) — to its ledger spawn time.
+// ledgerRows reads the ledger once for a tick.
 //
-// A ledger read that fails is an empty map, not an error: the guard is a safety
-// margin, and refusing every row because the store was down would turn a store
-// outage into a fleet-wide stall.
-func (t *FlaggedTick) recentlySpawned(ctx context.Context) map[string]time.Time {
+// A nil result means the read could not run. Every consumer degrades to its
+// empty-map behaviour rather than refusing rows: the store is a safety margin
+// here, not a gate, and turning a store outage into a fleet-wide stall is the
+// failure this shape exists to avoid.
+func (t *FlaggedTick) ledgerRows(ctx context.Context) []LedgerRow {
 	if t.Ledger == nil {
-		return map[string]time.Time{}
+		return nil
 	}
 	rows, err := t.Ledger.Rows(ctx)
 	if err != nil {
-		t.logf("flagged-tick: ledger read failed, recently-spawned guard inactive: %v", err)
-		return map[string]time.Time{}
+		// ⚠️ Both consumers go dark on this failure, not just the guard: a tick
+		// that opened rows while the store was down logs no `resume_delay=` at
+		// all. Naming only the guard would leave an operator reading this line
+		// during an outage with no idea the metric is dark too.
+		t.logf("flagged-tick: ledger read failed, recently-spawned guard and "+
+			"resume_delay measurement inactive: %v", err)
+		return nil
 	}
+	return rows
+}
+
+// endedAtBySession maps a session id to the instant its last turn ended, which
+// is the start of clock for the resume-delay measurement.
+//
+// It is a package function rather than a method, and `recentlySpawned` lost its
+// receiver in the same change, so that ONE ledger read can feed both. That shape
+// matches the rest of this file (`formatCounts`, `reasonClass`, `orderFlaggedRows`,
+// `labelKey`, `neverOpened` are all package-level), and neither function holds
+// state: the alternative is two reads of the same store in one tick, which could
+// disagree and leave the measurement describing a fleet state the decision never
+// saw.
+//
+// ⚠️ It must NOT skip terminal ledger rows, unlike recentlySpawned below. A
+// closed row is precisely the one being resumed: `ended_at` is written by the
+// turn end that closed it, so skipping terminal rows would empty the map for
+// exactly the rows this measurement exists for, and the metric would read as
+// "never measurable" on a fleet where it should be at its largest.
+func endedAtBySession(rows []LedgerRow) map[string]time.Time {
+	out := make(map[string]time.Time, len(rows))
+	for _, row := range rows {
+		if row.SessionID == "" || row.EndedAt == nil {
+			continue
+		}
+		at, parseErr := time.Parse(time.RFC3339, *row.EndedAt)
+		if parseErr != nil {
+			continue
+		}
+		if prev, ok := out[row.SessionID]; !ok || at.After(prev) {
+			out[row.SessionID] = at
+		}
+	}
+	return out
+}
+
+// recentlySpawned maps session id — and, for a never-opened row, labelKey(task
+// name) — to its ledger spawn time.
+func recentlySpawned(rows []LedgerRow) map[string]time.Time {
 	out := make(map[string]time.Time, len(rows))
 	for _, row := range rows {
 		// A spawn the ledger has CLOSED is not a spawn to stay away from.

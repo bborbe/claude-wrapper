@@ -386,7 +386,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 					}}},
 					Logf: func(string, ...any) {},
 				}
-				recent := tick.recentlySpawned(context.Background())
+				recent := recentlySpawned(tick.ledgerRows(context.Background()))
 				_, bySession := recent["sid"]
 				_, byLabel := recent[labelKey("a task")]
 				gomega.Expect(bySession).To(gomega.Equal(wantSuppressed))
@@ -488,6 +488,97 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			ginkgo.GinkgoWriter.Printf("modes=%v\n", modes)
 			gomega.Expect(modes).To(gomega.ConsistOf("headless", "interactive"))
 			gomega.Expect(modes).NotTo(gomega.ContainElement(""))
+		})
+	})
+
+	// A row that reaches the cap check has already passed the provenance gate, so
+	// it counts as operator-named (operator ruling 2026-11-17). These tests run the
+	// REAL cap enforcer over a scratch config, so the soft and hard limits are the
+	// ones the daemon reads, not a fake that would pass whatever it was handed.
+	ginkgo.Describe("asserts the row's operator provenance to the caps", func() {
+		// liveHeadlessFleet is a fleet of n live headless workers, built the way the
+		// cap enforcer counts one: a ledger row per session, each marked live by the
+		// heartbeat store.
+		liveHeadlessFleet := func(n int) (LedgerReader, HeartbeatReader) {
+			rows := make([]LedgerRow, n)
+			beats := make([]HeartbeatRow, n)
+			for i := 0; i < n; i++ {
+				id := fmt.Sprintf("live-%d", i)
+				rows[i] = LedgerRow{SessionID: id, Mode: SpawnModeHeadless, Role: RoleAgent}
+				beats[i] = liveBeat(id)
+			}
+			return fakeLedgerRows{rows: rows}, &stubHeartbeats{rows: beats}
+		}
+
+		ginkgo.It("opens an operator-flagged row at the soft cap, below the hard cap", func() {
+			// soft 2 / hard 3 make the headless axis 1 soft and 2 hard.
+			ledger, heartbeats := liveHeadlessFleet(1)
+			caps := testCaps(ledger, heartbeats, writeSpawnConfig(workerAxisConfig(2, 3)),
+				ginkgo.GinkgoT().TempDir())
+			reopener := &recordingReopener{}
+			// Refused is empty: the predicate attributed this flag to an opening actor.
+			result, err := newTick(
+				staticSource{rows: []FlaggedRow{rowWith("agent", "headless", "flagged")}},
+				reopener, caps,
+			).Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("opened=%v refused=%v\n", result.Opened, result.Refused)
+			gomega.Expect(reopener.snapshot()).To(gomega.HaveLen(1))
+			gomega.Expect(result.Opened).To(gomega.HaveLen(1))
+			gomega.Expect(result.Refused).To(gomega.BeEmpty())
+		})
+
+		ginkgo.It("refuses the same row at the hard cap, naming the hard axis", func() {
+			ledger, heartbeats := liveHeadlessFleet(2)
+			caps := testCaps(ledger, heartbeats, writeSpawnConfig(workerAxisConfig(2, 3)),
+				ginkgo.GinkgoT().TempDir())
+			reopener := &recordingReopener{}
+			result, err := newTick(
+				staticSource{rows: []FlaggedRow{rowWith("agent", "headless", "flagged")}},
+				reopener, caps,
+			).Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("refused=%v\n", result.Refused)
+			gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+			gomega.Expect(result.Opened).To(gomega.BeEmpty())
+			gomega.Expect(result.Refused).To(gomega.HaveLen(1))
+			gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring(reasonCapsRefused))
+			// The hard cap's own key, not the soft one: the refusal must say which
+			// axis refused an operator-named row.
+			gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring("spawn.maxHeadlessHard"))
+		})
+
+		ginkgo.It("refuses a provenance-refused row before any cap check", func() {
+			// The fleet is AT the hard cap, so a cap check that ran first would be the
+			// reason recorded. The provenance reason proves the ordering.
+			ledger, heartbeats := liveHeadlessFleet(2)
+			caps := testCaps(ledger, heartbeats, writeSpawnConfig(workerAxisConfig(2, 3)),
+				ginkgo.GinkgoT().TempDir())
+			reopener := &recordingReopener{}
+			row := rowWith("agent", "headless", "agent-set")
+			row.Refused = []string{"agent-set-flag"}
+			result, err := newTick(staticSource{rows: []FlaggedRow{row}}, reopener, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("refused=%v\n", result.Refused)
+			gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+			gomega.Expect(result.Refused).To(gomega.HaveLen(1))
+			gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring("agent-set-flag"))
+			gomega.Expect(result.Refused[0]).NotTo(gomega.ContainSubstring(reasonCapsRefused))
+		})
+
+		ginkgo.It("still skips a LIVE row without asking the caps at all", func() {
+			caps := &recordingCaps{}
+			row := rowWith("agent", "headless", "live")
+			row.Liveness = "LIVE"
+			result, err := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			ginkgo.GinkgoWriter.Printf("skipped=%v caps=%v\n", result.Skipped, caps.modes())
+			gomega.Expect(result.Opened).To(gomega.BeEmpty())
+			gomega.Expect(result.Skipped).To(gomega.HaveLen(1))
+			gomega.Expect(result.Skipped[0]).To(gomega.ContainSubstring(reasonNotAbsent))
+			gomega.Expect(caps.modes()).To(gomega.BeEmpty())
 		})
 	})
 
@@ -683,7 +774,7 @@ var _ = ginkgo.Describe("flagged tick recently-spawned guard by label", func() {
 			SessionID: "new-session", Label: "fresh",
 			SpawnedAt: now.Add(-2 * time.Minute).Format(time.RFC3339),
 		}}}
-		gomega.Expect(tick.recentlySpawned(context.Background())).
+		gomega.Expect(recentlySpawned(tick.ledgerRows(context.Background()))).
 			To(gomega.HaveKey(labelKey("fresh")))
 		result, err := tick.Tick(context.Background())
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -884,5 +975,56 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 			// elapsed time would be a different number and would hide a slow read.
 			gomega.Expect(joined).To(gomega.ContainSubstring("read_duration=1m35s"))
 		})
+	})
+})
+
+var _ = ginkgo.Describe("flagged tick resume delay", func() {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	// A RESUMED row: it has a session, its liveness read ABSENT, and the branch
+	// sends it back through resume.
+	row := FlaggedRow{
+		Kind: "task", Vault: "private-personal", Name: "a flagged row",
+		Role: "agent", Mode: "headless",
+		SessionID: "abc-123", Liveness: "ABSENT", Branch: "resume",
+	}
+
+	ginkgo.It("measures the delay from the ledger's ended_at even on a TERMINAL row", func() {
+		// The trap this guards: `recentlySpawned` skips terminal ledger rows, so a
+		// reader that reused that filter would find no ended_at for any row being
+		// resumed — every real row is terminal by definition, and the metric would
+		// read as "never measurable" on the fleet it exists to measure.
+		ended := now.Add(-8 * time.Minute).Format(time.RFC3339)
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+			EndedAt:   &ended,
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.Opened).To(gomega.ConsistOf("abc-123"))
+		gomega.Expect(result.ResumeDelays).To(gomega.ConsistOf("abc-123=8m0s"))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("resume_delay=abc-123=8m0s"))
+	})
+
+	ginkgo.It("omits the delay when the ledger carries no ended_at", func() {
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+		gomega.Expect(result.Opened).To(gomega.ConsistOf("abc-123"))
+		// Absent, never zero: a zero would read as an instant resume.
+		gomega.Expect(result.ResumeDelays).To(gomega.BeEmpty())
+		gomega.Expect(result.Line()).NotTo(gomega.ContainSubstring("resume_delay="))
 	})
 })

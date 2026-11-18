@@ -52,6 +52,9 @@ var (
 	ErrInvalidSessionChange = stderrors.New("invalid session change")
 	// ErrUnknownMacro is returned for a macro name the wrapper does not define.
 	ErrUnknownMacro = stderrors.New("unknown macro")
+	// ErrSlashCommandNotAllowed is returned when run_slash_command is asked for
+	// a command outside its fixed allowlist.
+	ErrSlashCommandNotAllowed = stderrors.New("slash command not allowlisted")
 	// ErrConfirmationRequired is returned when a macro contains a
 	// production-touching step and the caller supplied no confirmation.
 	ErrConfirmationRequired = stderrors.New("confirmation required")

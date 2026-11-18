@@ -902,7 +902,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	// The child inherits THIS process's environment unless it is given its own,
 	// so a caller's resolved environment would otherwise be discarded without a
 	// word — the child starts, answers, and behaves differently.
-	cmd.Env = childEnv(os.Environ(), options.Env)
+	cmd.Env = spawnEnv(os.Environ(), options.Env)
 	cmd.Stdin = files.Stdin
 	cmd.Stdout = files.EventsWriter
 	// The child is given its OWN write end of its own stdin, so a parent death

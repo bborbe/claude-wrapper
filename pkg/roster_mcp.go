@@ -38,6 +38,7 @@ const maxAwaitPermission = 5 * time.Minute
 const (
 	ToolSpawnAgent             ToolName = "spawn_agent"
 	ToolSendAgentMessage       ToolName = "send_agent_message"
+	ToolRunSlashCommand        ToolName = "run_slash_command"
 	ToolListAgents             ToolName = "list_agents"
 	ToolAgentStatus            ToolName = "agent_status"
 	ToolStopAgent              ToolName = "stop_agent"
@@ -53,7 +54,8 @@ const (
 // Nine of the supervisor's nine — the last one, `read_push_config`, is the read
 // half of the A2A push round trip — plus `set_agent_permission_mode`, the live
 // mode switch a manager needs because a headless worker has no pane to press
-// Shift+Tab in.
+// Shift+Tab in, and `run_slash_command`, which runs an allowlisted command in a
+// worker where `send_agent_message` could only hand back a peer name.
 func RosterToolNames() []ToolName {
 	return []ToolName{
 		ToolListAgents,
@@ -61,6 +63,7 @@ func RosterToolNames() []ToolName {
 		ToolStopAgent,
 		ToolSpawnAgent,
 		ToolSendAgentMessage,
+		ToolRunSlashCommand,
 		ToolSetAgentPermissionMode,
 		ToolAnswerPermission,
 		ToolAwaitPermission,
@@ -296,6 +299,8 @@ func (s *RosterToolServer) invoke(
 		return s.spawnAgent(ctx, args, sessionID)
 	case ToolSendAgentMessage:
 		return s.sendAgentMessage(ctx, args)
+	case ToolRunSlashCommand:
+		return s.runSlashCommand(ctx, args)
 	case ToolListAgents:
 		return s.listAgents(ctx)
 	case ToolAgentStatus:
@@ -1728,56 +1733,24 @@ func (s *RosterToolServer) sendToTabPane(
 	if s.Tabs == nil || s.Roster == nil || s.Ledger == nil {
 		return false, "", nil
 	}
-	sessionID := ""
-	if rows, err := s.Roster.List(ctx); err != nil {
-		// A roster that cannot be read must not read as "not a tab worker": the
-		// caller would then be told the agent is unknown, which is a different
-		// and false fact. Degrade loudly, as the roster itself does.
-		log.Printf(
-			"WARNING: the roster could not be read (%v) — resolving agent %q against the ledger only",
-			err,
-			agentID,
-		)
-	} else {
-		for _, row := range rows {
-			if row.AgentID == agentID {
-				sessionID = row.SessionID
-				break
-			}
-		}
-	}
-	ledgerRows, err := s.Ledger.Rows(ctx)
-	if err != nil {
+	ledgerRow, ok := s.localLedgerRow(ctx, agentID)
+	if !ok {
 		return false, "", nil
 	}
-	for _, ledgerRow := range ledgerRows {
-		if ledgerRow.SessionID != sessionID && ledgerRow.SessionID != agentID {
-			continue
-		}
-		if ledgerRow.PaneID == "" {
-			// Only a LOCAL row is ours to answer. `interactive` and `headless` are
-			// both this daemon's own spawns, so a missing pane is a real answer for
-			// them; `cluster` and `a2a` rows belong to a remote controller and carry
-			// no pane either, so claiming them here would answer an A2A worker as
-			// unreachable before the A2A arm ever ran.
-			if ledgerRow.Mode != "interactive" && ledgerRow.Mode != "headless" {
-				continue
-			}
-			response, err := s.noPaneResponse(ctx, agentID, ledgerRow)
-			return true, response, err
-		}
-		if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime()); err != nil {
-			return true, "", err
-		}
-		response, err := marshalJSON(ctx, map[string]any{
-			"agent_id":   agentID,
-			"sent":       true,
-			"pane_id":    ledgerRow.PaneID,
-			"session_id": ledgerRow.SessionID,
-		})
+	if ledgerRow.PaneID == "" {
+		response, err := s.noPaneResponse(ctx, agentID, ledgerRow)
 		return true, response, err
 	}
-	return false, "", nil
+	if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime()); err != nil {
+		return true, "", err
+	}
+	response, err := marshalJSON(ctx, map[string]any{
+		"agent_id":   agentID,
+		"sent":       true,
+		"pane_id":    ledgerRow.PaneID,
+		"session_id": ledgerRow.SessionID,
+	})
+	return true, response, err
 }
 
 // a2aAgent resolves an agent id to an A2A record, or nil.
@@ -1827,6 +1800,7 @@ func (s *RosterToolServer) recordStop(ctx context.Context, row *AgentRow, caller
 // rosterToolDefinitions describes the roster face's tools to an MCP client.
 func rosterToolDefinitions() []any {
 	definitions := append(spawnToolDefinitions(), parkToolDefinitions()...)
+	definitions = append(definitions, runSlashCommandToolDefinition())
 	return append(definitions, modeToolDefinitions()...)
 }
 
