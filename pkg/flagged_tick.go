@@ -131,9 +131,9 @@ type FlaggedTickResult struct {
 	// Their delay is measured from the last skip, not from `ended_at`, so it
 	// bounds the real wait to one tick instead of counting idle time.
 	//
-	// It is a SEPARATE field, never folded into ResumeDelays: SC1's population is
+	// It is a SEPARATE field, never folded into ResumeDelays: the population the bar applies to is
 	// the could-continue rows, and a p90 over a population that mixes the two
-	// cannot be compared to SC2's 2-minute bar.
+	// cannot be compared to the two-minute bar the criterion names.
 	ResumeDelaysWaited []string
 	// LiveCountSource names the channel the spawn caps counted from this tick
 	// (`ledger`, `registry`, `heartbeat` or `none`). Empty when the caps cannot
@@ -198,7 +198,7 @@ func (r FlaggedTickResult) Line() string {
 		line += " resume_delay=" + strings.Join(r.ResumeDelays, ",")
 	}
 	// Emitted separately so a reader can compute the could-continue p90 without
-	// the idle rows: SC2's bar applies to `resume_delay=` alone.
+	// the idle rows: the two-minute bar applies to `resume_delay=` alone.
 	if len(r.ResumeDelaysWaited) > 0 {
 		line += " resume_delay_waited=" + strings.Join(r.ResumeDelaysWaited, ",")
 	}
@@ -731,9 +731,13 @@ func (t *FlaggedTick) tickFromRows(
 	return result
 }
 
-// recordResumeDelay appends `key=<delay>` for a row this tick just opened, where
-// the delay is measured from the ledger's own `ended_at` — the instant the turn
-// that produced the stop closed.
+// recordResumeDelay records one row this tick just opened into exactly one of
+// the two delay populations.
+//
+// A row the tick never held back is measured from the ledger's own `ended_at` —
+// the instant the turn that produced the stop closed — and goes to
+// ResumeDelays. A row it DID hold back goes to ResumeDelaysWaited instead,
+// measured from that last skip; see the branch below for why the two differ.
 //
 // A row with no ended_at — never stopped, or a spawn row whose turn never closed
 // — is omitted rather than recorded as zero: a zero would read as an instant
@@ -753,7 +757,7 @@ func (t *FlaggedTick) recordResumeDelay(
 	// The tick held this row back at least once after its stop, so it did NOT
 	// become able at the stop — it became able somewhere between that last skip
 	// and this open. Measuring from `ended_at` would count the whole idle wait as
-	// resume latency, which is what made the p90 unreadable against SC2: measured
+	// resume latency, which is what made the p90 unreadable against the two-minute bar: measured
 	// 2026-11-18, the all-rows p90 was 16.1 min against a could-continue p90 of
 	// 16.2 min, with single rows reaching 21 h. Reporting it from the skip bounds
 	// the real delay to one tick and keeps it out of the could-continue population.
