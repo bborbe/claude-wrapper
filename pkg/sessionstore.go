@@ -46,6 +46,11 @@ type SessionRecord struct {
 	Cwd       string       `json:"cwd"`
 	Options   SpawnOptions `json:"options"`
 	StartedAt time.Time    `json:"started_at"`
+	// ChildStartedAt is the child process's own start time, captured at spawn and
+	// preserved across adoption. A pid alone cannot identify a process — the
+	// kernel reuses it — so a successor compares this against the pid's current
+	// start time to prove whether the recorded child is still the one alive.
+	ChildStartedAt time.Time `json:"child_started_at,omitempty"`
 	// Interrupted names the reason a drain could not reach this child's turn
 	// boundary before its bound expired. Empty means it never was interrupted.
 	//
