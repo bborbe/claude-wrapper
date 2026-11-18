@@ -68,6 +68,19 @@ func normalizeFrameClock(text string) string {
 	return markerTimeRe.ReplaceAllString(text[:idx], "HH:MM") + text[idx:]
 }
 
+// normalizeFixtureRoot replaces the fixture's temp root with a fixed token.
+//
+// The goldens are generated inside the container, where `${TMPDIR:-/tmp}` is
+// `/tmp`; a host run has `TMPDIR=/var/folders/…`, so the `park:` line's cadence
+// path differs by host and the stderr comparison can never pass as captured.
+// That path is an environment artifact, not part of the contract — the marker
+// clock is normalised for exactly the same reason. Applied to stderr only: the
+// frame itself must stay byte-exact.
+func normalizeFixtureRoot(text string) string {
+	text = strings.ReplaceAll(text, generateBase(), "<FIXTURE>")
+	return strings.ReplaceAll(text, "/tmp/sweepgate-generate", "<FIXTURE>")
+}
+
 // subjectFromCase turns `parity-topic` into `Parity Topic`.
 func subjectFromCase(name string) string {
 	words := strings.Split(name, "-")
@@ -136,12 +149,13 @@ func runGoldenCase(ctx context.Context, caseName, goldenPath string) {
 	gomega.Expect(frame).NotTo(gomega.ContainSubstring("\x1b]8;"))
 
 	stdout := frame + "\n"
-	stderr := "park: " + prepared.ParkBasis + "\n"
+	stderr := normalizeFixtureRoot("park: " + prepared.ParkBasis + "\n")
+	goldenStderr := normalizeFixtureRoot(string(stderrGolden))
 	identical := normalizeFrameClock(stdout) == normalizeFrameClock(goldenStdout) &&
-		stderr == string(stderrGolden)
+		stderr == goldenStderr
 
 	gomega.Expect(normalizeFrameClock(stdout)).To(gomega.Equal(normalizeFrameClock(goldenStdout)))
-	gomega.Expect(stderr).To(gomega.Equal(string(stderrGolden)))
+	gomega.Expect(stderr).To(gomega.Equal(goldenStderr))
 
 	ginkgo.GinkgoWriter.Printf(
 		"case=%s stdout_bytes=%d stderr_bytes=%d identical=%t marker=%s",
