@@ -512,20 +512,7 @@ func (s *RosterToolServer) refuseTerminalResume(
 		)
 		return nil
 	}
-	if !terminalTaskStatus(ref.Status) {
-		return nil
-	}
-	return errors.Wrapf(
-		ctx,
-		ErrTaskTerminal,
-		"resume of session %s refused: its task %q in vault %q is %s, and a finished "+
-			"task must not be handed a live worker again — closing is the fleet's only "+
-			"way to reclaim a spawn slot",
-		session,
-		ref.Title,
-		ref.Vault,
-		ref.Status,
-	)
+	return refuseTerminalTask(ctx, session, ref)
 }
 
 // taskForResume resolves the task a resumed session belongs to, or nil.
@@ -1487,33 +1474,16 @@ func (s *RosterToolServer) enforceCaps(
 	body spawnAgentArgs,
 	mode string,
 ) error {
-	if s.Caps == nil {
-		return nil
-	}
-	// A manager answers to the manager axes, never to a WORKER mode sub-cap: the
-	// headless/interactive pair bounds the worker population, and a manager counted
-	// against it would be refused by a cap over a population it is not in. The
-	// worker total and the session backstop still apply to it.
-	workerMode := mode
+	var manager func(ctx context.Context) (kind string, roots []string)
 	if strings.TrimSpace(body.Role) == RoleManager {
-		workerMode = ""
-	}
-	if err := s.Caps.CheckWorker(ctx, workerMode, body.OperatorNamed); err != nil {
-		return err
-	}
-	if strings.TrimSpace(body.Role) == RoleManager {
-		// One vault read for both halves: `vaultRoots` shells `vault-cli config list`,
-		// and asking it twice for one spawn would pay that subprocess twice.
-		roots := s.vaultRoots(ctx)
-		if err := s.Caps.CheckManager(
-			ctx, ManagerKindForLabel(body.Label, roots, FileExists), roots, body.OperatorNamed,
-		); err != nil {
-			return err
+		manager = func(ctx context.Context) (string, []string) {
+			// One vault read for both halves: `vaultRoots` shells `vault-cli config
+			// list`, and asking it twice for one spawn would pay that subprocess twice.
+			roots := s.vaultRoots(ctx)
+			return ManagerKindForLabel(body.Label, roots, FileExists), roots
 		}
 	}
-	// Last, as the node has it: a spawn refused by a cap above must not spend a
-	// start slot the next legitimate spawn then waits for.
-	return s.Caps.ReserveStart(ctx)
+	return enforceSpawnCaps(ctx, s.Caps, mode, manager, body.OperatorNamed)
 }
 
 // enforceWorkerCaps runs the worker cap and reserves a start slot.

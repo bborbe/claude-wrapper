@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [005-open-endpoint]
+summary: Added the open endpoint's tab half — OpenTabOpener (human Direct / manager Managers, create and resume), ScriptRunner, shared spawn guards, tab resume and pane hygiene, and ready-gated sends — plus specs where AC7 is covered by the `AC7 ...` Its under `openTabOpener` and AC19 by `AC19 passes a refusing manager-launcher.py line through and spawns nothing`, `AC19 passes a cap refusal through and spawns nothing`, `AC19 refuses a resume of a completed task and spawns nothing`, and `AC19 passes a refusing topic-spawn.py second line through and spawns nothing`.
+execution_id: 9881bf24-5a56-5157-8303-c8eca57d0834-exec-010-spec-005-open-tab
+dark-factory-version: dev
 created: "2026-11-18T18:59:25Z"
 queued: "2026-11-18T19:12:27Z"
+started: "2026-11-18T19:23:01Z"
+completed: "2026-11-18T19:33:52Z"
 ---
 
 # Tab resume and the manager open recipe for the open endpoint
