@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-sweep-gate-port]
+summary: 'Ported the sweep gate''s classification half into pkg/sweepgate: bucket/status precedence, hold and defer overlays, three-source liveness, the five render-only park/wait flags, the Prepare pipeline, and the named refusal/degradation tests'
+execution_id: claude-wrapper-sweep-gate-exec-003-spec-003-sweepgate-buckets-parks
+dark-factory-version: v0.198.17
 created: "2026-11-18T00:35:03Z"
 queued: "2026-11-18T01:08:38Z"
+started: "2026-11-18T01:17:13Z"
+completed: "2026-11-18T01:24:07Z"
 ---
 
 # sweepgate classification: buckets, holds, liveness, parks and waits

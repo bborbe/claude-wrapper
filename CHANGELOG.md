@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 - feat: pkg/sweepgate ports the manager sweep gate's task parsing, tracked-set resolution and digest to Go, with a checked-in parity fixture and Python-generated goldens
+- feat: pkg/sweepgate classifies sweep rows — bucket precedence, hold and defer overlays, three-source liveness, and the park/wait flags, with every refusal carried as a named test
 
 ## v0.34.1
 

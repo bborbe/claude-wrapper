@@ -47,6 +47,9 @@ type Config struct {
 	PredispatchDir   string
 	WorkerManagerDir string
 	RegistryDir      string
+	HeartbeatDir     string
+	ToolMarkerDir    string
+	TranscriptDir    string
 	StoreURL         string
 	Now              libtime.CurrentDateTimeGetter
 	Interval         time.Duration
@@ -102,6 +105,17 @@ func (c Config) WithDefaults(ctx context.Context) (Config, error) {
 		".claude", "sessions"); err != nil {
 		return Config{}, err
 	}
+	if c.ToolMarkerDir, err = resolveDir(ctx, c.ToolMarkerDir,
+		"SWEEP_GATE_TOOL_MARKER_DIR", ".claude", "state", "attention"); err != nil {
+		return Config{}, err
+	}
+	if c.TranscriptDir, err = resolveDir(ctx, c.TranscriptDir,
+		"SWEEP_GATE_TRANSCRIPT_DIR", ".claude", "projects"); err != nil {
+		return Config{}, err
+	}
+	if c.HeartbeatDir, err = resolveHeartbeatDir(ctx, c.HeartbeatDir); err != nil {
+		return Config{}, err
+	}
 	if c.StoreURL = resolveStoreURL(c.StoreURL); c.StoreURL == "" {
 		c.StoreURL = "http://localhost:18080"
 	}
@@ -154,6 +168,29 @@ func expandHome(ctx context.Context, path string) (string, error) {
 		return home, nil
 	}
 	return filepath.Join(home, path[2:]), nil
+}
+
+// resolveHeartbeatDir applies the explicit -> SWEEP_GATE_HEARTBEAT_DIR ->
+// SUPERVISOR_HEARTBEAT_DIR -> XDG/default precedence the reference uses.
+func resolveHeartbeatDir(ctx context.Context, explicit string) (string, error) {
+	if explicit != "" {
+		return expandHome(ctx, explicit)
+	}
+	if value := os.Getenv("SWEEP_GATE_HEARTBEAT_DIR"); value != "" {
+		return expandHome(ctx, value)
+	}
+	if value := os.Getenv("SUPERVISOR_HEARTBEAT_DIR"); value != "" {
+		return expandHome(ctx, value)
+	}
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", errors.Wrapf(ctx, err, "resolve home dir failed")
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "claude-supervisor", "live"), nil
 }
 
 // resolveStoreURL applies the explicit -> SWEEP_GATE_STORE_URL ->

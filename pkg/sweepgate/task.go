@@ -254,6 +254,17 @@ type Task struct {
 	// enriched them (the fixture calls the digest before enrichment).
 	Liveness string
 	Stuck    bool
+
+	// The render-only flags below are set by the classification pass and are NOT
+	// inputs to Digest. Adding one to Digest would silently change what "unchanged"
+	// means and break lockstep with the plugin's port.
+	InFlight           bool
+	ExternalWait       bool
+	DeclaredWaitActive bool
+	UnregisteredPark   bool
+	FeedGate           bool
+	BlockedUpstream    bool
+	BlockedByUnmet     []string
 }
 
 // ParseTask parses a task page, returning false when there is no frontmatter.
