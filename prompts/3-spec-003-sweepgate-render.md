@@ -88,7 +88,7 @@ Coding guides (in container):
      `ExecRunner.Run` uses `exec.CommandContext` and returns the process exit code (a non-zero exit is NOT an error; only a spawn failure is). `pkg/flagged_rows_source.go`'s `CommandRunner` is the precedent for the interface shape, not an import target — do not import the root package for it.
    - `func CloserOf(ctx context.Context, runner ExitRunner, cfg Config, sessionID string) string` — `<scriptsDir>/reap-closer.py <sid>`; exit 0 → `closed`, 1 → `open`, 2 or unparsable → `unreadable`. A failed read maps to `unreadable`, never `closed`.
    - `func CloseLine(ctx context.Context, runner ExitRunner, cfg Config, task, session, liveness, closer string) (string, error)` — `<scriptsDir>/close-line.py --task <task> --session <session> --liveness <liveness> --closer <closer>`; exit 0 → the trimmed stdout; exit 1 → empty string and nil error (the producer declining is a normal outcome); any other exit or a spawn failure → an error. Never hand-assemble the line. The task name is passed as an argv element, never through a shell.
-   - The two plugin scripts live under the supervisor marketplace clone, at `/home/node/.claude/plugins/marketplaces/claude-supervisor/scripts/` in the container and `~/.claude/plugins/marketplaces/claude-supervisor/scripts/` on the host; resolve the directory once with `os.UserHomeDir()` and a package constant for the relative part. A missing script is a spawn failure, which `CloseLine` returns as an error and `CloserOf` reports as `unreadable`.
+   - The two plugin scripts live under the supervisor marketplace clone at `~/.claude/plugins/marketplaces/claude-supervisor/scripts/` **on the host**. ⚠️ **That marketplace clone is NOT installed in the container** (`claudeDir` is `~/.claude-yolo`, which carries no `claude-supervisor` marketplace — the same reason prompt 1 vendors `box-table.py`), so any test that would spawn one of them must inject a fake `ExitRunner` rather than reach the real script. Resolve the directory once with `os.UserHomeDir()` and a package constant for the relative part. A missing script is a spawn failure, which `CloseLine` returns as an error and `CloserOf` reports as `unreadable`.
 
 4. **`pkg/sweepgate/tick.go` — the tick mode.**
    ```go
@@ -118,15 +118,20 @@ Coding guides (in container):
    - **At least one case is NOT golden-backed.** Add a second fixture with different subject names, row shapes and bucket mix (`testdata/sweepgate/vault-second/`), whose expected frame is stated INLINE in the test, derived by hand from the classification rules (a raw string literal in the test file, not a file the renderer could have produced). It follows the same mtime-independence rules as the first fixture (no checkboxes on `execution` rows, a far-future `defer_date`), so it is stable without a captured golden. Print `case=%s golden=false identical=%t` for it. A port that returns the checked-in bytes by case name passes every golden case and fails this one.
    - The fixture must contain no live session, so no jump link is resolved and the frame is machine-independent. Assert that the rendered frame contains no `\x1b]8;` escape.
 
-6. **AC4 — a no-change tick proves it ran.** `Describe("writes the tick on a no-change tick", ...)` (verbatim) drives two ticks against unchanged fixture input and asserts, for the pair: two tick-file writes (observed through the file's mtime or content), two `park:` lines on stderr, and ZERO bytes on stdout. Print the counts via `ginkgo.GinkgoWriter.Printf` (e.g. `tick_writes=%d park_lines=%d stdout_bytes=%d`).
+6. **The closer subprocess contract is tested, because the parity fixture never reaches it.** The fixture carries no live session, so `CloserOf`/`CloseLine` are exercised by nothing else. Add `Describe("maps the closer exit codes", ...)` driving both through a fake `ExitRunner`:
+   - `CloserOf`: exit 0 → `closed`; exit 1 → `open`; exit 2 → `unreadable`; an unparsable exit → `unreadable`; a spawn failure → `unreadable`. It must never report `closed` for a read that failed.
+   - `CloseLine`: exit 0 → the trimmed stdout, nil error; exit 1 → `""` and a nil error (the producer declining is normal); any other exit → a non-nil error; a spawn failure → a non-nil error.
+   Print `case=%s exit=%d result=%q` per case via `ginkgo.GinkgoWriter.Printf`.
 
-7. **The other mode entry points stay out of this prompt.** Only `Tick` is implemented here. `Check`, `Render` and `Invariant` arrive in the next two prompts; do not add them.
+7. **AC4 — a no-change tick proves it ran.** `Describe("writes the tick on a no-change tick", ...)` (verbatim) drives two ticks against unchanged fixture input and asserts, for the pair: two tick-file writes (observed through the file's mtime or content), two `park:` lines on stderr, and ZERO bytes on stdout. Print the counts via `ginkgo.GinkgoWriter.Printf` (e.g. `tick_writes=%d park_lines=%d stdout_bytes=%d`).
 
-8. **`CHANGELOG.md`.** Add one bullet under `## Unreleased`:
+8. **The other mode entry points stay out of this prompt.** Only `Tick` is implemented here. `Check`, `Render` and `Invariant` arrive in the next two prompts; do not add them.
+
+9. **`CHANGELOG.md`.** Add one bullet under `## Unreleased`:
    `- feat: pkg/sweepgate renders the sweep frame in Go — byte-identical box table, grouped rows, action lines and the tick mode, with the parity fixture as the proof and no subprocess for the table`
    Do not create a second `## Unreleased` heading.
 
-9. **Self-check before finishing.** Re-run `<verification>` and confirm it passes. Walk requirements 1-8. Confirm the parity test fails if you delete the marker line from a golden (try it, then restore), and confirm a no-change tick writes the tick file.
+10. **Self-check before finishing.** Re-run `<verification>` and confirm it passes. Walk requirements 1-9. Confirm the parity test fails if you delete the marker line from a golden (try it, then restore), and confirm a no-change tick writes the tick file.
 </requirements>
 
 <constraints>
