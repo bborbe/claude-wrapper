@@ -216,11 +216,7 @@ func main() {
 		*fleetPusher.heartbeat,
 	)
 
-	go startSweepGate(ctx, sweepGateConfigFromFlags(sweepGate))
-
-	// The startup deadline is the only verb that can clear a child stuck in
-	// `starting`: it never emits an init event, so nothing else reaches it.
-	go startStartupSweeper(ctx, supervisor, pkg.StartupSweepInterval)
+	startDaemonJobs(ctx, supervisor, sweepGate)
 
 	serveUntilStopped(ctx, mux, *listen, supervisor, *drainBound, stop)
 }
@@ -940,4 +936,17 @@ func startHeartbeatPoster(
 			log.Printf("heartbeat poster stopped: %v", err)
 		}
 	}()
+}
+
+// startDaemonJobs launches the background goroutines that have no HTTP surface.
+//
+// Both are periodic and long-lived, so they are started together rather than
+// inline in main: main is at its funlen ceiling, and grouping them keeps the
+// startup order of the serving path readable.
+func startDaemonJobs(ctx context.Context, supervisor pkg.Supervisor, sweepGate sweepGateFlags) {
+	go startSweepGate(ctx, sweepGateConfigFromFlags(sweepGate))
+
+	// The startup deadline is the only verb that can clear a child stuck in
+	// `starting`: it never emits an init event, so nothing else reaches it.
+	go startStartupSweeper(ctx, supervisor, pkg.StartupSweepInterval)
 }
