@@ -117,6 +117,17 @@ func registerSweepGateFlags() sweepGateFlags {
 	}
 }
 
+// shutdownContext returns the signal context for the whole process.
+//
+// It replaces the poster-only NotifyContext this used to build: that one
+// registered a handler, which suppressed Go's default SIGTERM termination, and
+// then unregistered it — so the FIRST SIGTERM did nothing at all and the daemon
+// only died on the second or on a SIGKILL. `launchctl kickstart -k` sends one
+// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
+func shutdownContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -153,14 +164,7 @@ func main() {
 
 	warnIfDrainOverrunsExitTimeout(*drainBound)
 
-	// One signal context for the whole process.
-	//
-	// It replaces the poster-only NotifyContext this used to build: that one
-	// registered a handler, which suppressed Go's default SIGTERM termination, and
-	// then unregistered it — so the FIRST SIGTERM did nothing at all and the daemon
-	// only died on the second or on a SIGKILL. `launchctl kickstart -k` sends one
-	// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdownContext()
 	defer stop()
 
 	// The sweep gate's one-shot modes run before the supervisor is built, so they
@@ -190,13 +194,7 @@ func main() {
 		ctx, *claudeBin, *listen, *attentionURL, store, decider, *permissionTimeout, now,
 		taskResolverFromFlag(*closeOnTerminalTaskDirs),
 	)
-	// Re-adoption runs before the listener opens, so a supervisor that connects the
-	// instant the port is up already sees the sessions that survived the restart.
-	if adopted, adoptErr := supervisor.Adopt(ctx); adoptErr != nil {
-		log.Printf("WARNING: re-adopt failed: %v", adoptErr)
-	} else if adopted > 0 {
-		log.Printf("re-adopted %d live session(s) from the previous daemon", adopted)
-	}
+	adoptSessions(ctx, supervisor)
 
 	// One lock set for every route that can write a turn: a sequence and a
 	// plain message on the same child must not interleave.
@@ -220,6 +218,18 @@ func main() {
 	startDaemonJobs(ctx, supervisor, sweepGate)
 
 	serveUntilStopped(ctx, mux, *listen, supervisor, *drainBound, stop)
+}
+
+// adoptSessions re-adopts the live sessions left by a previous daemon.
+//
+// It runs before the listener opens, so a supervisor that connects the instant
+// the port is up already sees the sessions that survived the restart.
+func adoptSessions(ctx context.Context, supervisor pkg.Supervisor) {
+	if adopted, adoptErr := supervisor.Adopt(ctx); adoptErr != nil {
+		log.Printf("WARNING: re-adopt failed: %v", adoptErr)
+	} else if adopted > 0 {
+		log.Printf("re-adopted %d live session(s) from the previous daemon", adopted)
+	}
 }
 
 // serveUntilStopped runs the HTTP server and drains it once the signal arrives.
