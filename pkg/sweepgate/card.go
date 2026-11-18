@@ -13,6 +13,23 @@ import (
 	"strings"
 )
 
+// CardBuilder returns the card function a tick takes, so a tick writes the card
+// file exactly as the invariant mode would.
+//
+// InvariantPayload never writes to the process's stderr itself; the writer
+// supplied here is the only channel, and it goes to cfg.Logf line by line, never
+// to the tick's stdout.
+func CardBuilder(cfg Config) CardFunc {
+	return func(ctx context.Context, prepared Prepared) ([]byte, error) {
+		stderr := newLogWriter(cfg.Logf, "sweep-gate "+cfg.Subject+": ")
+		payload, _, err := InvariantPayload(ctx, cfg, prepared, stderr)
+		if err != nil {
+			return nil, err
+		}
+		return payload, nil
+	}
+}
+
 // OpenCards returns EVERY open gate on the attention feed.
 //
 // It deliberately does not use ReadFeed: that reader collapses the feed to one

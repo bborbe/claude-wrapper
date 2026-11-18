@@ -38,8 +38,16 @@ const (
 // The vault is a required constructor argument and is never defaulted; no vault
 // path is hardcoded anywhere in this package.
 type Config struct {
-	Vault            string
-	Subject          string
+	Vault string
+	// Subject is the single subject a one-shot mode runs against.
+	Subject string
+	// Subjects are the subjects the daemon tick covers; empty disables the
+	// daemon tick.
+	Subjects []string
+	// Source overrides the vault snapshotter. Nil means "build the real vault
+	// snapshotter from this config"; a test sets it to drive every mode without
+	// a vault.
+	Source           Snapshotter
 	StateDir         string
 	SettledDir       string
 	FeedDir          string
@@ -59,10 +67,20 @@ type Config struct {
 
 // Validate reports whether the required fields are set.
 //
-// A missing vault is an error naming the field; it is never defaulted.
+// A missing vault is an error naming the field; it is never defaulted. A
+// one-shot mode requires its single Subject; the daemon path carries Subjects
+// instead and each of those must be non-empty.
 func (c Config) Validate(ctx context.Context) error {
 	if c.Vault == "" {
 		return errors.Errorf(ctx, "config: Vault is required")
+	}
+	if len(c.Subjects) > 0 {
+		for _, subject := range c.Subjects {
+			if strings.TrimSpace(subject) == "" {
+				return errors.Errorf(ctx, "config: Subjects contains an empty subject")
+			}
+		}
+		return nil
 	}
 	if c.Subject == "" {
 		return errors.Errorf(ctx, "config: Subject is required")

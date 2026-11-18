@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [003-sweep-gate-port]
+summary: 'Wired pkg/sweepgate into the daemon: added Check/Render modes, four-mode CLI dispatch, TickRunner with injected Source and bounded reads, CardBuilder, daemon goroutine, AC9/AC5 tests, and changelog entry'
+execution_id: claude-wrapper-sweep-gate-exec-006-spec-003-sweepgate-wiring
+dark-factory-version: v0.198.17
 created: "2026-11-18T00:35:03Z"
 queued: "2026-11-18T01:08:39Z"
+started: "2026-11-18T01:34:07Z"
+completed: "2026-11-18T01:38:26Z"
 ---
 
 # sweepgate wiring: four CLI modes and the daemon tick

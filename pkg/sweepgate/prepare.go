@@ -30,14 +30,11 @@ type Prepared struct {
 // with IsWaiting doing the suppression.
 func Prepare(ctx context.Context, cfg Config) (Prepared, error) {
 	now := cfg.Now.Now().Time()
-	branch, members, err := resolveSubjectBounded(ctx, cfg)
+	snapshot, err := snapshotBounded(ctx, cfg)
 	if err != nil {
 		return Prepared{}, err
 	}
-	tasks, err := resolveTrackedBounded(ctx, cfg, members)
-	if err != nil {
-		return Prepared{}, err
-	}
+	branch, members, tasks := snapshot.Branch, snapshot.Members, snapshot.Tasks
 	registry, err := ReadRegistry(ctx, cfg.RegistryDir)
 	if err != nil {
 		return Prepared{}, errors.Wrap(ctx, err, "read registry")
@@ -93,30 +90,25 @@ func readTimeout(cfg Config) time.Duration {
 	return DefaultReadTimeout
 }
 
-// resolveSubjectBounded resolves the subject under the read bound.
-func resolveSubjectBounded(ctx context.Context, cfg Config) (string, []string, error) {
+// snapshotBounded resolves the subject under the read bound.
+//
+// The bound wraps the snapshotter call itself, not only the vault reads behind
+// the default source: an injected Source bypasses ResolveSubject and
+// ResolveTracked, so an unbounded Snapshot would hang the whole loop.
+func snapshotBounded(ctx context.Context, cfg Config) (Snapshot, error) {
+	source := cfg.Source
+	if source == nil {
+		source = NewVaultSnapshotter(cfg)
+	}
 	timeout := readTimeout(cfg)
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	branch, members, err := ResolveSubject(readCtx, cfg.Vault, cfg.Subject)
+	snapshot, err := source.Snapshot(readCtx, cfg.Subject)
 	if err != nil {
-		return "", nil, errors.Wrapf(ctx, err,
+		return Snapshot{}, errors.Wrapf(ctx, err,
 			"resolve subject %q failed (read timeout %s)", cfg.Subject, timeout)
 	}
-	return branch, members, nil
-}
-
-// resolveTrackedBounded resolves the tracked set under the read bound.
-func resolveTrackedBounded(ctx context.Context, cfg Config, members []string) ([]Task, error) {
-	timeout := readTimeout(cfg)
-	readCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	tasks, err := ResolveTracked(readCtx, cfg.Vault, members)
-	if err != nil {
-		return nil, errors.Wrapf(ctx, err,
-			"resolve tracked set failed (read timeout %s)", timeout)
-	}
-	return tasks, nil
+	return snapshot, nil
 }
 
 // blockerStatusesBounded reads the vault-wide blocker statuses under the read bound.

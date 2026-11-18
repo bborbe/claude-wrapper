@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/bborbe/claude-wrapper/pkg"
 	"github.com/bborbe/claude-wrapper/pkg/a2a"
 	"github.com/bborbe/claude-wrapper/pkg/handler"
+	"github.com/bborbe/claude-wrapper/pkg/sweepgate"
 )
 
 // shutdownGrace is how long a response already being written may finish after the
@@ -90,6 +92,31 @@ func registerFleetPusherFlags() fleetPusherFlags {
 	}
 }
 
+// sweepGateFlags are the sweep gate's flags, registered together so main stays
+// inside its length budget.
+type sweepGateFlags struct {
+	mode     *string
+	topic    *string
+	vault    *string
+	topics   *string
+	interval *time.Duration
+}
+
+func registerSweepGateFlags() sweepGateFlags {
+	return sweepGateFlags{
+		mode: flag.String("sweep-gate-mode", "",
+			"one of check, render, tick or invariant; empty runs no one-shot mode"),
+		topic: flag.String("sweep-gate-topic", "",
+			"the single subject a one-shot mode runs against"),
+		vault: flag.String("sweep-gate-vault", "",
+			"vault root; empty disables every sweep gate path"),
+		topics: flag.String("sweep-gate-topics", "",
+			"comma-separated subjects the daemon tick covers"),
+		interval: flag.Duration("sweep-gate-interval", sweepgate.DefaultInterval,
+			"how often the daemon tick runs; 0 disables it"),
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -111,6 +138,7 @@ func main() {
 		"how often to stamp a heartbeat for every live session")
 	flagged := registerFlaggedTickFlags()
 	fleetPusher := registerFleetPusherFlags()
+	sweepGate := registerSweepGateFlags()
 	stateDir := flag.String("state-dir", "",
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
 	drainBound := flag.Duration("drain-bound", 4*time.Second,
@@ -134,6 +162,13 @@ func main() {
 	// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The sweep gate's one-shot modes run before the supervisor is built, so they
+	// never bind the listener and can be invoked beside the live daemon — the same
+	// reason the fleet-pusher probe runs here.
+	if *sweepGate.mode != "" {
+		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
+	}
 
 	// The scoped probe: one wake tick, then exit. It runs before the supervisor is
 	// built, so it never binds the listener and can be invoked beside the live
@@ -176,6 +211,8 @@ func main() {
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
 		*fleetPusher.heartbeat,
 	)
+
+	go startSweepGate(ctx, sweepGateConfigFromFlags(sweepGate))
 
 	// The startup deadline is the only verb that can clear a child stuck in
 	// `starting`: it never emits an init event, so nothing else reaches it.
@@ -732,6 +769,71 @@ func splitSessions(value string) []string {
 		}
 	}
 	return ids
+}
+
+// sweepGateConfigFromFlags builds the gate's config from its flag group.
+//
+// Every directory is resolved by WithDefaults; the interval is restored from the
+// flag afterwards, because WithDefaults turns a zero interval into the package
+// default and 0 is this flag's documented "disabled" value.
+func sweepGateConfigFromFlags(flags sweepGateFlags) sweepgate.Config {
+	interval := *flags.interval
+	cfg := sweepgate.Config{
+		Vault:    *flags.vault,
+		Subject:  *flags.topic,
+		Subjects: splitSessions(*flags.topics),
+		Interval: interval,
+	}
+	resolved, err := cfg.WithDefaults(context.Background())
+	if err != nil {
+		log.Printf("sweep gate defaults failed: %v", err)
+		return cfg
+	}
+	resolved.Interval = interval
+	return resolved
+}
+
+// runSweepGateMode runs one named mode against the process's stdio.
+func runSweepGateMode(ctx context.Context, cfg sweepgate.Config, mode string) int {
+	switch mode {
+	case "check":
+		return sweepgate.Check(ctx, cfg, os.Stdout, os.Stderr)
+	case "render":
+		return sweepgate.Render(ctx, cfg, os.Stdout, os.Stderr)
+	case "tick":
+		return sweepgate.Tick(ctx, cfg, os.Stdout, os.Stderr, sweepgate.CardBuilder(cfg))
+	case "invariant":
+		return sweepgate.Invariant(ctx, cfg, os.Stdout, os.Stderr)
+	default:
+		fmt.Fprintf(os.Stderr,
+			"unknown --sweep-gate-mode %q: want check, render, tick or invariant\n", mode)
+		return sweepgate.ExitUsage
+	}
+}
+
+// startSweepGate runs the daemon's periodic tick over every configured subject.
+//
+// An empty vault, an empty subject list or a zero interval disables it, and the
+// disable is announced rather than silent. A stopped runner is named unless the
+// context ended, which is a clean stop.
+func startSweepGate(ctx context.Context, cfg sweepgate.Config) {
+	if cfg.Interval <= 0 || len(cfg.Subjects) == 0 || cfg.Vault == "" {
+		vaultState := "empty"
+		if cfg.Vault != "" {
+			vaultState = "set"
+		}
+		log.Printf("sweep gate disabled (interval=%s subjects=%d vault=%s)",
+			cfg.Interval, len(cfg.Subjects), vaultState)
+		return
+	}
+	runner, err := sweepgate.NewTickRunner(cfg)
+	if err != nil {
+		log.Printf("sweep gate stopped: %v", err)
+		return
+	}
+	if err := runner.Run(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("sweep gate stopped: %v", err)
+	}
 }
 
 // startBoardDelivery runs the board arms: one process reads the store for every
