@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the wrapper refuses an agent tab instead of opening it in whatever window has focus.** The role table no longer carries an agent → window entry (the operator removed that WezTerm window on 2026-11-12, so an agent tab resolved no window and landed in the focused one). The tab spawner and the `spawn_agent` tab path now refuse any request whose role resolves to `agent` — explicit, or defaulted from an empty `role` — before any pane, colour, cap reservation or ledger row, with an error naming role-mode matrix Rule 2 and `interactive=false`. This holds whatever chose the tab (argument, `SUPERVISOR_SPAWN_MODE`, `spawn.mode` or the default), and the flagged reopen tick now counts an interactive agent row as refused. Headless spawns and human and manager tabs are unchanged.
+
 ## v0.38.5
 
 - fix: **a flagged headless row whose turn finished, but whose child the wrapper still holds, now gets a new turn instead of sitting idle until a restart.** A closed turn files `done`, the heartbeat poster stops stamping the session, and the registry still shows the pid alive, so `session-liveness.py` answers UNKNOWN and the tick skipped the row as `not-absent` indefinitely. Measured 2026-11-18: one row closed its turn at 09:17:08 and was skipped on every tick until a 16:23 restart. The tick now asks its own supervisor whether it holds the child with no pending turn and no pending question; if so it sends the row's work turn to that child (`nudged=` on the tick line). It spawns nothing, so it takes no cap or rate reservation. The park gate still applies, and a nudged session is left alone for 30 minutes.

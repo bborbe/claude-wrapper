@@ -125,11 +125,16 @@ type tabSpawner struct {
 //
 // The order is load-bearing and follows the node server: every refusal is
 // decided BEFORE the first side effect, because a spawn that fails after opening
-// a tab leaves an orphan pane the caller never learns about.
+// a tab leaves an orphan pane the caller never learns about. An agent role is
+// refused first, so an agent never reaches the vault list, the role map, a tab
+// name reservation, a pane, a colour or a ledger row.
 func (s *tabSpawner) Spawn(
 	ctx context.Context,
 	request TabSpawnRequest,
 ) (*TabSpawnResult, error) {
+	if err := RefuseAgentTab(ctx, request.Role); err != nil {
+		return nil, err
+	}
 	prompt := strings.TrimSpace(request.Prompt)
 	if prompt == "" {
 		return nil, errors.Wrapf(ctx, ErrInvalidSpawnOptions, "prompt is required")
@@ -180,14 +185,8 @@ func (s *tabSpawner) Spawn(
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(paneID) == "" {
-		// A wezterm that answered 0 without a pane id has opened nothing we can
-		// address: no colour, no message, and no handle for the caller.
-		return nil, errors.Errorf(
-			ctx,
-			"the tab spawner reported success but named no pane, so the tab cannot be "+
-				"addressed — treat this as a failed spawn rather than a worker that opened",
-		)
+	if err := requirePaneID(ctx, paneID); err != nil {
+		return nil, err
 	}
 	// The tab is OPEN from here on, and everything below is bookkeeping for it. A
 	// client that disconnects mid-call must not orphan an open pane with no colour
@@ -223,6 +222,21 @@ func (s *tabSpawner) Spawn(
 	result.AgentID = result.SessionID
 	s.postLedger(tailCtx, request.SpawnerSessionID, result)
 	return result, nil
+}
+
+// requirePaneID refuses a tab the client reported without a pane id.
+//
+// A wezterm that answered 0 without a pane id has opened nothing we can address:
+// no colour, no message, and no handle for the caller.
+func requirePaneID(ctx context.Context, paneID string) error {
+	if strings.TrimSpace(paneID) != "" {
+		return nil
+	}
+	return errors.Errorf(
+		ctx,
+		"the tab spawner reported success but named no pane, so the tab cannot be "+
+			"addressed — treat this as a failed spawn rather than a worker that opened",
+	)
 }
 
 // reserveTabName picks a name free in the registry AND not already reserved by a

@@ -104,6 +104,12 @@ var (
 	// the wrong colour is discovered only by noticing it, so a guess here trades a
 	// refusal the caller can read for a defect they must spot.
 	ErrUnknownRole = stderrors.New("unknown role")
+	// ErrAgentTab is returned when a tab spawn's role resolves to agent.
+	//
+	// Role-mode matrix Rule 2: an agent is headless always. The refusal is a
+	// refusal, never a silent conversion to headless — a caller that still asks
+	// for agent tabs must see the mistake rather than have it hidden.
+	ErrAgentTab = stderrors.New("agent tab refused")
 	// ErrUnknownVault is returned when a spawn names a vault the vault-cli config
 	// does not list, or names neither a vault nor a cwd.
 	ErrUnknownVault = stderrors.New("unknown vault")

@@ -181,7 +181,7 @@ var _ = ginkgo.Describe("tabSpawner.Spawn", func() {
 			tabs:     tabs,
 			registry: registry,
 			roleMap: &fakeRoleMap{entries: map[string]RoleMapEntry{
-				"Agents": {Chip: new("pink"), WindowID: new(16)},
+				"Managers": {Chip: new("pink"), WindowID: new(16)},
 			}},
 			vaults: &fakeVaults{vaults: []Vault{{
 				Name:           "v1",
@@ -200,7 +200,7 @@ var _ = ginkgo.Describe("tabSpawner.Spawn", func() {
 	})
 
 	ginkgo.It("refuses an empty prompt before opening a tab", func() {
-		_, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "   "})
+		_, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "   ", Role: RoleManager})
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(tabs.spawned).To(gomega.BeEmpty())
 	})
@@ -209,7 +209,7 @@ var _ = ginkgo.Describe("tabSpawner.Spawn", func() {
 		registry.names["⚙ v1"] = nil
 		tabs.onSpawn = func() { registry.names["⚙ v1"] = []string{"s1"} }
 
-		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it"})
+		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleManager})
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
 		gomega.Expect(tabs.spawned[0].Launcher).To(gomega.Equal("/scripts/cc-v1"))
@@ -226,7 +226,7 @@ var _ = ginkgo.Describe("tabSpawner.Spawn", func() {
 
 	ginkgo.It("sends the role colour as its own submit", func() {
 		tabs.onSpawn = func() { registry.names["⚙ v1"] = []string{"s1"} }
-		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it"})
+		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleManager})
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(tabs.texts).To(gomega.ContainElement("/color pink"))
 		gomega.Expect(result.ColorApplied).To(gomega.BeTrue())
@@ -247,13 +247,13 @@ var _ = ginkgo.Describe("tabSpawner.Spawn", func() {
 			sleep:  func(time.Duration) {},
 		}
 
-		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it"})
+		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleManager})
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(result.SessionID).To(gomega.Equal("new"))
 	})
 
 	ginkgo.It("returns an empty identity and files no row when the tab never registers", func() {
-		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it"})
+		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleManager})
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(result.SessionID).To(gomega.BeEmpty())
 		gomega.Expect(result.AgentID).To(gomega.BeEmpty())
@@ -276,9 +276,96 @@ var _ = ginkgo.Describe("tabSpawner.Spawn", func() {
 
 	ginkgo.It("suffixes a tab name that is already held", func() {
 		registry.names["⚙ v1"] = []string{"old"}
-		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it"})
+		result, err := spawner.Spawn(ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleManager})
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(result.TabName).To(gomega.Equal("⚙ v1 (2)"))
+	})
+
+	ginkgo.It("refuses an agent role before opening a tab", func() {
+		for _, role := range []string{"agent", "", "  agent "} {
+			result, err := spawner.Spawn(
+				ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: role},
+			)
+			gomega.Expect(result).To(gomega.BeNil(), role)
+			gomega.Expect(err).NotTo(gomega.BeNil(), role)
+			gomega.Expect(stderrors.Is(err, ErrAgentTab)).To(gomega.BeTrue(), role)
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"), role)
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive=false"), role)
+		}
+		gomega.Expect(tabs.spawned).To(gomega.BeEmpty())
+		gomega.Expect(tabs.texts).To(gomega.BeEmpty())
+		gomega.Expect(ledger.posts).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("ignores a stale agent key in the role map", func() {
+		spawner = &tabSpawner{
+			tabs:     tabs,
+			registry: registry,
+			roleMap: &fakeRoleMap{entries: map[string]RoleMapEntry{
+				"Agents":   {Chip: new("pink"), WindowID: new(16)},
+				"Managers": {Chip: new("orange"), WindowID: new(14)},
+			}},
+			vaults: &fakeVaults{vaults: []Vault{{
+				Name:           "v1",
+				Path:           dir,
+				ClaudeScript:   "/scripts/cc-v1",
+				WorkerLauncher: "/scripts/cc-v1",
+			}}},
+			ledger: ledger,
+			now:    steppingClock(),
+			sleep:  func(time.Duration) {},
+		}
+
+		result, err := spawner.Spawn(
+			ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleAgent},
+		)
+		gomega.Expect(result).To(gomega.BeNil())
+		gomega.Expect(stderrors.Is(err, ErrAgentTab)).To(gomega.BeTrue())
+		gomega.Expect(tabs.spawned).To(gomega.BeEmpty())
+
+		_, err = spawner.Spawn(
+			ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleManager},
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
+		gomega.Expect(*tabs.spawned[0].WindowID).To(gomega.Equal(14))
+	})
+
+	ginkgo.It("opens human and manager tabs in their own windows", func() {
+		roleMap := &fakeRoleMap{entries: map[string]RoleMapEntry{
+			"Managers": {Chip: new("orange"), WindowID: new(14)},
+			"Direct":   {Chip: new("cyan"), WindowID: new(12)},
+		}}
+		newSpawner := func() *tabSpawner {
+			return &tabSpawner{
+				tabs:     tabs,
+				registry: registry,
+				roleMap:  roleMap,
+				vaults: &fakeVaults{vaults: []Vault{{
+					Name:           "v1",
+					Path:           dir,
+					ClaudeScript:   "/scripts/cc-v1",
+					WorkerLauncher: "/scripts/cc-v1",
+				}}},
+				ledger: ledger,
+				now:    steppingClock(),
+				sleep:  func(time.Duration) {},
+			}
+		}
+
+		_, err := newSpawner().Spawn(
+			ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleHuman},
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
+		gomega.Expect(*tabs.spawned[0].WindowID).To(gomega.Equal(12))
+
+		_, err = newSpawner().Spawn(
+			ctx, TabSpawnRequest{Vault: "v1", Prompt: "do it", Role: RoleManager},
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(tabs.spawned).To(gomega.HaveLen(2))
+		gomega.Expect(*tabs.spawned[1].WindowID).To(gomega.Equal(14))
 	})
 })
 
@@ -333,7 +420,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget", func() {
 	})
 
 	ginkgo.It("serves a local spawn with no target", func() {
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x"}, "spawner")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleHuman}, "spawner")
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(spawner.requests).To(gomega.HaveLen(1))
 		gomega.Expect(spawner.requests[0].SpawnerSessionID).To(gomega.Equal("spawner"))
@@ -358,34 +445,34 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget", func() {
 	})
 
 	ginkgo.It("refuses resume, which the tab launcher would drop", func() {
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Resume: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}, "")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Resume: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", Role: RoleHuman}, "")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("headless worker only"))
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("refuses a policy the tab worker would never consult", func() {
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Policy: "/p.json"}, "")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Policy: "/p.json", Role: RoleHuman}, "")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("refuses an env override that would widen the worker", func() {
 		_, err := server.spawnLocalTarget(
-			ctx, spawnAgentArgs{Env: map[string]string{"PERMISSION_MODE": "bypassPermissions"}}, "",
+			ctx, spawnAgentArgs{Env: map[string]string{"PERMISSION_MODE": "bypassPermissions"}, Role: RoleHuman}, "",
 		)
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("refuses when no spawner is wired", func() {
-		_, err := (&RosterToolServer{}).spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x"}, "")
+		_, err := (&RosterToolServer{}).spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleHuman}, "")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("not wired"))
 	})
 
 	ginkgo.It("refuses a tab spawn with no prompt, naming the headless escape", func() {
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{}, "")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Role: RoleHuman}, "")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("requires `prompt`"))
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive: false"))
