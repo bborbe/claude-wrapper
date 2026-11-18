@@ -21,5 +21,6 @@ func NewDefaultRegistry() *Registry {
 		NewCdGitChainGuard(),
 		NewBranchSwitchGuard(),
 		NewAttributionGuard(),
+		NewToolLogGuard(),
 	)
 }

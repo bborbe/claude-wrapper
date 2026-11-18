@@ -600,3 +600,60 @@ var _ = Describe("BranchSwitchGuard", func() {
 				"Or switch back to trunk. Work inside an existing linked worktree is unaffected."))
 	})
 })
+
+// runToolLog evaluates the log guard against a temp HOME and returns the record
+// it appended.
+func runToolLog(command string) map[string]any {
+	home := tempRepo(map[string]string{})
+	previous := os.Getenv("HOME")
+	Expect(os.Setenv("HOME", home)).To(Succeed())
+	defer func() { Expect(os.Setenv("HOME", previous)).To(Succeed()) }()
+
+	input := bashInput(command)
+	input.HookEventName = hook.EventPostToolUse
+	input.SessionID = "sess-1"
+	input.ToolUseID = "tool-1"
+	input.Cwd = "/tmp"
+	Expect(hook.NewToolLogGuard().Evaluate(input).Deny).To(BeFalse())
+
+	entries, err := os.ReadDir(home + "/.claude/state/tool-executions")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(entries).To(HaveLen(1))
+	data, err := os.ReadFile(home + "/.claude/state/tool-executions/" + entries[0].Name())
+	Expect(err).NotTo(HaveOccurred())
+	var record map[string]any
+	Expect(json.Unmarshal(data, &record)).To(Succeed())
+	return record
+}
+
+var _ = Describe("ToolLogGuard", func() {
+	guard := hook.NewToolLogGuard()
+
+	DescribeTable("classifies the shape of a command",
+		func(command string, classes []any) {
+			Expect(runToolLog(command)["cls"]).To(Equal(classes))
+		},
+		Entry("a loop", "for i in 1 2; do echo $i; done", []any{"loop", "chain"}),
+		Entry("a substitution", "echo $(date)", []any{"subst"}),
+		Entry("a redirect", "ls > out.txt", []any{"redir"}),
+		Entry("a pipe", "ls | grep x", []any{"pipe"}),
+		Entry("a chain", "ls && pwd", []any{"chain"}),
+		Entry("a fallback is a chain, not a pipe", "ls || true", []any{"chain"}),
+		Entry("a plain command", "ls -la", []any{}),
+	)
+
+	It("records the identifying fields and never the command", func() {
+		record := runToolLog("ls -la")
+		Expect(record["session_id"]).To(Equal("sess-1"))
+		Expect(record["tool_name"]).To(Equal("Bash"))
+		Expect(record["tool_use_id"]).To(Equal("tool-1"))
+		Expect(record["cwd"]).To(Equal("/tmp"))
+		Expect(record["ts"]).To(HaveSuffix("Z"))
+		Expect(record).NotTo(HaveKey("command"))
+	})
+
+	It("does not apply to a PreToolUse payload", func() {
+		Expect(guard.Applies(hook.Input{HookEventName: hook.EventPreToolUse, ToolName: "Bash"})).
+			To(BeFalse())
+	})
+})
