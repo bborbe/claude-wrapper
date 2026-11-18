@@ -200,17 +200,32 @@ func launcherMCPConfigs(launcher string) []string {
 // "No model is invoked anywhere in the path"), so it cannot score a row. The
 // readiness ladder — >= 9 opens, >= 7 after one improvement pass, < 7 refuses
 // (`claude-supervisor:docs/fleet-surface.md` § Spawn a worker item 2) — is an agent
-// call, so the gate
-// runs where the model already is: in the worker the tick just spawned. Without it a
-// below-bar row opens ungated, which is the defect the tick exists to close (measured
-// 2026-11-18: a row scored 5/10 and its worker got the row anyway).
+// call, so the gate runs where the model already is: in the worker the tick just
+// spawned. Without it a below-bar row opens ungated, which is the defect the tick
+// exists to close (measured 2026-11-18: a row scored 5/10 and its worker got the row
+// anyway).
+//
+// ⚠️ **It comes BEFORE the work command, and it forbids that command below the bar.**
+// Measured 2026-11-18 on a 6.5/10 fixture: with the gate appended AFTER
+// `/vault-cli:work-on-task`, the row opened, the worker ran the command, and its
+// chained plan-task stopped at `phase: planning` and *printed* the gaps. The card the
+// instruction asked for was never posted, because the command got there first and
+// consumed the turn. The stop was delivered; the card was not. The gate is therefore
+// the first thing the worker reads and the last word on whether the command runs.
 //
 // The `/supervisor:open` branch does not carry this: it runs Gate 2 itself.
-const readinessFirstStep = "\n\nFIRST STEP — readiness gate. Before anything else run " +
-	"Agent(subagent_type='vault-cli:task-auditor', description='Readiness: <task>') " +
-	"on this task and read its READINESS: <score>/10 line. >= 9 proceed. " +
-	">= 7 run one improvement pass, then proceed. < 7 STOP at phase: planning and " +
-	"post a card naming the score (attention-ask.py post). Never proceed below the bar."
+const readinessFirstStep = "FIRST STEP — readiness gate, before any other tool call, " +
+	"including the command below.\n\n" +
+	"Run Agent(subagent_type='vault-cli:task-auditor', description='Readiness: <task>') " +
+	"on this task and read its READINESS: <score>/10 line.\n\n" +
+	"- score >= 9: run the command below.\n" +
+	"- score >= 7: run one improvement pass, re-read the score, then run the command below.\n" +
+	"- score < 7: post the card, then STOP. Do NOT run the command below — it stops at " +
+	"planning and prints the gaps, which is not the card this gate requires.\n\n" +
+	"Post the card with exactly this command, substituting the row's slug and the score " +
+	"and gaps the probe named:\n" +
+	"  python3 ~/.claude/plugins/marketplaces/claude-supervisor/scripts/attention-ask.py " +
+	"post --dedup-key readiness-<row-slug> --payload '<score>/10 — <gaps>'\n\n"
 
 // reopenPrompt is the first turn a reopened worker receives.
 //
@@ -220,12 +235,13 @@ const readinessFirstStep = "\n\nFIRST STEP — readiness gate. Before anything e
 // therefore sends the same work command `/supervisor:open` sends on its create
 // branch.
 //
-// A task row carries `readinessFirstStep` because `/vault-cli:work-on-task` plans but
-// never applies the readiness ladder; the `/supervisor:open` branch reaches Gate 2 and
-// would run the audit twice.
+// A task row puts `readinessFirstStep` FIRST, then the command, because
+// `/vault-cli:work-on-task` plans but never applies the readiness ladder and its
+// chained plan-task consumes the turn before a trailing instruction can be acted on.
+// The `/supervisor:open` branch reaches Gate 2 and would run the audit twice.
 func reopenPrompt(row FlaggedRow) string {
 	if row.Kind == "task" {
-		return `/vault-cli:work-on-task "` + row.Name + `"` + readinessFirstStep
+		return readinessFirstStep + `/vault-cli:work-on-task "` + row.Name + `"`
 	}
 	return `/supervisor:open "` + row.Name + `"`
 }

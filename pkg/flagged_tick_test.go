@@ -796,9 +796,9 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			ginkgo.GinkgoWriter.Printf("prompt=%q\n", requests[0].Prompt)
 			gomega.Expect(requests).To(gomega.HaveLen(1))
 			gomega.Expect(requests[0].Prompt).
-				To(gomega.HavePrefix(`/vault-cli:work-on-task "Direct Task"`))
+				To(gomega.HavePrefix("FIRST STEP — readiness gate"))
 			gomega.Expect(requests[0].Prompt).
-				To(gomega.ContainSubstring("FIRST STEP — readiness gate"))
+				To(gomega.ContainSubstring(`/vault-cli:work-on-task "Direct Task"`))
 			gomega.Expect(supervisor.snapshot()).To(gomega.BeEmpty())
 		})
 
