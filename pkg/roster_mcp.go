@@ -1366,23 +1366,6 @@ func (s *RosterToolServer) spawnLocalTarget(
 			body.Target,
 		)
 	}
-	// A `role: agent` row is headless always — the 2026-11-12 operator ruling is
-	// that all agents are headless and only interactive and manager rows open
-	// tabs. The guard is keyed on the CALLER'S `role` ARGUMENT, never on the
-	// resolved role: an absent `role` resolves to `agent` (DefaultRole), so
-	// keying on the resolution would also refuse the documented debug hatch and
-	// every pre-role caller. Keying on the argument refuses exactly the explicit
-	// `role: agent` + `interactive: true` call the ruling forbids.
-	if strings.TrimSpace(body.Role) == RoleAgent &&
-		body.Interactive != nil && *body.Interactive {
-		return "", errors.Errorf(
-			ctx,
-			"`role: agent` is headless always — the operator ruling is that all agents "+
-				"are headless and only interactive and manager rows open tabs. Set "+
-				"`interactive: false` for an agent worker; use `role: human` or "+
-				"`role: manager` if this really is a tab",
-		)
-	}
 	// The mode goes through the node's FULL chain (`resolveSpawnMode`): the
 	// explicit `interactive` argument, then SUPERVISOR_SPAWN_MODE, then
 	// `spawn.mode` in the config file, then the `interactive` default. An earlier
@@ -1405,6 +1388,14 @@ func (s *RosterToolServer) spawnTabAgent(
 	sessionID string,
 	resolution SpawnModeResolution,
 ) (string, error) {
+	// Matrix Rule 2: an agent is headless always. Checked on the RESOLVED role
+	// (an empty role is DefaultRole, i.e. agent) and here, after the mode has
+	// resolved to a tab, so it fires whatever chose the tab — the argument,
+	// SUPERVISOR_SPAWN_MODE, spawn.mode or the built-in default — and before
+	// enforceCaps, so a refused call never reserves a start slot.
+	if err := RefuseAgentTab(ctx, body.Role); err != nil {
+		return "", err
+	}
 	if s.Spawner == nil {
 		return "", errors.Errorf(
 			ctx,
@@ -1839,33 +1830,44 @@ func shippingProp() map[string]any {
 		"hook still apply. A tab or A2A target refuses it")
 }
 
+// spawnAgentDescription is the `spawn_agent` tool description.
+//
+// A function, not a literal inside spawnToolDefinitions: that function sits on
+// the repo's funlen budget, and the description is its largest part.
+func spawnAgentDescription() string {
+	return "Create one worker and return its agent id. `target` selects the shape: " +
+		"`docker` (a container on this Mac), `k8s` (a pod on the default cluster, " +
+		"nuke dev unless `a2a.defaultCluster` says otherwise) or `k8s:<cluster>` " +
+		"creates a worker on an a2a-worker-controller and returns immediately — the " +
+		"first turn is sent asynchronously, so the record carries no result yet, and " +
+		"`task` is REQUIRED naming the vault task the worker is opened for. An absent " +
+		"or `local` target opens EITHER a WezTerm tab under the vault's cc-* launcher " +
+		"OR an in-process headless worker in THIS daemon (where `cwd`, `vault`, `label`, " +
+		"`model`, `policy` and `resume` (a full session id) apply and the daemon holds " +
+		"its parks and stdin). The mode resolves in this order: an explicit " +
+		"`interactive`, then SUPERVISOR_SPAWN_MODE, then `spawn.mode` in " +
+		"~/.config/claude-supervisor/config.json, then the `interactive` default; the " +
+		"response's `mode_source` names the step that decided. A `local` spawn requires " +
+		"`cwd` or `vault` — omitting both is refused, " +
+		"never defaulted. A tab accepts `label`, `role`, `window_id` and `env`, and " +
+		"REFUSES `resume`, `policy` and `shipping`, which reach a headless worker only. " +
+		"`env` may not set a worker's permission or spawn mode. " +
+		"An agent role (the default when `role` is omitted) is headless only: a tab " +
+		"spawn of an agent is refused (role-mode matrix Rule 2), so a tab requires " +
+		"`role: human` or `role: manager`."
+}
+
 func spawnToolDefinitions() []any {
 	return []any{
 		toolDef(ToolSpawnAgent,
-			"Create one worker and return its agent id. `target` selects the shape: "+
-				"`docker` (a container on this Mac), `k8s` (a pod on the default cluster, "+
-				"nuke dev unless `a2a.defaultCluster` says otherwise) or `k8s:<cluster>` "+
-				"creates a worker on an a2a-worker-controller and returns immediately — the "+
-				"first turn is sent asynchronously, so the record carries no result yet, and "+
-				"`task` is REQUIRED naming the vault task the worker is opened for. An absent "+
-				"or `local` target opens EITHER a WezTerm tab under the vault's cc-* launcher "+
-				"OR an in-process headless worker in THIS daemon (where `cwd`, `vault`, `label`, "+
-				"`model`, `policy` and `resume` (a full session id) apply and the daemon holds "+
-				"its parks and stdin). The mode resolves in this order: an explicit "+
-				"`interactive`, then SUPERVISOR_SPAWN_MODE, then `spawn.mode` in "+
-				"~/.config/claude-supervisor/config.json, then the `interactive` default; the "+
-				"response's `mode_source` names the step that decided. A `local` spawn requires "+
-				"`cwd` or `vault` — omitting both is refused, "+
-				"never defaulted. A tab accepts `label`, `role`, `window_id` and `env`, and "+
-				"REFUSES `resume`, `policy` and `shipping`, which reach a headless worker only. "+
-				"`env` may not set a worker's permission or spawn mode.",
+			spawnAgentDescription(),
 			map[string]any{
 				"target":    stringProp("local, docker, k8s, or k8s:<cluster>"),
 				"task":      stringProp("the vault task the worker is opened for (A2A targets)"),
 				"vault":     stringProp("the vault the worker runs in; resolves its launcher"),
 				"cwd":       stringProp("a directory inside a configured vault, instead of vault"),
 				"label":     stringProp("the tab label; defaults to the vault name"),
-				"role":      stringProp("manager, agent or human; defaults to agent"),
+				"role":      stringProp("manager, agent or human; defaults to agent. An agent is headless only — a tab needs human or manager"),
 				"window_id": stringProp("the WezTerm window to open the tab in"),
 				"env":       mapProp("environment exported into the pane before the launcher runs"),
 				"prompt":    stringProp("the first turn to send; required for a tab, optional for headless"),

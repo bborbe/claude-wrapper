@@ -5,7 +5,9 @@
 package pkg
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -34,5 +36,45 @@ var _ = ginkgo.Describe("flagged reopen prompt", func() {
 
 			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:open "Some Goal"`))
 		})
+	})
+})
+
+var _ = ginkgo.Describe("flagged reopen of an interactive row", func() {
+	ginkgo.It("refuses an agent row and opens a human row", func() {
+		ctx := context.Background()
+		tabs := &fakeTabClient{}
+		vaults := &fakeVaults{vaults: []Vault{{
+			Name:           "v1",
+			Path:           ginkgo.GinkgoT().TempDir(),
+			ClaudeScript:   "/scripts/cc-v1",
+			WorkerLauncher: "/scripts/cc-v1",
+		}}}
+		spawner := &tabSpawner{
+			tabs:     tabs,
+			registry: &fakeRegistry{names: map[string][]string{}},
+			roleMap: &fakeRoleMap{entries: map[string]RoleMapEntry{
+				"Agents": {Chip: new("pink"), WindowID: new(16)},
+			}},
+			vaults: vaults,
+			ledger: &fakeLedger{},
+			now:    steppingClock(),
+			sleep:  func(time.Duration) {},
+		}
+		supervisor := &recordingSupervisor{}
+		reopener := NewFlaggedReopener(supervisor, spawner, vaults, &fakeLedger{}, steppingClock())
+
+		err := reopener.Reopen(ctx, FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "T", Role: RoleAgent, Mode: SpawnModeInteractive,
+		})
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(tabs.spawned).To(gomega.BeEmpty())
+		gomega.Expect(supervisor.spawns).To(gomega.BeEmpty())
+
+		err = reopener.Reopen(ctx, FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "T", Role: RoleHuman, Mode: SpawnModeInteractive,
+		})
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
 	})
 })

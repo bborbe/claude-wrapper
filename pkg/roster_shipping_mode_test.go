@@ -89,7 +89,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent headless spawn permission m
 
 	ginkgo.It("keeps the tab refusal for shipping", func() {
 		_, err := server.spawnAgent(ctx,
-			json.RawMessage(`{"shipping":true,"interactive":true,"cwd":"/tmp","prompt":"hi"}`), "")
+			json.RawMessage(`{"shipping":true,"interactive":true,"cwd":"/tmp","prompt":"hi","role":"human"}`), "")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("needs the server to set the worker"))
 		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())

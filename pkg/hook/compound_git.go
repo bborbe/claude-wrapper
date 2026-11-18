@@ -62,13 +62,8 @@ var gitWorktreeListFlags = map[string]bool{
 // invocation under roots. Every word must be static; the -C operand, when present,
 // must resolve under one of roots.
 func GitShapeAllows(values []string, cwd string, roots []string) bool {
-	index := 0
-	if len(values) > 0 && values[0] == "-C" {
-		if len(values) < 2 || !UnderRoots(values[1], roots) {
-			return false
-		}
-		index = 2
-	} else if !UnderRoots(cwd, roots) {
+	index, ok := gitShapeIndex(values, cwd, roots)
+	if !ok {
 		return false
 	}
 	if index < len(values) && values[index] == "tag" {
@@ -95,6 +90,22 @@ func GitShapeAllows(values []string, cwd string, roots []string) bool {
 		return false
 	}
 	return gitReadOnlyArgs(values[index+1:])
+}
+
+// gitShapeIndex resolves where the subcommand starts, after an optional `-C`.
+//
+// The `-C` operand must resolve under roots, and without one the cwd must.
+func gitShapeIndex(values []string, cwd string, roots []string) (int, bool) {
+	if len(values) > 0 && values[0] == "-C" {
+		if len(values) < 2 || !UnderRoots(values[1], roots) {
+			return 0, false
+		}
+		return 2, true
+	}
+	if !UnderRoots(cwd, roots) {
+		return 0, false
+	}
+	return 0, true
 }
 
 // gitDiffFamily are the subcommands where `-o <file>` is the short `--output`.

@@ -96,7 +96,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume", func() {
 	})
 
 	ginkgo.It("still refuses a resume on the tab path", func() {
-		_, err := spawn(`{"resume":"` + resumed + `","cwd":"/tmp","prompt":"x"}`)
+		_, err := spawn(`{"resume":"` + resumed + `","cwd":"/tmp","prompt":"x","role":"human"}`)
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("headless worker only"))
 		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())

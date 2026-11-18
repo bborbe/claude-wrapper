@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [004-agents-key-removal]
+summary: Removed the agent role-map entry and made every tab path refuse agent roles (explicit or defaulted) before side effects, with tests and an Unreleased changelog entry; also applied behavior-preserving extractions to two pre-existing gocognit findings and two funlen findings so the required gate is green.
+execution_id: b281c6a4-b1d3-5429-a740-6e407e3042df-exec-008-spec-004-agents-key-removal
+dark-factory-version: dev
 created: "2026-11-18T17:34:32Z"
 queued: "2026-11-18T17:37:54Z"
+started: "2026-11-18T17:39:13Z"
+completed: "2026-11-18T17:48:21Z"
 ---
 
 # Remove the stale `Agents` role-map key and refuse every agent tab

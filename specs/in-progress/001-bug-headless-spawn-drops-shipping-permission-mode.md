@@ -1,6 +1,8 @@
 ---
-status: approved
+status: prompted
 approved: "2026-11-11T11:03:12Z"
+generating: "2026-11-18T17:39:12Z"
+prompted: "2026-11-18T17:46:44Z"
 branch: dark-factory/bug-headless-spawn-drops-shipping-permission-mode
 ---
 

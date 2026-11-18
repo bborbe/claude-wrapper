@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -31,15 +32,13 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget role refusal", func()
 		)
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("role: agent"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive=false"))
 		// The refusal fires before the spawn's first side effect: no pane opened.
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
-	// The discriminating case for the argument-vs-resolved-role keying: an absent
-	// `role` resolves to `agent` (DefaultRole), so a guard keyed on the resolved
-	// value would refuse this call. Keying on the caller's argument lets it open.
-	ginkgo.It("still opens when the role is absent", func() {
+	ginkgo.It("refuses an absent role, which defaults to agent, when it asks for a tab", func() {
 		interactive := true
 		_, err := server.spawnLocalTarget(
 			ctx,
@@ -47,8 +46,10 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget role refusal", func()
 			"spawner",
 		)
 
-		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(spawner.requests).To(gomega.HaveLen(1))
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive=false"))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("still opens for an explicit role: human tab spawn", func() {
@@ -61,5 +62,33 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget role refusal", func()
 
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(spawner.requests).To(gomega.HaveLen(1))
+	})
+
+	ginkgo.It("surfaces the agent refusal as a tool error, not a transport error", func() {
+		for _, arguments := range []string{
+			`{"interactive":true,"role":"agent","prompt":"x","cwd":"/tmp"}`,
+			`{"interactive":true,"prompt":"x","cwd":"/tmp"}`,
+		} {
+			result, rpcErr := server.callTool(
+				ctx,
+				json.RawMessage(`{"name":"spawn_agent","arguments":`+arguments+`}`),
+				"caller",
+			)
+
+			gomega.Expect(rpcErr).To(gomega.BeNil())
+			body, ok := result.(map[string]any)
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(body["isError"]).To(gomega.Equal(true))
+			content, ok := body["content"].([]any)
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(content).To(gomega.HaveLen(1))
+			first, ok := content[0].(map[string]any)
+			gomega.Expect(ok).To(gomega.BeTrue())
+			text, ok := first["text"].(string)
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(text).To(gomega.ContainSubstring("Rule 2"))
+			gomega.Expect(text).To(gomega.ContainSubstring("interactive=false"))
+			gomega.Expect(spawner.requests).To(gomega.BeEmpty())
+		}
 	})
 })

@@ -26,12 +26,33 @@ const DefaultRole = RoleAgent
 
 // rolePurposes maps a role to the role-map key that carries its window and chip.
 //
-// The purpose is the map's own vocabulary, not the role's: the operator names
-// windows "Managers" and "Agents", and the map is edited by hand.
+// Only manager and human roles carry a window: an agent never opens a tab
+// (role-mode matrix Rule 2), so it has no role-map key, and a stale key of that
+// name in the role map file is never read.
 var rolePurposes = map[string]string{
 	RoleManager: "Managers",
-	RoleAgent:   "Agents",
 	RoleHuman:   "Direct",
+}
+
+// agentTabRefusal is the text every agent tab refusal carries. It names
+// the rule and the call that works, so the caller can fix the call
+// without reading the source.
+const agentTabRefusal = "an agent never opens a tab — role-mode matrix Rule 2 " +
+	"(agent → headless always). Spawn it headless with interactive=false, or " +
+	"omit interactive under a headless spawn.mode; use role: human or " +
+	"role: manager only if this really is the operator's own session or a manager"
+
+// RefuseAgentTab returns ErrAgentTab when role resolves to agent, explicitly
+// or by defaulting an empty role to DefaultRole, and nil otherwise.
+func RefuseAgentTab(ctx context.Context, role string) error {
+	trimmed := strings.TrimSpace(role)
+	if trimmed == "" {
+		trimmed = DefaultRole
+	}
+	if trimmed != RoleAgent {
+		return nil
+	}
+	return errors.Wrap(ctx, ErrAgentTab, agentTabRefusal)
 }
 
 // familyChips maps a vault's family to the chip a human-role spawn takes.
@@ -130,14 +151,18 @@ func (r *roleMapReader) Read(ctx context.Context) (map[string]RoleMapEntry, erro
 
 // ResolveRole resolves a role argument against the role map.
 //
-// An unknown role is an error, never a fallback to the default: a worker opened
-// in the wrong window with the wrong colour is discovered only by noticing it,
-// so guessing here trades a refusal the caller can read for a defect they must
-// spot.
+// An agent role is refused (it never resolves to a window or chip — role-mode
+// matrix Rule 2), and an unknown role is refused with ErrUnknownRole, never a
+// fallback to the default: a worker opened in the wrong window with the wrong
+// colour is discovered only by noticing it, so guessing here trades a refusal
+// the caller can read for a defect they must spot.
 func ResolveRole(ctx context.Context, reader RoleMapReader, role string) (*RoleResolution, error) {
 	trimmed := strings.TrimSpace(role)
 	if trimmed == "" {
 		trimmed = DefaultRole
+	}
+	if err := RefuseAgentTab(ctx, trimmed); err != nil {
+		return nil, err
 	}
 	purpose, ok := rolePurposes[trimmed]
 	if !ok {
