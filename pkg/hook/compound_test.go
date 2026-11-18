@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -253,8 +254,12 @@ var _ = Describe("CompoundBashGuard", func() {
 		Entry("nine parts", "pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd", false),
 	)
 
-	It("makes no decision for a single command", func() {
+	It("makes no decision for a single plain command", func() {
 		Expect(guard.Evaluate(bashInput("pwd")).Allow).To(BeFalse())
+	})
+
+	It("holds allow authority", func() {
+		Expect(guard.MayAllow()).To(BeTrue())
 	})
 
 	It("names the script it replaces", func() {
@@ -524,5 +529,94 @@ var _ = Describe("gh shape guards", func() {
 		Expect(hook.TmpTarget("/etc/passwd")).To(BeFalse())
 		Expect(hook.TmpTarget("$HOME/x")).To(BeFalse())
 		Expect(hook.TmpTarget("x.md")).To(BeFalse())
+	})
+})
+
+// The `git -C <root>` shapes, run through the real registry: a guard's allow only
+// counts when the registry honours it.
+var _ = Describe("git -C through the registry", func() {
+	home, err := os.UserHomeDir()
+	Expect(err).NotTo(HaveOccurred())
+	vault := filepath.Join(home, "Documents", "Obsidian", "private-personal")
+	rules := hook.CompoundRules{Allow: []string{"echo:*"}}
+	registry := hook.NewRegistry(
+		hook.NewCdGitChainGuard(),
+		hook.NewCompoundBashGuardWithRules(
+			func(string) (hook.CompoundRules, error) { return rules, nil },
+		),
+	)
+	evaluate := func(command string) hook.Decision {
+		input := bashInput(command)
+		input.HookEventName = hook.EventPreToolUse
+		input.Cwd = vault
+		return registry.Evaluate(input)
+	}
+
+	DescribeTable("allows a read-only subcommand under -C",
+		func(sub string) {
+			Expect(evaluate("git -C " + vault + " " + sub).Allow).To(BeTrue())
+		},
+		Entry("status", "status --porcelain"),
+		Entry("show", "show HEAD"),
+		Entry("log", "log --oneline -5"),
+		Entry("diff", "diff --stat"),
+		Entry("grep", "grep foo"),
+		Entry("rev-parse", "rev-parse HEAD"),
+		Entry("ls-files", "ls-files"),
+		Entry("ls-tree", "ls-tree HEAD"),
+		Entry("rev-list", "rev-list HEAD"),
+		Entry("merge-base", "merge-base HEAD HEAD"),
+		Entry("cat-file", "cat-file -p HEAD"),
+		Entry("describe", "describe --tags"),
+	)
+
+	DescribeTable("makes no decision for a mutating subcommand under -C",
+		func(sub string) {
+			Expect(evaluate("git -C " + vault + " " + sub).Allow).To(BeFalse())
+		},
+		Entry("push", "push origin master"),
+		Entry("commit", "commit -m x"),
+		Entry("add", "add ."),
+		Entry("merge", "merge origin/master"),
+		Entry("rebase", "rebase origin/master"),
+		Entry("reset", "reset --hard"),
+		Entry("checkout", "checkout x"),
+		Entry("switch", "switch x"),
+		Entry("restore", "restore x"),
+		Entry("rm", "rm x"),
+		Entry("tag", "tag v1"),
+		Entry("worktree", "worktree add ../x"),
+		Entry("fetch", "fetch origin"),
+	)
+
+	DescribeTable("refuses a read-only subcommand outside the roots or with an unbounded flag",
+		func(command string) {
+			Expect(evaluate(command).Allow).To(BeFalse())
+		},
+		Entry("a -C outside the roots", "git -C /etc status"),
+		Entry("a -c config", "git -C "+vault+" -c core.pager=x log"),
+		Entry("an --output", "git -C "+vault+" diff --output=/tmp/x"),
+		Entry("an expansion", "git -C $W status"),
+	)
+
+	DescribeTable("resolves a literal assignment only when the rewrite is faithful",
+		func(command string, allow bool) {
+			Expect(evaluate(command).Allow).To(Equal(allow))
+		},
+		Entry("a quoted variable", "W="+vault+"; git -C \"$W\" status; echo \"--- exit: $?\"", true),
+		Entry("a bare variable", "W="+vault+"; git -C $W log --oneline", true),
+		Entry("a braced variable", "W="+vault+"; git -C ${W} diff", true),
+		Entry("a value that word-splits into push", "W=\""+vault+" push\"; git -C $W log", false),
+		Entry("a value outside the roots", "W=/etc; git -C $W status", false),
+		Entry("a mutating subcommand", "W="+vault+"; git -C $W push origin master", false),
+		Entry("a shell-read name", "PATH="+vault+"; git -C $PATH status", false),
+		Entry("a git redirect name", "GIT_DIR=/etc; git -C "+vault+" status", false),
+		Entry("a single-quoted reference stays literal", "W="+vault+"; git -C '$W' status", false),
+		Entry("a substitution in the value", "W=$(pwd); git -C $W status", false),
+	)
+
+	It("allows a compound of approved parts", func() {
+		Expect(evaluate("git -C " + vault + " status; echo \"--- exit: $?\"").Allow).
+			To(BeTrue())
 	})
 })

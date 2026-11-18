@@ -162,18 +162,25 @@ func NewRegistry(guards ...Guard) *Registry {
 	return &Registry{guards: guards}
 }
 
+// AllowAuthority marks a guard whose Allow the registry honours. Every other
+// guard's Allow is discarded.
+type AllowAuthority interface {
+	MayAllow() bool
+}
+
 // Evaluate runs every applicable guard and returns the combined decision.
 //
-// A deny short-circuits: nothing after it can make the call safe. **An allow is
-// discarded**: this binary never suppresses the permission prompt, it only refuses.
+// A deny short-circuits: nothing after it can make the call safe. An allow is
+// honoured only from a guard implementing AllowAuthority, and only when no guard
+// in the whole chain denies — every guard still runs after it.
 //
-// That is a deliberate scope decision, taken after five review passes found
-// nineteen bypasses and every one of them was in an allow path. An allow must be
-// correct on every possible input, because it removes a prompt; a deny only has to
-// be right about what it refuses, and the fallback is the prompt that would have
-// appeared anyway. Dropping the allow removes the whole class at one place rather
-// than one parser at a time.
+// The narrow allow is deliberate. Five review passes found nineteen bypasses and
+// every one of them was in an allow path, so the binary went deny-only. That
+// pushed every `git -C <root> <read-only>` call — the shape the rules prescribe —
+// back to the prompt. One reviewed parser (the compound guard) gets the authority
+// back; every other allow path stays discarded.
 func (r *Registry) Evaluate(input Input) Decision {
+	var allow Decision
 	for _, guard := range r.guards {
 		if !guard.Applies(input) {
 			continue
@@ -182,8 +189,17 @@ func (r *Registry) Evaluate(input Input) Decision {
 		if decision.Deny {
 			return decision
 		}
+		if decision.Allow && !allow.Allow && mayAllow(guard) {
+			allow = decision
+		}
 	}
-	return Decision{}
+	return allow
+}
+
+// mayAllow reports whether guard holds allow authority.
+func mayAllow(guard Guard) bool {
+	authority, ok := guard.(AllowAuthority)
+	return ok && authority.MayAllow()
 }
 
 // Names returns the guard names in evaluation order.

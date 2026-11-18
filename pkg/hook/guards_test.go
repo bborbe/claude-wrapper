@@ -129,9 +129,23 @@ var _ = Describe("Registry", func() {
 		Expect(registry.Evaluate(bashInput("anything")).Deny).To(BeTrue())
 	})
 
-	It("discards an allow, so the binary never suppresses a prompt", func() {
+	It("discards an allow from a guard without allow authority", func() {
 		registry := hook.NewRegistry(allowGuard{})
 		Expect(registry.Evaluate(bashInput("anything"))).To(Equal(hook.Decision{}))
+	})
+
+	It("honours an allow from a guard with allow authority", func() {
+		registry := hook.NewRegistry(authorityGuard{})
+		decision := registry.Evaluate(bashInput("anything"))
+		Expect(decision.Allow).To(BeTrue())
+		Expect(decision.Reason).To(Equal("authorised"))
+	})
+
+	It("lets a later deny win over an authorised allow", func() {
+		registry := hook.NewRegistry(authorityGuard{}, denyGuard{})
+		decision := registry.Evaluate(bashInput("anything"))
+		Expect(decision.Deny).To(BeTrue())
+		Expect(decision.Allow).To(BeFalse())
 	})
 
 	It("lists the guard names in evaluation order", func() {
@@ -150,6 +164,15 @@ func (allowGuard) Applies(hook.Input) bool { return true }
 
 func (allowGuard) Evaluate(hook.Input) hook.Decision {
 	return hook.AllowDecision("allowed")
+}
+
+// authorityGuard allows and holds allow authority.
+type authorityGuard struct{ allowGuard }
+
+func (authorityGuard) MayAllow() bool { return true }
+
+func (authorityGuard) Evaluate(hook.Input) hook.Decision {
+	return hook.AllowDecision("authorised")
 }
 
 type denyGuard struct{}

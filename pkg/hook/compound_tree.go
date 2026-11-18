@@ -196,11 +196,21 @@ func literalWord(word *syntax.Word) (string, bool) {
 	if word == nil || len(word.Parts) != 1 {
 		return "", false
 	}
-	lit, ok := word.Parts[0].(*syntax.Lit)
-	if !ok {
-		return "", false
+	switch part := word.Parts[0].(type) {
+	case *syntax.Lit:
+		return part.Value, true
+	case *syntax.DblQuoted:
+		// `"/x/y"` with no expansion inside is the same single word as `/x/y`.
+		if len(part.Parts) != 1 {
+			return "", false
+		}
+		lit, ok := part.Parts[0].(*syntax.Lit)
+		if !ok || strings.ContainsAny(lit.Value, "\\$`") {
+			return "", false
+		}
+		return lit.Value, true
 	}
-	return lit.Value, true
+	return "", false
 }
 
 // isDupTarget reports whether a descriptor target is a digit or `-`.
