@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-11-17T23:41:56Z"
 generating: "2026-11-18T00:45:34Z"
 prompted: "2026-11-18T00:45:34Z"
+verifying: "2026-11-18T01:48:12Z"
 branch: dark-factory/sweep-gate-port
 ---
 
