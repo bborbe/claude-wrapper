@@ -240,10 +240,16 @@ func matchesAnyPattern(segment string, patterns []string) bool {
 	return false
 }
 
-// wrapperProgram reports whether the program runs arbitrary code.
+// wrapperProgram reports whether the program runs arbitrary code or changes the
+// directory a later command resolves against.
+//
+// `cd` belongs here: a shape guard resolves a relative operand against the session
+// cwd, but the shell resolves it against the directory the `cd` just entered, so
+// `cd /tmp && sed -n p ../Users/…/id_rsa` read a file under a root that the shell
+// never visited.
 func wrapperProgram(program string) bool {
 	switch program {
-	case "git", "env", "xargs", "eval", "exec", "sudo", "ssh",
+	case "git", "env", "xargs", "eval", "exec", "sudo", "ssh", "cd",
 		"sh", "bash", "zsh", "fish", "node", "deno", "npx", "bunx",
 		"python", "python3", "npm", "yarn", "pnpm", "bun":
 		return true

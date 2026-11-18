@@ -297,6 +297,31 @@ var _ = Describe("Review regressions", func() {
 		Expect(guard.Evaluate(bashInput(`gh pr merge 42 --repo "bborbe/x"`)).Deny).To(BeTrue())
 		Expect(guard.Evaluate(bashInput(`gh -R "bborbe/x" pr merge 42`)).Deny).To(BeTrue())
 	})
+
+	It("refuses a compound whose cd changes what a later operand resolves against", func() {
+		rules := hook.CompoundRules{Allow: []string{"cd:*"}}
+		guard := hook.NewCompoundBashGuardWithRules(
+			func(string) (hook.CompoundRules, error) { return rules, nil },
+		)
+		input := bashInput("cd /tmp && sed -n p ../Users/bborbe/.ssh/id_rsa")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeFalse())
+	})
+
+	It("makes no merge-allow decision when anything else is in the command", func() {
+		guard := hook.NewMergeAllowGuardWithRunner(
+			func(...string) (string, error) {
+				return `{"reviewDecision":"APPROVED","mergeable":"MERGEABLE"}`, nil
+			},
+		)
+		for _, command := range []string{
+			"rm -rf ~ # gh -R bborbe/x pr merge 42",
+			"gh -R bborbe/x pr merge 42; rm -rf ~",
+			"gh -R bborbe/x pr merge 42 -R evil/repo",
+		} {
+			Expect(guard.Evaluate(bashInput(command))).To(Equal(hook.Decision{}))
+		}
+	})
 })
 
 var _ = Describe("SedFilterAllows", func() {

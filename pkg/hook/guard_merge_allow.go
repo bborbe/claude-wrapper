@@ -80,6 +80,13 @@ func (g *MergeAllowGuard) Applies(input Input) bool {
 // Evaluate allows a positively green, non-admin merge and refuses --admin.
 func (g *MergeAllowGuard) Evaluate(input Input) Decision {
 	command, _ := input.BashCommand()
+	// The Allow covers the WHOLE Bash call, so the merge must be the only thing in
+	// it. A comment, a second segment or a heredoc can hide any other command
+	// beside a green merge — `rm -rf ~ # gh -R bborbe/x pr merge 42` would otherwise
+	// be approved with the deletion attached.
+	if strings.ContainsAny(command, ";&|#\n") || strings.Contains(command, "`") {
+		return Decision{}
+	}
 	// The one path that bypasses branch protection. Refused on the text
 	// deliberately: a false deny costs a prompt, a false allow costs a ruleset.
 	if strings.Contains(command, "--admin") {
@@ -112,6 +119,13 @@ func mergeAllowTargets(scan string) []mergeTarget {
 	for _, loc := range mergeLabelInvocation.FindAllStringIndex(scan, -1) {
 		invocation := scan[loc[0]:loc[1]]
 		target := mergeTarget{}
+		// gh is LAST-WINS on -R/--repo. A second flag anywhere in the command means
+		// the verified repo may not be the merged one, so the target is left
+		// unverifiable rather than checked against the wrong repository.
+		if len(mergeLabelRepoFlag.FindAllString(invocation, -1))+
+			len(mergeLabelTailRepo.FindAllString(scan[loc[1]:], -1)) > 1 {
+			return []mergeTarget{{}}
+		}
 		if match := mergeLabelRepoFlag.FindString(invocation); match != "" {
 			target.Repo = mergeLabelRepoStrip.ReplaceAllString(match, "")
 		} else {
