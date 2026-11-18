@@ -81,10 +81,8 @@ func (g *MergeAllowGuard) Applies(input Input) bool {
 func (g *MergeAllowGuard) Evaluate(input Input) Decision {
 	command, _ := input.BashCommand()
 	// The Allow covers the WHOLE Bash call, so the merge must be the only thing in
-	// it. A comment, a second segment or a heredoc can hide any other command
-	// beside a green merge — `rm -rf ~ # gh -R bborbe/x pr merge 42` would otherwise
-	// be approved with the deletion attached.
-	if strings.ContainsAny(command, ";&|#\n") || strings.Contains(command, "`") {
+	// it. WholeCallAllowable is the shared rule every allow-emitting guard uses.
+	if !WholeCallAllowable(command) {
 		return Decision{}
 	}
 	// The one path that bypasses branch protection. Refused on the text

@@ -34,6 +34,24 @@ type CompoundRules struct {
 	Gated []string
 }
 
+// WholeCallAllowable reports whether an Allow decision may be emitted for this
+// command.
+//
+// An Allow covers the WHOLE Bash call, not the fragment a guard matched. So a guard
+// that verified one command may only allow when that command is the entire call:
+// no second segment, no substitution, no redirect, no comment. Without this,
+// `git push origin fix/x; gh pr merge 42 --admin` is approved because its first
+// segment matched, and the admin merge rides along.
+//
+// The compound guard is the exception: it verifies every segment, so it does not
+// consult this.
+func WholeCallAllowable(command string) bool {
+	if strings.ContainsAny(command, ";&|#\n<>") {
+		return false
+	}
+	return !strings.Contains(command, "`") && !strings.Contains(command, "$(")
+}
+
 // SplitCompound splits a command on `&&`, `||`, `|&`, `;`, `|` and newline,
 // ignoring separators inside quotes. ok is false when a quote is left open, because
 // the split cannot then be trusted.

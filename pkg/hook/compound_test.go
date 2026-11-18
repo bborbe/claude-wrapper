@@ -318,9 +318,18 @@ var _ = Describe("Review regressions", func() {
 			"rm -rf ~ # gh -R bborbe/x pr merge 42",
 			"gh -R bborbe/x pr merge 42; rm -rf ~",
 			"gh -R bborbe/x pr merge 42 -R evil/repo",
+			"gh -R bborbe/x pr merge 42 $(rm -rf ~)",
+			"gh -R bborbe/x pr merge 42 > ~/.zshrc",
 		} {
 			Expect(guard.Evaluate(bashInput(command))).To(Equal(hook.Decision{}))
 		}
+	})
+
+	It("never allows a whole call just because one segment is a clean push", func() {
+		repo := tempGitRepo(map[string]string{}, "master")
+		input := bashInput("git push origin fix/x; gh pr merge 42 --admin")
+		input.Cwd = repo
+		Expect(hook.NewPushGateGuard().Evaluate(input).Allow).To(BeFalse())
 	})
 })
 

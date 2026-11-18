@@ -105,7 +105,7 @@ func (g *PushGateGuard) Evaluate(input Input) Decision {
 			allowed = true
 		}
 	}
-	if allowed {
+	if allowed && WholeCallAllowable(command) {
 		return AllowDecision(pushGateAllowReason)
 	}
 	return Decision{}
