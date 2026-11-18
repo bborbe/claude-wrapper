@@ -38,6 +38,10 @@ func (f *fakeSequencer) Run(
 
 type fakeSupervisor struct {
 	sessions []pkg.Session
+	// listErr forces the collection-read failure path, which the liveness route
+	// must report as a 500 rather than an empty (and therefore "nothing live")
+	// verdict set.
+	listErr  error
 	getErr   error
 	spawnErr error
 	events   []pkg.Event
@@ -77,6 +81,9 @@ func (f *fakeSupervisor) Spawn(_ context.Context, _ pkg.SpawnOptions) (*pkg.Sess
 }
 
 func (f *fakeSupervisor) List(_ context.Context) ([]pkg.Session, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.sessions, nil
 }
 
