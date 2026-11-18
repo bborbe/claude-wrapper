@@ -988,6 +988,32 @@ func newTickWithParkedGate(
 	return tick
 }
 
+// newTickWithParkedGateAndCaps is newTickWithParkedGate with the tick's reopener
+// and caps supplied by the caller, so one spec can make the tick refuse a row and
+// then open the same row on a later tick against the same park gate.
+func newTickWithParkedGateAndCaps(
+	rows []FlaggedRow,
+	closers map[string]string,
+	cards OpenCardReader,
+	runner CommandRunner,
+	clock libtime.CurrentDateTimeGetter,
+	reopener *recordingReopener,
+	caps *recordingCaps,
+) *FlaggedTick {
+	sessionsDir := ginkgo.GinkgoT().TempDir()
+	parkedDir := ginkgo.GinkgoT().TempDir()
+	for _, row := range rows {
+		if row.SessionID == "" {
+			continue
+		}
+		writeSessionCloser(sessionsDir, row.SessionID, closers[row.SessionID])
+	}
+	tick := newTick(staticSource{rows: rows}, reopener, caps)
+	tick.Now = clock
+	tick.Parked = NewParkedGate(sessionsDir, parkedDir, cards, runner, clock)
+	return tick
+}
+
 // keyedParkedHold is a stub ParkedHold that holds exactly one row key.
 type keyedParkedHold struct {
 	key string
@@ -1098,6 +1124,55 @@ var _ = ginkgo.Describe("flagged tick park gate", func() {
 			fmt.Printf("state=%s opened=%t\n", state, len(result.Opened) == 1)
 			gomega.Expect(result.Opened).To(gomega.HaveLen(1))
 		}
+	})
+
+	ginkgo.It("retries a moved park the caps refused instead of committing it", func() {
+		// The trap this guards: Hold runs BEFORE the caps and rate guards, so a
+		// movement committed inside Hold would be written by a row that was then
+		// refused — the old fingerprint gone, and a `parked-on-pr` row (no expiry)
+		// held on the moved reading for good. The pending baseline makes the
+		// refusal cost one tick, not the row.
+		sessionID := "123e4567-e89b-12d3-a456-426614174004"
+		runner := &recordingRunner{}
+		reopener := &recordingReopener{}
+		caps := &recordingCaps{}
+		tick := newTickWithParkedGateAndCaps(
+			[]FlaggedRow{parkedRow(sessionID, "caps-refused pr row")},
+			map[string]string{sessionID: "⏰ Ends: bborbe/claude-wrapper#412 merges"},
+			nil, runner, fixedNow(base), reopener, caps,
+		)
+
+		runner.out = []byte(`{"headRefOid":"aaa","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
+		first, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=1 %s\n", first.Line())
+		gomega.Expect(first.Opened).To(gomega.BeEmpty())
+		gomega.Expect(first.Skipped).To(gomega.HaveLen(1))
+		gomega.Expect(reasonClass(first.Skipped[0])).To(gomega.Equal(string(ParkedOnPR)))
+		gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+
+		// The head moves, but the caps refuse the row: nothing opens, and the
+		// advanced reading must stay pending rather than being committed.
+		runner.out = []byte(`{"headRefOid":"bbb","reviewDecision":"REVIEW_REQUIRED","state":"OPEN"}`)
+		caps.workerErr = stderrors.New("maxConcurrent reached")
+		second, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=2 %s\n", second.Line())
+		gomega.Expect(second.Opened).To(gomega.BeEmpty())
+		gomega.Expect(second.Refused).To(gomega.HaveLen(1))
+		gomega.Expect(reasonClass(second.Refused[0])).To(gomega.Equal(reasonCapsRefused))
+		gomega.Expect(reopener.snapshot()).To(gomega.BeEmpty())
+
+		// Caps clear: the SAME moved reading opens, which proves the old fingerprint
+		// survived the refusal and the movement was re-detected on this tick.
+		caps.workerErr = nil
+		third, err := tick.Tick(ctx)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		fmt.Printf("tick=3 %s\n", third.Line())
+		gomega.Expect(third.Opened).To(gomega.ConsistOf(sessionID))
+		gomega.Expect(third.Refused).To(gomega.BeEmpty())
+		gomega.Expect(reopener.snapshot()).To(gomega.HaveLen(1))
+		gomega.Expect(reopener.snapshot()[0].Key()).To(gomega.Equal(sessionID))
 	})
 
 	ginkgo.It("resolves a host and a clock park", func() {
