@@ -126,6 +126,15 @@ type FlaggedTickResult struct {
 	// the delay was not measurable; a zero would read as an instant resume, which
 	// is the one reading this measurement exists to distinguish.
 	ResumeDelays []string
+	// ResumeDelaysWaited holds `key=<delay>` for rows this tick opened that it
+	// had held back at least once after their stop — the "nothing to do" class.
+	// Their delay is measured from the last skip, not from `ended_at`, so it
+	// bounds the real wait to one tick instead of counting idle time.
+	//
+	// It is a SEPARATE field, never folded into ResumeDelays: SC1's population is
+	// the could-continue rows, and a p90 over a population that mixes the two
+	// cannot be compared to SC2's 2-minute bar.
+	ResumeDelaysWaited []string
 	// LiveCountSource names the channel the spawn caps counted from this tick
 	// (`ledger`, `registry`, `heartbeat` or `none`). Empty when the caps cannot
 	// report one.
@@ -187,6 +196,11 @@ func (r FlaggedTickResult) Line() string {
 	// next to the tick that ended it, or the delay cannot be attributed to a tick.
 	if len(r.ResumeDelays) > 0 {
 		line += " resume_delay=" + strings.Join(r.ResumeDelays, ",")
+	}
+	// Emitted separately so a reader can compute the could-continue p90 without
+	// the idle rows: SC2's bar applies to `resume_delay=` alone.
+	if len(r.ResumeDelaysWaited) > 0 {
+		line += " resume_delay_waited=" + strings.Join(r.ResumeDelaysWaited, ",")
 	}
 	return line
 }
@@ -297,6 +311,19 @@ type FlaggedTick struct {
 	// window check, not pruned.
 	opened map[string]time.Time
 
+	// skippedMutex guards skipped.
+	skippedMutex sync.Mutex
+	// skipped records, in process, when this tick last held a row back, keyed by
+	// session id. It is what separates the two resume-delay classes: a row with
+	// no entry here was resumable at its stop (the could-continue class), while
+	// a row with one only became able somewhere between that skip and its open.
+	//
+	// ⚠️ In process only, and that is deliberate. A restart empties it, so the
+	// first resume after a restart is measured from `ended_at` and lands in the
+	// could-continue class — the honest reading, since a restart genuinely does
+	// cost that row the restart's duration.
+	skipped map[string]time.Time
+
 	// Idle re-drives a row whose child this process holds idle. Nil disables the
 	// branch: such a row is skipped `not-absent`, as before.
 	Idle FlaggedIdleNudger
@@ -338,6 +365,27 @@ func (t *FlaggedTick) rememberOpened(row FlaggedRow, at time.Time) {
 		t.opened = map[string]time.Time{}
 	}
 	t.opened[labelKey(row.Name)] = at
+}
+
+// rememberSkipped records that this tick held the row back, at `at`.
+func (t *FlaggedTick) rememberSkipped(row FlaggedRow, at time.Time) {
+	if row.SessionID == "" {
+		return
+	}
+	t.skippedMutex.Lock()
+	defer t.skippedMutex.Unlock()
+	if t.skipped == nil {
+		t.skipped = map[string]time.Time{}
+	}
+	t.skipped[row.SessionID] = at
+}
+
+// skippedAt returns when this tick last held the row back, if it did.
+func (t *FlaggedTick) skippedAt(sessionID string) (time.Time, bool) {
+	t.skippedMutex.Lock()
+	defer t.skippedMutex.Unlock()
+	at, ok := t.skipped[sessionID]
+	return at, ok
 }
 
 // mergeOpened folds this process's own opens into the ledger-derived map.
@@ -625,6 +673,11 @@ func (t *FlaggedTick) tickFromRows(
 		switch action {
 		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
+			// Remember WHEN this row was last held back, so a later open can tell
+			// "it could continue at its stop" from "it only became able later".
+			// Without this the two classes are indistinguishable and the delay
+			// measurement mixes them — see ResumeDelaysWaited.
+			t.rememberSkipped(row, now)
 			continue
 		case rowRefused:
 			result.Refused = append(result.Refused, row.Key()+": "+reason)
@@ -673,7 +726,7 @@ func (t *FlaggedTick) tickFromRows(
 			t.Parked.Opened(ctx, row)
 		}
 		result.Opened = append(result.Opened, row.Key())
-		recordResumeDelay(&result, row, ended, now)
+		t.recordResumeDelay(&result, row, ended, now)
 	}
 	return result
 }
@@ -687,7 +740,7 @@ func (t *FlaggedTick) tickFromRows(
 // resume, which is the one reading this measurement exists to distinguish. A
 // future ended_at is skipped for the same reason, since clock skew would
 // otherwise print a negative delay.
-func recordResumeDelay(
+func (t *FlaggedTick) recordResumeDelay(
 	result *FlaggedTickResult,
 	row FlaggedRow,
 	ended map[string]time.Time,
@@ -695,6 +748,18 @@ func recordResumeDelay(
 ) {
 	at, ok := ended[row.SessionID]
 	if !ok || at.After(now) {
+		return
+	}
+	// The tick held this row back at least once after its stop, so it did NOT
+	// become able at the stop — it became able somewhere between that last skip
+	// and this open. Measuring from `ended_at` would count the whole idle wait as
+	// resume latency, which is what made the p90 unreadable against SC2: measured
+	// 2026-11-18, the all-rows p90 was 16.1 min against a could-continue p90 of
+	// 16.2 min, with single rows reaching 21 h. Reporting it from the skip bounds
+	// the real delay to one tick and keeps it out of the could-continue population.
+	if skipped, had := t.skippedAt(row.SessionID); had && skipped.After(at) && !skipped.After(now) {
+		result.ResumeDelaysWaited = append(result.ResumeDelaysWaited,
+			row.Key()+"="+now.Sub(skipped).Round(time.Second).String())
 		return
 	}
 	result.ResumeDelays = append(result.ResumeDelays,

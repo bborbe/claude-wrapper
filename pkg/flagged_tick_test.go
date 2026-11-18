@@ -1458,3 +1458,50 @@ var _ = ginkgo.Describe("flagged tick park gate", func() {
 		gomega.Expect(caps.modes()).To(gomega.HaveLen(1))
 	})
 })
+
+var _ = ginkgo.Describe("flagged tick resume-delay class split", func() {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	row := FlaggedRow{
+		Kind: "task", Vault: "private-personal", Name: "a resumable row",
+		Role: "agent", Mode: "headless",
+		SessionID: "abc-123", Liveness: "ABSENT", Branch: "resume",
+	}
+	endedAt := now.Add(-30 * time.Minute).Format(time.RFC3339)
+
+	newSplitTick := func() *FlaggedTick {
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-60 * time.Minute).Format(time.RFC3339),
+			EndedAt:   &endedAt,
+		}}}
+		return tick
+	}
+
+	ginkgo.It("measures from ended_at when the row was never held back", func() {
+		result, err := newSplitTick().Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.ResumeDelays).To(gomega.ConsistOf("abc-123=30m0s"))
+		gomega.Expect(result.ResumeDelaysWaited).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("measures from the last skip when the row was held back after its stop", func() {
+		// The row stopped 30 min ago but the tick kept skipping it until 10 min
+		// ago, so it only became able then. Counting from ended_at would report
+		// 30 min of "resume latency" for a row that legitimately had nothing to
+		// do — the defect that made the all-rows p90 unreadable against SC2.
+		tick := newSplitTick()
+		tick.rememberSkipped(row, now.Add(-10*time.Minute))
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.ResumeDelaysWaited).To(gomega.ConsistOf("abc-123=10m0s"))
+		gomega.Expect(result.ResumeDelays).To(gomega.BeEmpty(), "must not pollute the could-continue population")
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("resume_delay_waited="))
+	})
+})

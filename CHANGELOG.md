@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **`resume_delay=` now reports only the rows that could actually continue, with the idle rows split into `resume_delay_waited=`.** The metric measured every opened row from the ledger's `ended_at`, so a row that legitimately had nothing to do for hours reported that whole idle time as resume latency — measured 2026-11-18, single rows reached **21 h** and the all-rows p90 was 16.1 min, which made it unreadable against the 2-minute bar the criterion is written in. The tick now remembers when it last held a row back, and a row held back after its stop is reported separately, measured from that skip — which bounds the real wait to one tick instead of counting idle time. ⚠️ The two are deliberately **separate fields**, never summed: the could-continue population is what the bar applies to, and mixing them is what hid the problem. The memory is in-process, so a restart empties it and the first resume after a restart lands in the could-continue class — the honest reading, since a restart genuinely costs that row its duration.
+
 ## v0.39.1
 
 - test: **the fleet-pusher's `failed:<err>` outcome is pinned by specs.** The in-process wake tick's send-failure branch was unspecced: `delivered` and the six `skip:*` classes were asserted, but nothing covered `pkg/fleet_pusher.go`'s mapping of a `SendWhenReadyWith` error onto `failed:<err>`. Two specs now cover both ways the send half fails — the submit lands but the pane never confirms it (the error names the unsubmitted message), and `SendText` itself returns an error (the token carries that error's own text, not a hard-coded reason). Each spec was probed by inverting its injected condition and watching it fail, so neither passes on a neighbour's branch. No production behaviour changed.
