@@ -64,6 +64,12 @@ var (
 	optionRow = regexp.MustCompile(`^` + promptGlyph + `\s*1\.`)
 )
 
+// captureHeader prefixes the provenance line a capture wrapper writes above a
+// screen: `# captured <ISO8601> pane=<pane-id>`. `wezterm cli get-text` emits
+// screen text only, so the wrapper that performs the capture writes the line,
+// and the guard skips it rather than reading it as screen content.
+const captureHeader = "# captured "
+
 // Guard marker strings, named so a spec asserts on the same literal the
 // implementation reads.
 const (
@@ -96,17 +102,18 @@ func PaneGuardVerdict(
 	if text == nil {
 		return VerdictErrorUnreadable
 	}
-	if strings.TrimSpace(*text) == "" {
+	screen := withoutCaptureHeader(*text)
+	if strings.TrimSpace(screen) == "" {
 		return VerdictSkipUnclassified
 	}
-	lines := strippedLines(*text)
+	lines := strippedLines(screen)
 	if spinnerPresent(lines) {
 		return VerdictSkipSpinner
 	}
 	if verdict := modalVerdict(lines); verdict != "" {
 		return verdict
 	}
-	verdict, suggestion := composerVerdict(*text)
+	verdict, suggestion := composerVerdict(screen)
 	if verdict != "" {
 		return verdict
 	}
@@ -195,6 +202,21 @@ func asksOperator(lines []string) bool {
 	}
 	verb := strings.ToLower(strings.TrimSpace(asks[len(asks)-1]))
 	return !strings.HasPrefix(verb, "nothing")
+}
+
+// withoutCaptureHeader drops the leading provenance line a capture wrapper
+// writes above the screen, so the guard reads screen content only. A screen
+// without the line is returned unchanged; a header-only screen becomes empty,
+// which the guard classifies as an empty read.
+func withoutCaptureHeader(text string) string {
+	if !strings.HasPrefix(text, captureHeader) {
+		return text
+	}
+	index := strings.IndexByte(text, '\n')
+	if index < 0 {
+		return ""
+	}
+	return text[index+1:]
 }
 
 // strippedLines is the screen with escapes removed and trailing whitespace

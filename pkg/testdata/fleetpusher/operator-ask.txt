@@ -1,8 +1,11 @@
+# captured 2026-11-18T22:23:41+0100 pane=191
 
   done.
 
 ❯
 👤 You: pick — 1. x · 2. y
+
+
 
 
 

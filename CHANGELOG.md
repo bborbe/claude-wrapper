@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- test: **every fleet-pusher fixture now proves the pane it was captured from.** The 11 screen captures under `pkg/testdata/fleetpusher/` carried no provenance, so a hand-typed screen passed exactly as a capture did and the parent criterion's claim — that the guard's dim/escape parsing is exercised on real terminal output — rested on a `# Progress` note rather than on anything the suite could check. Each fixture now opens with `# captured <ISO8601> pane=<pane-id>`, naming the scratch pane it was read from with `wezterm cli get-text --escapes --pane-id`. `PaneGuardVerdict` skips that line before reading the screen, and a spec globs the directory and fails on any file whose first line is not a capture header — so a fixture added by hand fails the suite instead of standing in for a capture. No verdict changed: the per-fixture table is identical before and after.
+
 ## v0.39.1
 
 - test: **the fleet-pusher's `failed:<err>` outcome is pinned by specs.** The in-process wake tick's send-failure branch was unspecced: `delivered` and the six `skip:*` classes were asserted, but nothing covered `pkg/fleet_pusher.go`'s mapping of a `SendWhenReadyWith` error onto `failed:<err>`. Two specs now cover both ways the send half fails — the submit lands but the pane never confirms it (the error names the unsubmitted message), and `SendText` itself returns an error (the token carries that error's own text, not a hard-coded reason). Each spec was probed by inverting its injected condition and watching it fail, so neither passes on a neighbour's branch. No production behaviour changed.
