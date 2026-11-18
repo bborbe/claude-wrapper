@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.37.1
 
 - fix: **the manager-liveness sender delivers a deliberate stand-down and words it apart from a lapse.** `isLapseKind` admitted only `STALE` / `INVALID` / `RECOVERED-PENDING`, so a `STOPPED` line printed by `manager-liveness.py --check` was dropped — the report the checker now produces would never reach the operator. The owed set is now `isOwedKind` (the lapse kinds plus `STOPPED`), a stand-down is acked like any owed line, and `livenessMessage` words it as "Manager stood down:" rather than "Manager loop lapsed:", so a deliberate stop is never announced as a failure. Pinned by two new tests.
 
