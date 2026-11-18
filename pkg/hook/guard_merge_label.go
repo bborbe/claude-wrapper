@@ -158,7 +158,32 @@ func (g *MergeLabelGuard) resolveTarget(invocation string, command string) (stri
 	if match := mergeLabelID.FindStringSubmatch(invocation); match != nil {
 		id = match[1]
 	}
+	if id == "" {
+		// A flag between `merge` and the number (`gh pr merge --repo o/r 42`) defeats
+		// the anchored match, and an id-less lookup would check the CURRENT branch's
+		// PR instead of the one being merged.
+		id = trailingNumber(command, invocation)
+	}
 	return repo, id, true
+}
+
+// trailingNumber returns the first bare number after the invocation, up to the next
+// command.
+func trailingNumber(command string, invocation string) string {
+	index := strings.Index(command, invocation)
+	if index < 0 {
+		return ""
+	}
+	tail := command[index+len(invocation):]
+	if next := strings.IndexAny(tail, ";&|"); next >= 0 {
+		tail = tail[:next]
+	}
+	for _, word := range strings.Fields(tail) {
+		if allDigits(word) {
+			return word
+		}
+	}
+	return ""
 }
 
 // distinct strips each match down to its value and returns the unique values.

@@ -213,7 +213,11 @@ func judgeTarget(span string, verb string, target string, dir string) (Decision,
 // a `-C` operand, then a git-dir override.
 func spanRepo(scan string, span string, at int, cwd string) string {
 	dir := cwd
-	prefix := scan[:at]
+	// The `cd` is read from the QUOTE-STRIPPED prefix: a commit message containing
+	// `cd /tmp` otherwise resolves the repo to /tmp and the real switch is never
+	// judged. Losing a quoted `cd "<worktree>"` operand costs a false deny, which is
+	// the safe direction.
+	prefix := scanText(scan[:at])
 	if matches := branchSwitchCd.FindAllString(prefix, -1); len(matches) > 0 {
 		operand := branchSwitchCdPrefix.ReplaceAllString(matches[len(matches)-1], "")
 		dir = resolvePathOperand(operand, cwd)

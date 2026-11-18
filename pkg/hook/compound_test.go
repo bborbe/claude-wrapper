@@ -331,6 +331,25 @@ var _ = Describe("Review regressions", func() {
 		input.Cwd = repo
 		Expect(hook.NewPushGateGuard().Evaluate(input).Allow).To(BeFalse())
 	})
+
+	It("does not read a cd out of a commit message when resolving the repo", func() {
+		repo := tempGitRepo(map[string]string{}, "master")
+		input := bashInput(`git commit -m "fix cd /tmp bug" && git checkout -b feat/x`)
+		input.Cwd = repo
+		Expect(hook.NewBranchSwitchGuard().Evaluate(input).Deny).To(BeTrue())
+	})
+
+	It("reads the PR number when a flag sits between merge and the number", func() {
+		var seen []string
+		guard := hook.NewMergeLabelGuardWithRunner(
+			func(args ...string) (string, error) {
+				seen = args
+				return "do-not-merge\n", nil
+			},
+		)
+		Expect(guard.Evaluate(bashInput("gh pr merge --repo o/r 42")).Deny).To(BeTrue())
+		Expect(seen).To(ContainElement("42"))
+	})
 })
 
 var _ = Describe("SedFilterAllows", func() {
