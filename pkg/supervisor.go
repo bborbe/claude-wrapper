@@ -1732,7 +1732,13 @@ func (c *child) reap(exitCode *int) {
 	// both the settled session and the wait status, and a poller would have to
 	// reconstruct the second from the first.
 	if c.exitRecorder != nil {
-		c.exitRecorder.Record(c.session, c.pid, ExitStatus{
+		// The live counter is c.pendingTurns; c.session.PendingTurns is only
+		// filled by snapshot(), so passing c.session raw would record zero for a
+		// child that was given work and never started — the exact case the field
+		// exists to separate from "was never given any".
+		recorded := c.session
+		recorded.PendingTurns = c.pendingTurns
+		c.exitRecorder.Record(recorded, c.pid, ExitStatus{
 			Code:   exitCode,
 			Signal: c.exitSignal,
 			Sender: c.lastKillSender,

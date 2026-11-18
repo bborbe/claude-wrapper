@@ -51,7 +51,8 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 		dir := ginkgo.GinkgoT().TempDir()
 		recorder := &SessionExitFileRecorder{Dir: dir}
 		recorder.Record(Session{
-			ID: "sid-2",
+			ID:           "sid-2",
+			PendingTurns: 1,
 			Stall: &Stall{
 				LastEvent:    "system/hook_response",
 				PendingHooks: []string{"SessionStart:startup"},
@@ -60,10 +61,14 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 		raw, err := os.ReadFile(filepath.Join(dir, "session-sid-2.log"))
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 		line := string(raw)
-		gomega.Expect(fields(line)).To(gomega.HaveLen(12))
+		gomega.Expect(fields(line)).To(gomega.HaveLen(13))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_phase=hook"))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_last_event=system/hook_response"))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_hooks=SessionStart:startup"))
+		// A turn was written and never closed: the child was given work and did
+		// not start. The phase alone cannot say that, which is why the count is
+		// carried into the record.
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_turns=1"))
 	})
 
 	// An initialised session's line is unchanged. The nine-field record is the
@@ -90,6 +95,9 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_phase=no-event"))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_last_event=-"))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_hooks=-"))
+		// No turn was ever written, so the record separates this from the
+		// given-work-and-never-started case above.
+		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_turns=0"))
 	})
 
 	// SC5: the full field set AND ORDER for a signalled record with a named
