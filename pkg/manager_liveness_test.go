@@ -91,6 +91,54 @@ var _ = ginkgo.Describe("ManagerLivenessJob", func() {
 		gomega.Expect(*delivered).To(gomega.Equal([]string{"slug-c"}))
 	})
 
+	ginkgo.It("delivers a stand-down but never words it as a lapse", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		var message string
+		delivered := &[]string{}
+		job := &ManagerLivenessJob{
+			Dir: dir,
+			Check: func(context.Context) (string, int, error) {
+				return "STALE goal--lapsed crossing=5m\n" +
+					"STOPPED goal--stood-down age=700s threshold=600s crossing=5m", lapseOwedExitCode, nil
+			},
+			Publish: func(_ context.Context, m string) error {
+				message = m
+				return nil
+			},
+			MarkDelivered: func(_ context.Context, slug string) error {
+				*delivered = append(*delivered, slug)
+				return nil
+			},
+		}
+		slugs, notified, err := job.Tick(ctx)
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(notified).To(gomega.Equal("sent"))
+		// Both are owed and both are acked: a stand-down is still a report to deliver.
+		gomega.Expect(slugs).To(gomega.Equal([]string{"goal--lapsed", "goal--stood-down"}))
+		gomega.Expect(*delivered).To(gomega.Equal([]string{"goal--lapsed", "goal--stood-down"}))
+		gomega.Expect(message).To(gomega.ContainSubstring("Manager loop lapsed: STALE goal--lapsed"))
+		gomega.Expect(message).To(gomega.ContainSubstring("Manager stood down: STOPPED goal--stood-down"))
+		// The stand-down must never appear under the lapse wording.
+		gomega.Expect(message).ToNot(gomega.ContainSubstring("lapsed: STOPPED"))
+	})
+
+	ginkgo.It("reports a stand-down even when it is the only owed line", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		var message string
+		job := &ManagerLivenessJob{
+			Dir: dir,
+			Check: func(context.Context) (string, int, error) {
+				return "STOPPED goal--stood-down age=700s threshold=600s", lapseOwedExitCode, nil
+			},
+			Publish:       func(_ context.Context, m string) error { message = m; return nil },
+			MarkDelivered: func(context.Context, string) error { return nil },
+		}
+		_, _, err := job.Tick(ctx)
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(message).To(gomega.HavePrefix("Manager stood down: STOPPED goal--stood-down"))
+		gomega.Expect(message).ToNot(gomega.ContainSubstring("lapsed"))
+	})
+
 	ginkgo.It("writes a heartbeat the reader can age", func() {
 		dir := ginkgo.GinkgoT().TempDir()
 		job, _, _ := newJob(dir, 0, "LIVE")

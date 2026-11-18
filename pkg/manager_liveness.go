@@ -138,7 +138,7 @@ func (j *ManagerLivenessJob) Tick(ctx context.Context) ([]string, string, error)
 func (j *ManagerLivenessJob) deliver(
 	ctx context.Context, slugs []string, output string,
 ) string {
-	message := capRunes("Manager loop lapsed: "+strings.Join(lapsedLines(output), ";"), maxPublishRunes)
+	message := capRunes(livenessMessage(output), maxPublishRunes)
 	if err := j.Publish(ctx, message); err != nil {
 		j.logf(JobLine(ManagerLivenessJobName, "send-failed",
 			"slugs", strings.Join(slugs, ","), "error", err.Error()))
@@ -155,15 +155,31 @@ func (j *ManagerLivenessJob) deliver(
 	return "sent"
 }
 
+// livenessMessage words a lapse and a stand-down apart, so a deliberate stop is
+// never announced as a failure. One poll can carry both, so the two parts are
+// joined rather than one being chosen over the other.
+func livenessMessage(output string) string {
+	var parts []string
+	if lapsed := lapsedLines(output); len(lapsed) > 0 {
+		parts = append(parts, "Manager loop lapsed: "+strings.Join(lapsed, ";"))
+	}
+	if stopped := stoodDownLines(output); len(stopped) > 0 {
+		parts = append(parts, "Manager stood down: "+strings.Join(stopped, ";"))
+	}
+	return strings.Join(parts, " | ")
+}
+
 // lapsedSlugs pulls the slug from every owed line.
 //
 // RECOVERED-PENDING counts: the manager came back, but nobody was ever told it
-// lapsed, and a recovery does not cancel an unreported lapse.
+// lapsed, and a recovery does not cancel an unreported lapse. STOPPED counts
+// too — a deliberate stand-down is still owed a report, even though it is not a
+// lapse (see isStoodDownKind).
 func lapsedSlugs(output string) []string {
 	var slugs []string
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || !isLapseKind(fields[0]) {
+		if len(fields) < 2 || !isOwedKind(fields[0]) {
 			continue
 		}
 		slugs = append(slugs, fields[1])
@@ -171,13 +187,24 @@ func lapsedSlugs(output string) []string {
 	return slugs
 }
 
-// lapsedLines is the owed lines joined for the message, capped so one bad poll
+// lapsedLines is the LAPSE lines joined for the message, capped so one bad poll
 // cannot produce an unbounded payload.
 func lapsedLines(output string) []string {
+	return owedLines(output, isLapseKind)
+}
+
+// stoodDownLines is the STAND-DOWN lines, kept apart from the lapses so a
+// deliberate stop is never announced as a failure.
+func stoodDownLines(output string) []string {
+	return owedLines(output, isStoodDownKind)
+}
+
+// owedLines collects the lines whose first field matches `kind`.
+func owedLines(output string, kind func(string) bool) []string {
 	var owed []string
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 1 || !isLapseKind(fields[0]) {
+		if len(fields) < 1 || !kind(fields[0]) {
 			continue
 		}
 		owed = append(owed, strings.TrimSpace(line))
@@ -185,8 +212,21 @@ func lapsedLines(output string) []string {
 	return owed
 }
 
+// isOwedKind is every line kind the sender must DELIVER and ack.
+func isOwedKind(word string) bool {
+	return isLapseKind(word) || isStoodDownKind(word)
+}
+
+// isLapseKind is a lapse: the loop stopped and was not stood down deliberately.
 func isLapseKind(word string) bool {
 	return word == "STALE" || word == "INVALID" || word == "RECOVERED-PENDING"
+}
+
+// isStoodDownKind is a deliberate stand-down. It is owed a report but is NOT a
+// lapse, so it must never be counted as one — the checker prints it as STOPPED
+// once the subject has been stood down past two of its own observed periods.
+func isStoodDownKind(word string) bool {
+	return word == "STOPPED"
 }
 
 // record appends the ledger row and refreshes the heartbeat.
