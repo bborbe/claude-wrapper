@@ -199,7 +199,8 @@ func launcherMCPConfigs(launcher string) []string {
 // ⚠️ The reopen tick is model-free by construction (`specs/flagged-reopen-tick.md`:
 // "No model is invoked anywhere in the path"), so it cannot score a row. The
 // readiness ladder — >= 9 opens, >= 7 after one improvement pass, < 7 refuses
-// (`docs/fleet-surface.md` § Spawn a worker item 2) — is an agent call, so the gate
+// (`claude-supervisor:docs/fleet-surface.md` § Spawn a worker item 2) — is an agent
+// call, so the gate
 // runs where the model already is: in the worker the tick just spawned. Without it a
 // below-bar row opens ungated, which is the defect the tick exists to close (measured
 // 2026-11-18: a row scored 5/10 and its worker got the row anyway).
