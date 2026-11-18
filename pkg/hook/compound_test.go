@@ -438,8 +438,10 @@ var _ = Describe("Review regressions", func() {
 // alwaysAllow is the guard that would have suppressed a prompt.
 type alwaysAllow struct{}
 
-func (alwaysAllow) Name() string            { return "always-allow" }
+func (alwaysAllow) Name() string { return "always-allow" }
+
 func (alwaysAllow) Applies(hook.Input) bool { return true }
+
 func (alwaysAllow) Evaluate(hook.Input) hook.Decision {
 	return hook.AllowDecision("allowed")
 }
