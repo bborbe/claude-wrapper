@@ -143,3 +143,34 @@ var _ = Describe("LoadRules", func() {
 		})
 	})
 })
+
+var _ = Describe("GitShapeAllows", func() {
+	root := tempRepo(map[string]string{})
+	roots := []string{root}
+	inside := root
+
+	DescribeTable("approves only read-only, static, under-root invocations",
+		func(values []string, cwd string, allowed bool) {
+			Expect(hook.GitShapeAllows(values, cwd, roots)).To(Equal(allowed))
+		},
+		Entry("status under the root", []string{"status"}, inside, true),
+		Entry("log under the root", []string{"log", "--oneline", "-5"}, inside, true),
+		Entry("a -C operand under the root", []string{"-C", inside, "log"}, "/tmp", true),
+		Entry("a -C operand outside the root", []string{"-C", "/tmp", "log"}, "/tmp", false),
+		Entry("a cwd outside the root", []string{"status"}, "/tmp", false),
+		Entry("a writing subcommand", []string{"push"}, inside, false),
+		Entry("the -c option", []string{"log", "-c", "core.pager=less"}, inside, false),
+		Entry("an --output option", []string{"log", "--output=/tmp/x"}, inside, false),
+		Entry("a unique prefix of a bad long option", []string{"log", "--out=/tmp/x"}, inside, false),
+		Entry("a bundled short flag carrying O", []string{"log", "-iOcmd"}, inside, false),
+		Entry("tag list mode", []string{"tag", "--list"}, inside, true),
+		Entry("tag with a value flag", []string{"tag", "--contains", "main"}, inside, true),
+		Entry("tag without a list flag", []string{"tag"}, inside, false),
+		Entry("a tag abbreviation", []string{"tag", "--del"}, inside, false),
+		Entry("worktree list", []string{"worktree", "list", "--porcelain"}, inside, true),
+		Entry("worktree add", []string{"worktree", "add", "x"}, inside, false),
+		Entry("ls-remote with a URL operand",
+			[]string{"ls-remote", "https://example.com/x"}, inside, false),
+		Entry("a pathspec after --", []string{"diff", "--", "a:b"}, inside, true),
+	)
+})
