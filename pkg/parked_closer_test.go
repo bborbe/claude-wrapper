@@ -78,6 +78,10 @@ var _ = ginkgo.Describe("parked closer", func() {
 			{"192.168.178.38:22 accepts a connection", ParkedOnHost},
 			{"192.168.178.38 answers", ParkedOnHost},
 			{"2026-11-18T09:00:00+01:00", ParkedUntil},
+			// ⚠️ The date-time shape the live declarations actually write. Class alone
+			// cannot distinguish the fixed code from the pre-fix code — both return
+			// parked-until — so the Deadline assertion below is the real guard.
+			{"2026-11-18T14:30", ParkedUntil},
 			{"2026-11-18", ParkedUntil},
 			{"task ABC-123 flips to a terminal status on disk", ParkedUntil},
 			{"the tag v1.2.3 appears", ParkedUntil},
@@ -95,6 +99,14 @@ var _ = ginkgo.Describe("parked closer", func() {
 		_, parked := ClassifyParked("⏰ Next: nothing")
 		gomega.Expect(parked).To(gomega.BeFalse())
 		fmt.Printf("declaration=%s class=none\n", "⏰ Next: nothing")
+
+		// The date-time shape must bound at the clock it names, not fall through to
+		// the MAX_AGE_S expiry. A nil Deadline here is the pre-fix behaviour.
+		timed, parked := ClassifyParked(machineWaitEnds + " 2026-11-18T14:30")
+		gomega.Expect(parked).To(gomega.BeTrue())
+		gomega.Expect(timed.Deadline).NotTo(gomega.BeNil())
+		gomega.Expect(timed.Deadline.Format("2006-01-02T15:04")).To(gomega.Equal("2026-11-18T14:30"))
+		fmt.Printf("declaration=%s deadline=%s\n", "2026-11-18T14:30", timed.Deadline.Format("2006-01-02T15:04"))
 	})
 
 	// Ginkgo registers one spec per DescribeTable entry and a table may only be
