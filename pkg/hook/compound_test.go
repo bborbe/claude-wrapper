@@ -175,6 +175,27 @@ var _ = Describe("GitShapeAllows", func() {
 	)
 })
 
+var _ = Describe("GitMergeAllows", func() {
+	root := tempRepo(map[string]string{})
+	roots := []string{root}
+
+	DescribeTable("approves only a remote-tracking merge under the roots",
+		func(values []string, allowed bool) {
+			Expect(hook.GitMergeAllows(values, roots)).To(Equal(allowed))
+		},
+		Entry("origin/master", []string{"-C", root, "merge", "origin/master"}, true),
+		Entry("a bare branch name", []string{"-C", root, "merge", "master"}, false),
+		Entry("no source", []string{"-C", root, "merge"}, false),
+		Entry("two sources", []string{"-C", root, "merge", "origin/a", "origin/b"}, false),
+		Entry("--squash", []string{"-C", root, "merge", "--squash", "origin/master"}, false),
+		Entry("--abort", []string{"-C", root, "merge", "--abort"}, false),
+		Entry("a strategy", []string{"-C", root, "merge", "-s", "ours", "origin/master"}, false),
+		Entry("a traversal source", []string{"-C", root, "merge", "origin/../x"}, false),
+		Entry("a directory outside the roots", []string{"-C", "/tmp", "merge", "origin/master"}, false),
+		Entry("no -C operand", []string{"merge", "origin/master"}, false),
+	)
+})
+
 var _ = Describe("SedFilterAllows", func() {
 	root := tempRepo(map[string]string{"a.txt": "x\n"})
 	roots := []string{root}

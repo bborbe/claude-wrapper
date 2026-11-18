@@ -208,3 +208,64 @@ func DefaultGitRoots() []string {
 		filepath.Join(home, "Documents", "Obsidian"),
 	}
 }
+
+var (
+	// gitMergeBad matches the flags that discard or reshape a merge.
+	gitMergeBad = regexp.MustCompile(
+		`^(--abort|--quit|--squash|--no-commit|--strategy|--strategy=.*|--strategy-option` +
+			`|--autostash|--edit|-e|--cleanup|--cleanup=.*|--no-verify|--verify|-s|-s.*|-X.*)$`,
+	)
+)
+
+// DefaultMergeRoots returns the two directories a `git merge` may run in. The
+// Obsidian vaults are excluded because obsidian-git owns them.
+func DefaultMergeRoots() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, "Documents", "workspaces"),
+		filepath.Join(home, ".claude"),
+	}
+}
+
+// GitMergeAllows reports whether the invocation is the documented deploy-worktree
+// sync: `git -C <dir under the merge roots> merge <remote>/<branch>`.
+//
+// The source must be a remote-tracking ref — a name containing `/`. A bare branch
+// name, a bare `git merge` and a commit id all fall through, so the guard cannot
+// allow `git merge master`, the form the trading guide forbids.
+func GitMergeAllows(values []string, roots []string) bool {
+	if len(values) < 4 || values[0] != "-C" || values[1] == "" {
+		return false
+	}
+	if !UnderRoots(values[1], roots) || values[2] != "merge" {
+		return false
+	}
+	source := ""
+	for _, value := range values[3:] {
+		if strings.HasPrefix(value, "-") {
+			if gitMergeBad.MatchString(value) || gitBadArg.MatchString(value) {
+				return false
+			}
+			continue
+		}
+		if source != "" {
+			return false
+		}
+		source = value
+	}
+	return mergeSourceOK(source)
+}
+
+// mergeSourceOK reports whether a merge source is a remote-tracking ref.
+func mergeSourceOK(source string) bool {
+	if source == "" || !strings.Contains(source, "/") {
+		return false
+	}
+	if strings.HasPrefix(source, "/") || strings.Contains(source, "..") {
+		return false
+	}
+	return true
+}
