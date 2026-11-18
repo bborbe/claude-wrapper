@@ -1,8 +1,10 @@
 ---
-status: prompted
+status: completed
 approved: "2026-11-18T16:53:35Z"
 generating: "2026-11-18T17:37:49Z"
 prompted: "2026-11-18T17:37:49Z"
+verifying: "2026-11-18T17:48:21Z"
+completed: "2026-11-18T17:48:29Z"
 branch: dark-factory/agents-key-removal
 ---
 
