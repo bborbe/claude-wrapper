@@ -33,10 +33,9 @@ closer text.
 Classification follows a fixed precedence — card, then pull request, then clock,
 then host — so a declaration matching more than one pattern still yields exactly
 one class and at most one probe runs per row per tick. ⚠️ The clock outranks the
-host deliberately: a declaration naming `2026-11-18T14:30` also satisfies the
-host:port shape (name `2026-11-18T14`, port `30`), and a `parked-on-host` row is
-never bounded by `MAX_AGE_S` — classifying it as a host would pin the row past
-the very clock it named.
+host deliberately: a declaration naming both a clock and a host token must bound
+at the clock, because a `parked-on-host` row is never released by `MAX_AGE_S` —
+classifying it as a host would pin the row past the clock it named.
 
 | Class | Observes | Satisfied when | Expires |
 |---|---|---|---|

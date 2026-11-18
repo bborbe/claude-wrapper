@@ -201,12 +201,10 @@ func ClassifyParked(closer string) (ParkedDeclaration, bool) {
 		declaration.PR = ref
 		return declaration, true
 	}
-	// ⚠️ The clock is checked BEFORE the host, and the order is load-bearing. A
-	// declaration naming `2026-11-18T14:30` also satisfies the host:port shape
-	// (name `2026-11-18T14`, port `30`), and a `parked-on-host` row is never
-	// bounded by MAX_AGE_S — so classifying it as a host would pin the row past
-	// the very clock it named. Measured 2026-11-18 in review: held at 12:00 and
-	// still held at 15:00.
+	// ⚠️ The clock is checked BEFORE the host, and the order is load-bearing: a
+	// declaration naming both a clock and a host token must bound at the clock,
+	// because a `parked-on-host` row is never released by MAX_AGE_S — classifying
+	// it as a host would pin the row past the clock it named.
 	if deadline := parkedDeadline(text); deadline != nil {
 		declaration.Class = ParkedUntil
 		declaration.Deadline = deadline
