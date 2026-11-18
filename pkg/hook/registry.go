@@ -25,5 +25,6 @@ func NewDefaultRegistry() *Registry {
 		NewAttributionGuard(),
 		NewToolLogGuard(),
 		NewBlockedLogGuard(),
+		NewRegressionSweepGuard(),
 	)
 }

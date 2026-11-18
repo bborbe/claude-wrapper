@@ -863,3 +863,62 @@ var _ = Describe("MergeAllowGuard", func() {
 		Expect(guard.Name()).To(Equal("allow-gh-pr-merge.py"))
 	})
 })
+
+var _ = Describe("RegressionSweepGuard", func() {
+	var started []string
+	guard := hook.NewRegressionSweepGuardWithStarter(func(logPath string, args []string) error {
+		started = append(started, logPath)
+		return nil
+	})
+
+	BeforeEach(func() { started = nil })
+
+	// roundInput builds the receipt call for the one goal the guard tracks.
+	roundInput := func() hook.Input {
+		input := bashInput(`python3 ~/.claude/scripts/manager-receipt.py --goal ` +
+			`"Throughput Is Measured as Goals Delivered per Week at Bounded Operator Attention"`)
+		input.HookEventName = hook.EventPostToolUse
+		return input
+	}
+
+	It("launches the sweep when the goal's round writes its receipt", func() {
+		blockedLogHome(func(home string) {
+			dir := home + "/.claude/state/manager-receipts"
+			Expect(os.MkdirAll(dir, 0o700)).To(Succeed())
+			Expect(os.WriteFile(dir+"/throughput-is-measured-as-goals-delivered-per-week-at-"+
+				"bounded-operator-attention.json", []byte("{}\n"), 0o600)).To(Succeed())
+			Expect(guard.Evaluate(roundInput()).Deny).To(BeFalse())
+			Expect(started).To(HaveLen(1))
+			Expect(started[0]).To(HaveSuffix(".regression-sweep.log"))
+		})
+	})
+
+	It("does nothing when the receipt is missing", func() {
+		blockedLogHome(func(home string) {
+			Expect(os.MkdirAll(home+"/.claude/state/manager-receipts", 0o700)).To(Succeed())
+			guard.Evaluate(roundInput())
+			Expect(started).To(BeEmpty())
+		})
+	})
+
+	It("does nothing for a round naming another goal", func() {
+		blockedLogHome(func(home string) {
+			input := bashInput("python3 ~/.claude/scripts/manager-receipt.py --goal Other")
+			input.HookEventName = hook.EventPostToolUse
+			guard.Evaluate(input)
+			Expect(started).To(BeEmpty())
+		})
+	})
+
+	It("does not apply to a Bash call that is not the receipt", func() {
+		input := bashInput("ls -la")
+		input.HookEventName = hook.EventPostToolUse
+		Expect(guard.Applies(input)).To(BeFalse())
+	})
+
+	It("does not apply to a PreToolUse payload", func() {
+		input := bashInput("python3 ~/.claude/scripts/manager-receipt.py")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Applies(input)).To(BeFalse())
+	})
+})
