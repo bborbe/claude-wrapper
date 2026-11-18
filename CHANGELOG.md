@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **a resume is no longer refused by a holder whose recorded child is gone.** The resume guard refused any session whose `s.sessions` entry was not `StateExited`, and an adopted child's only exit signal was its recorded pid — which the kernel reuses, so a dead child's number handed to an unrelated process kept the holder "live" until that process exited, and every verb that could clear it refused because of it. The record now carries the child's own start time (`child_started_at`), captured at spawn; adoption prunes a record whose live pid's start time proves the pid was reused, and a resume releases a holder whose recorded process is provably gone before it would refuse. A genuinely live holder, an unknown start time, and a spawned child (settled by `cmd.Wait()`) are unchanged — the guard still refuses two writers on one conversation.
+
 ## v0.39.0
 
 - fix: **the wrapper refuses an agent tab instead of opening it in whatever window has focus.** The role table no longer carries an agent → window entry (the operator removed that WezTerm window on 2026-11-12, so an agent tab resolved no window and landed in the focused one). The tab spawner and the `spawn_agent` tab path now refuse any request whose role resolves to `agent` — explicit, or defaulted from an empty `role` — before any pane, colour, cap reservation or ledger row, with an error naming role-mode matrix Rule 2 and `interactive=false`. This holds whatever chose the tab (argument, `SUPERVISOR_SPAWN_MODE`, `spawn.mode` or the default), and the flagged reopen tick now counts an interactive agent row as refused. Headless spawns and human and manager tabs are unchanged.

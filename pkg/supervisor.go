@@ -292,32 +292,6 @@ func (s *supervisor) Spawn(ctx context.Context, options SpawnOptions) (*Session,
 	return c.snapshot(), nil
 }
 
-// reserve claims id for one resume spawn, refusing when a live child or another
-// in-flight spawn already holds it. The claim is held across startChild, which
-// runs outside the lock, so two concurrent resumes of one conversation cannot
-// both pass the check.
-func (s *supervisor) reserve(ctx context.Context, id string) error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	if s.starting == nil {
-		s.starting = map[string]struct{}{}
-	}
-	if _, busy := s.starting[id]; busy {
-		return errors.Wrapf(ctx, ErrSessionLive, "session %q is already being resumed", id)
-	}
-	if c, ok := s.sessions[id]; ok && !c.isExited() {
-		return errors.Wrapf(ctx, ErrSessionLive, "session %q is still running", id)
-	}
-	s.starting[id] = struct{}{}
-	return nil
-}
-
-func (s *supervisor) release(id string) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	delete(s.starting, id)
-}
-
 func (s *supervisor) List(ctx context.Context) ([]Session, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
@@ -397,6 +371,10 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 			}
 			continue
 		}
+		currentStart, stale := s.staleRecordStart(ctx, record)
+		if stale {
+			continue
+		}
 		files, openErr := s.store.Open(ctx, record.ID)
 		if openErr != nil {
 			log.Printf("WARNING: adopt session %s failed: %v", record.ID, openErr)
@@ -419,6 +397,7 @@ func (s *supervisor) Adopt(ctx context.Context) (int, error) {
 		c := &child{
 			id:           record.ID,
 			pid:          record.ChildPID,
+			procStart:    currentStart,
 			now:          s.now,
 			stdin:        files.Stdin,
 			eventsPath:   files.EventsPath,
@@ -929,13 +908,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	// benefit.
 	_ = files.EventsWriter.Close()
 
-	record := SessionRecord{
-		ID:        id,
-		ChildPID:  cmd.Process.Pid,
-		Cwd:       options.Cwd,
-		Options:   options,
-		StartedAt: s.now.Now().Time().UTC(),
-	}
+	record, childStart := s.newSessionRecord(id, cmd.Process.Pid, options)
 	if err := s.store.Save(ctx, record); err != nil {
 		// The child is already running and adoptable by its pid only if the record
 		// says so; a record that cannot be written means the next daemon will not
@@ -947,6 +920,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	c := &child{
 		id:           id,
 		pid:          cmd.Process.Pid,
+		procStart:    childStart,
 		now:          s.now,
 		cmd:          cmd,
 		stdin:        files.Stdin,
@@ -1235,10 +1209,15 @@ func childEnv(inherited []string, overrides map[string]string) []string {
 
 // child is one running claude process and the state read off its stream.
 type child struct {
-	mutex       sync.RWMutex
-	writeMu     sync.Mutex
-	id          string
-	pid         int
+	mutex   sync.RWMutex
+	writeMu sync.Mutex
+	id      string
+	pid     int
+	// procStart is the child process's own start time, captured at spawn or
+	// adoption. Together with pid it identifies one process instance, so a holder
+	// whose pid was reused by an unrelated process can be proved stale rather than
+	// read as live. Zero means unknown, which never proves reuse.
+	procStart   time.Time
 	now         libtime.CurrentDateTimeGetter
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
@@ -1710,6 +1689,13 @@ func (c *child) watch() {
 func (c *child) reap(exitCode *int) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if c.session.State == StateExited {
+		// Already settled. The reserve-time release may have reaped a provably
+		// stale holder, and the watch goroutine still blocked on the reused pid
+		// reaches here when that unrelated process finally exits — settling twice
+		// would double-record the exit and re-close subscribers.
+		return
+	}
 	// Cancel any armed attention-store re-check: the child is gone, and the
 	// retry's kill would land on a pid that may already be reused.
 	c.stopCardRetryLocked()
@@ -1777,6 +1763,12 @@ func (c *child) reap(exitCode *int) {
 func (c *child) apply(seq int, event map[string]any, replayed bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if c.session.State == StateExited {
+		// A child settled as provably stale must not be resurrected by a late
+		// replay line; otherwise the holder reserve just released reads live again
+		// and the deadlock returns.
+		return
+	}
 	c.lastEventAt = c.now.Now().Time()
 	if !replayed && c.session.State == StateStarting {
 		c.recordStallLocked(event)
