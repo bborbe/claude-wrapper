@@ -5,6 +5,7 @@
 package hook_test
 
 import (
+	"context"
 	"os"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -193,6 +194,36 @@ var _ = Describe("GitMergeAllows", func() {
 		Entry("a traversal source", []string{"-C", root, "merge", "origin/../x"}, false),
 		Entry("a directory outside the roots", []string{"-C", "/tmp", "merge", "origin/master"}, false),
 		Entry("no -C operand", []string{"merge", "origin/master"}, false),
+	)
+})
+
+var _ = Describe("CompoundTreeAllows", func() {
+	ctx := context.Background()
+	rules := hook.CompoundRules{
+		Allow: []string{"pwd", "ls", "make build:*"},
+		Gated: []string{"ls -R"},
+	}
+
+	DescribeTable("allows only a fully modelled tree whose every call matches a rule",
+		func(command string, allowed bool) {
+			Expect(hook.CompoundTreeAllows(ctx, command, rules)).To(Equal(allowed))
+		},
+		Entry("one allowlisted call", "pwd", true),
+		Entry("two allowlisted calls", "pwd && ls", true),
+		Entry("a word-list for loop", "for f in a b; do ls; done", true),
+		Entry("a call matching no rule", "curl example.com", false),
+		Entry("a gated call", "ls -R", false),
+		Entry("a wrapper program is refused even with a rule",
+			"git status", false),
+		Entry("a while loop is unbounded", "while true; do ls; done", false),
+		Entry("an assignment prefix", "PATH=/evil ls", false),
+		Entry("a command substitution", "ls $(date)", false),
+		Entry("a shell wrapper", "bash -c 'ls'", false),
+		Entry("a redirect to a file", "ls > /tmp/x", false),
+		Entry("a descriptor duplication", "ls 2>&1", true),
+		Entry("a redirect to /dev/null", "ls > /dev/null", true),
+		Entry("a background job", "ls &", false),
+		Entry("an unparsable command", "ls &&", false),
 	)
 })
 
