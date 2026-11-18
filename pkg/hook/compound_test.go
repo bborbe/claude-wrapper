@@ -384,6 +384,19 @@ var _ = Describe("Review regressions", func() {
 		input.Cwd = worktree
 		Expect(hook.NewBranchSwitchGuard().Evaluate(input).Deny).To(BeTrue())
 	})
+
+	It("never allows a command carrying a quote, escape or expansion", func() {
+		repo := tempGitRepo(map[string]string{}, "master")
+		for _, command := range []string{
+			`git push origin "fix/x"`,
+			`git push origin fix/x\ `,
+			`git push origin $BRANCH`,
+		} {
+			input := bashInput(command)
+			input.Cwd = repo
+			Expect(hook.NewPushGateGuard().Evaluate(input).Allow).To(BeFalse())
+		}
+	})
 })
 
 var _ = Describe("SedFilterAllows", func() {

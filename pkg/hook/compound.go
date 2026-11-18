@@ -37,19 +37,26 @@ type CompoundRules struct {
 // WholeCallAllowable reports whether an Allow decision may be emitted for this
 // command.
 //
-// An Allow covers the WHOLE Bash call, not the fragment a guard matched. So a guard
-// that verified one command may only allow when that command is the entire call:
-// no second segment, no substitution, no redirect, no comment. Without this,
-// `git push origin fix/x; gh pr merge 42 --admin` is approved because its first
-// segment matched, and the admin merge rides along.
+// An Allow covers the WHOLE Bash call, not the fragment a guard matched, and it
+// suppresses the permission prompt. So a guard may only allow a command it can
+// fully account for:
 //
-// The compound guard is the exception: it verifies every segment, so it does not
-// consult this.
+//   - one segment — no second command, no comment, no heredoc (`;&|#\n<>`);
+//   - no substitution or expansion that could change what runs (“ ` “, `$(`, `$`);
+//   - no quoting or escaping, because `--ad""min` and `--adm\in` spell a flag the
+//     substring checks below cannot see, and a quoted operand can resolve elsewhere.
+//
+// Every one of those is an over-refusal: the command falls back to the normal
+// permission prompt. That is the correct direction — the sixteen bypasses found in
+// review were all cases where an Allow covered more than the guard had verified.
+//
+// The compound guard is the exception: it verifies every segment itself, so it does
+// not consult this.
 func WholeCallAllowable(command string) bool {
-	if strings.ContainsAny(command, ";&|#\n<>") {
+	if strings.ContainsAny(command, ";&|#\n<>\"'\\$`") {
 		return false
 	}
-	return !strings.Contains(command, "`") && !strings.Contains(command, "$(")
+	return !strings.Contains(command, "$(")
 }
 
 // SplitCompound splits a command on `&&`, `||`, `|&`, `;`, `|` and newline,
