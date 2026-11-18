@@ -113,7 +113,7 @@ func (r *SessionExitFileRecorder) Record(session Session, pid int, status ExitSt
 // a stable field count, and `-` is already the store's spelling for "not
 // applicable".
 func (r *SessionExitFileRecorder) line(session Session, pid int, status ExitStatus) string {
-	fields := make([]string, 0, 12)
+	fields := make([]string, 0, 13)
 	fields = append(fields,
 		r.now().UTC().Format(time.RFC3339),
 		"kind="+exitKind(status),
@@ -125,7 +125,7 @@ func (r *SessionExitFileRecorder) line(session Session, pid int, status ExitStat
 		"sender="+senderField(status),
 		"writer="+SessionExitWriterWrapper,
 	)
-	fields = append(fields, stallFields(session.Stall)...)
+	fields = append(fields, stallFields(session.Stall, session.PendingTurns)...)
 	return strings.Join(fields, "\t") + "\n"
 }
 
@@ -138,7 +138,16 @@ func (r *SessionExitFileRecorder) line(session Session, pid int, status ExitStat
 // field existed, which is what keeps every existing reader working: the daily
 // job parses the fields as a name→value map, and an absent name reads as absent
 // rather than as a shifted column.
-func stallFields(stall *Stall) []string {
+//
+// pendingTurns is the discriminator the phase alone cannot give. The CLI emits
+// its init event only once a first turn arrives (measured 2026-11-18: the same
+// argv with no input sat silent for 101 s even with a single MCP server, and
+// emitted init at once when one message was written). So a child that never
+// initialised has two possible histories — it was given work and did not start,
+// or it was never given any — and a phase of "awaiting-init" cannot tell them
+// apart. A non-zero pending count is the first history: a turn was written and
+// never closed. Zero is the second.
+func stallFields(stall *Stall, pendingTurns int) []string {
 	if stall == nil {
 		return nil
 	}
@@ -146,6 +155,7 @@ func stallFields(stall *Stall) []string {
 		"stall_phase=" + valueOrDash(stallPhase(stall)),
 		"stall_last_event=" + valueOrDash(stall.LastEvent),
 		"stall_pending_hooks=" + valueOrDash(strings.Join(stall.PendingHooks, ",")),
+		"stall_pending_turns=" + strconv.Itoa(pendingTurns),
 	}
 }
 

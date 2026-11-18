@@ -64,6 +64,10 @@ var (
 
 // FileExists is the default existence probe the classifier uses.
 func FileExists(path string) bool {
+	// #nosec G703 -- the path is a vault subject page this process composed from
+	// its own topic/goal directory constants and a title read from the registry.
+	// It never comes from an HTTP request, and a traversal here could only name
+	// another file inside the operator's own vault.
 	_, err := os.Stat(path)
 	return err == nil
 }
