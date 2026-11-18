@@ -1,7 +1,13 @@
 ---
-spec: ["003-sweep-gate-port"]
-status: draft
+status: completed
+spec: [003-sweep-gate-port]
+summary: Created pkg/sweepgate with config/path resolution, task parsing, tracked-set resolution, digest, state files, exit codes, a checked-in parity fixture and Python-generated goldens; make precommit exits 0.
+execution_id: claude-wrapper-sweep-gate-exec-002-spec-003-sweepgate-core-parity
+dark-factory-version: v0.198.17
 created: "2026-11-18T00:35:03Z"
+queued: "2026-11-18T01:08:38Z"
+started: "2026-11-18T01:09:04Z"
+completed: "2026-11-18T01:17:11Z"
 ---
 
 # sweepgate core: config, paths, task parsing, digest, parity fixture

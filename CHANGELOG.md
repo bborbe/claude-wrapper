@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: pkg/sweepgate ports the manager sweep gate's task parsing, tracked-set resolution and digest to Go, with a checked-in parity fixture and Python-generated goldens
+
 ## v0.34.1
 
 - fix: **the flagged tick asserts a row's own provenance to the spawn caps instead of a hard-coded `false`, so an operator-flagged row may open up to the HARD headless limit again.** `decision` refuses every row carrying a `Refused` entry before the cap check, so every row that reached `CheckWorker` was already operator-flagged or a legacy operator-opened flag — yet the tick told the cap it was not operator-named and refused it at `spawn.maxHeadlessSoft`. Measured 2026-11-18 00:58: 51 live against 50 allowed, and 28 rows left unconsidered in one tick. The new `FlaggedRow.OperatorNamed()` reads the predicate's verdict (`len(Refused) == 0`) and never re-derives OPENING_ACTORS, so the predicate stays the single home of "who may set a flag". The caller-assertion contract in `spawn_axes.go` / `spawn_limits.go` is unchanged and the hard cap still refuses. Change set: `pkg/flagged_rows_source.go`, `pkg/flagged_tick.go`, `pkg/flagged_tick_test.go`, `CHANGELOG.md`.

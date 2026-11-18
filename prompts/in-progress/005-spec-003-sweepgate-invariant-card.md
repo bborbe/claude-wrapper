@@ -1,7 +1,8 @@
 ---
-spec: ["003-sweep-gate-port"]
-status: draft
+status: approved
+spec: [003-sweep-gate-port]
 created: "2026-11-18T00:35:03Z"
+queued: "2026-11-18T01:08:39Z"
 ---
 
 # sweepgate invariant: the open-card payload and its re-arm guard
