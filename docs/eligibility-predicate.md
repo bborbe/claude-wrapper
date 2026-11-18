@@ -97,3 +97,7 @@ A flagged **task** that has never had a session reads `liveness: none`, an empty
 - **Tasks only.** For a goal or topic the predicate returns `create` whenever the manager chain is live *or unreadable*, so a goal `none`+`create` row is not proof that no manager exists.
 
 The recently-spawned guard covers a fresh open by **label** (the task name the ledger records), plus an in-process record of this daemon's own opens. Without the in-process record, a tab spawn that registers after its 8-second deadline, or a ledger outage, would leave nothing to find, and the next tick would open the row again. The in-process record does not survive a daemon restart, so a restart that coincides with a missing ledger row can still open a row twice.
+
+## See also
+
+[`parked-waits.md`](parked-waits.md) is the page for the tick's other decision: whether an eligible row is held because its last session parked on something outside its control.
