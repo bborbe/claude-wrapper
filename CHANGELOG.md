@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- fix: **a single-quoted argument no longer pushes a read-only `git -C` compound back to the prompt.** `… | sed -n '150,158p'` and `git grep -n 'a b'` prompted after v0.38.2 because the syntax tree accepted only bare and double-quoted words; a `'…'` word is now the literal the shell passes, and a single shape-head command with a quoted space falls back to the tree. A tree literal carrying a backslash is refused, since the parser keeps `\-o` while the shell passes `-o`.
+- fix: **a single-quoted argument no longer pushes a read-only `git -C` compound back to the prompt.** `… | sed -n '150,158p'` and `git grep -n 'a b'` prompted after v0.38.2 because the syntax tree accepted only bare and double-quoted words; a `'…'` word is now the literal the shell passes, and a single shape-head command with a quoted space falls back to the tree. A tree literal carrying a backslash is refused, since the parser keeps `\-o` while the shell passes `-o`; and a quoted word starting with `~` is refused, since the shell does not expand it while `UnderRoots` would.
 
 ## v0.38.3
 
