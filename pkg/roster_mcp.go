@@ -47,6 +47,7 @@ const (
 	ToolAwaitPermission        ToolName = "await_permission"
 	ToolPendingPermissions     ToolName = "pending_permissions"
 	ToolReadPushConfig         ToolName = "read_push_config"
+	ToolOpenRows               ToolName = "open_rows"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
@@ -69,6 +70,7 @@ func RosterToolNames() []ToolName {
 		ToolAwaitPermission,
 		ToolPendingPermissions,
 		ToolReadPushConfig,
+		ToolOpenRows,
 	}
 }
 
@@ -78,7 +80,8 @@ func RosterToolNames() []ToolName {
 // Everything else on this face serves a session-less client: the protocol methods
 // (`initialize`, `notifications/initialized`, `ping`, `tools/list`) and the
 // read-only tools (`list_agents`, `agent_status`, `pending_permissions`,
-// `await_permission`, `read_push_config`, `send_agent_message`).
+// `await_permission`, `read_push_config`, `send_agent_message`) and `open_rows`,
+// which answers a session-less call per row rather than refusing it whole.
 func sessionRequiredTools() map[ToolName]struct{} {
 	return map[ToolName]struct{}{
 		ToolSpawnAgent:             {},
@@ -146,6 +149,10 @@ type RosterToolServer struct {
 	// lands in the child, and only its audit line is skipped, which the reply
 	// reports as `recorded: false`.
 	PermissionModeLog PermissionModeLog
+	// Open is the open operation this face serves as open_rows. It is the same
+	// pkg.OpenSurface POST /api/1.0/open calls, so the two surfaces cannot
+	// drift. Nil means open_rows refuses with "open_rows is not wired".
+	Open *OpenSurface
 }
 
 // currentDateTime returns the clock the pane polls run on.
@@ -317,6 +324,8 @@ func (s *RosterToolServer) invoke(
 		return s.pendingPermissions(ctx)
 	case ToolReadPushConfig:
 		return s.readPushConfig(ctx, args)
+	case ToolOpenRows:
+		return s.openRows(ctx, args, sessionID)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -1723,7 +1732,8 @@ func (s *RosterToolServer) recordStop(ctx context.Context, row *AgentRow, caller
 func rosterToolDefinitions() []any {
 	definitions := append(spawnToolDefinitions(), parkToolDefinitions()...)
 	definitions = append(definitions, runSlashCommandToolDefinition())
-	return append(definitions, modeToolDefinitions()...)
+	definitions = append(definitions, modeToolDefinitions()...)
+	return append(definitions, openToolDefinitions()...)
 }
 
 // modeToolDefinitions describes the live permission-mode switch.

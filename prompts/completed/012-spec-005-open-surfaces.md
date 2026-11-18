@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [005-open-endpoint]
+summary: Implemented the shared OpenSurface with POST /api/1.0/open and the open_rows MCP tool, daemon script-path flags, and docs; make precommit exits 0 (AC1), with AC2 covered by pkg/handler/open_test.go, AC3 by pkg/roster_mcp_test.go, AC4 and AC24 by pkg/handler/open_parity_test.go, AC5 by pkg/handler/open_test.go, AC21 by pkg/open_surface_test.go plus the flag/default greps, and AC22/AC23 by the README, docs and CHANGELOG greps.
+execution_id: 9881bf24-5a56-5157-8303-c8eca57d0834-exec-012-spec-005-open-surfaces
+dark-factory-version: dev
 created: "2026-11-18T18:59:25Z"
 queued: "2026-11-18T19:12:27Z"
+started: "2026-11-18T19:45:48Z"
+completed: "2026-11-18T19:53:05Z"
 ---
 
 # Expose the open executor as POST /api/1.0/open and the open_rows MCP tool
