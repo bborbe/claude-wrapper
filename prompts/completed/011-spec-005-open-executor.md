@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [005-open-endpoint]
+summary: Composed the pure open decision and tab opener with the existing headless spawn into OpenExecutor (OpenRequest with probe/pane activation, OpenTick without either), added readOpenPage and the shared startHeadless spawn, covered every required AC and failure mode with tests, recorded the AC17 mutation run, and updated CHANGELOG.md.
+execution_id: 9881bf24-5a56-5157-8303-c8eca57d0834-exec-011-spec-005-open-executor
+dark-factory-version: dev
 created: "2026-11-18T18:59:25Z"
 queued: "2026-11-18T19:12:27Z"
+started: "2026-11-18T19:33:54Z"
+completed: "2026-11-18T19:45:46Z"
 ---
 
 # Open executor: request and tick caller modes over the open decision

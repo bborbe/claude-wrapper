@@ -368,49 +368,10 @@ func (s *RosterToolServer) spawnLocalAgent(
 			"interactive spawn is not this slice's surface — a tab worker is spawned and steered by the tab-spawn slice",
 		)
 	}
-	if s.Supervisor == nil {
-		return "", errors.Errorf(ctx, "spawn_agent is not wired")
-	}
-	cwd, err := s.headlessCwd(ctx, body)
+	session, mode, modeSource, err := s.startHeadless(ctx, body, sessionID, resolution)
 	if err != nil {
 		return "", err
 	}
-	// Terminal first: a resume of a finished task must say so, not send the caller
-	// away to add a prompt and then refuse them for the task state on the retry.
-	// The vault scan this costs is paid only on a refusal path.
-	if err := s.refuseTerminalResume(ctx, body, cwd); err != nil {
-		return "", err
-	}
-	if err := refusePromptlessResume(ctx, body); err != nil {
-		return "", err
-	}
-	if err := s.enforceCaps(ctx, body, SpawnModeHeadless); err != nil {
-		return "", err
-	}
-	mode, modeSource := headlessPermissionMode(body.Shipping)
-	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
-		Cwd:            cwd,
-		Model:          s.headlessModel(ctx, body, cwd),
-		PermissionMode: mode,
-		Label:          body.Label,
-		Role:           body.Role,
-		Policy:         body.Policy,
-		Resume:         body.Resume,
-		MCPConfigs:     s.headlessMCPConfigs(ctx, body, cwd),
-	})
-	if err != nil {
-		return "", errors.Wrapf(ctx, err, "spawn agent failed")
-	}
-	if body.Prompt != "" {
-		if err := s.Supervisor.Send(ctx, session.ID, body.Prompt); err != nil {
-			// The child is live by now and holds stdin. A spawn that throws here
-			// leaves an idle process behind that looks exactly like a thinking
-			// worker, so it is stopped rather than orphaned.
-			_ = s.Supervisor.Stop(context.Background(), session.ID)
-			return "", errors.Wrapf(ctx, err, "deliver opening turn failed")
-		}
-	}
-	s.recordSpawn(ctx, session, sessionID, body, resolution.Source)
 	return marshalJSON(ctx, map[string]string{
 		"agent_id":    session.ID,
 		"session_id":  session.ID,
