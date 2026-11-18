@@ -374,6 +374,12 @@ func newTick(source FlaggedRowSource, reopener FlaggedReopener, caps SpawnCaps) 
 		Caps:     caps,
 		Now:      fixedNow(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)),
 		Logf:     func(string, ...any) {},
+		// A spec must never read the host's real child table: `Home` scopes the state
+		// directory to an empty temp dir and `Getenv` answers nothing, so the
+		// per-session `record.json` half of the guard is empty unless a spec opts in
+		// by setting `Sessions`.
+		Home:   ginkgo.GinkgoT().TempDir(),
+		Getenv: func(string) string { return "" },
 	}
 }
 

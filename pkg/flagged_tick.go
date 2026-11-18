@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -253,9 +252,16 @@ type FlaggedTick struct {
 	Ledger LedgerReader
 	// Sessions is the wrapper's own durable child table — the half of the
 	// recently-spawned guard that still answers while the attention-controller is
-	// down. Nil resolves it from the state directory per call.
+	// down. Nil resolves it from the state directory, which `Home` and `Getenv`
+	// scope: a spec that leaves both zero reads the host's real `~/.local/state`,
+	// so every spec sets them.
 	Sessions SessionStore
-	Now      libtime.CurrentDateTimeGetter
+	// Home overrides the home directory the state directory resolves under, and
+	// Getenv overrides the environment lookup (defaulting to os.Getenv). Both exist
+	// so a spec cannot silently read the host's child table.
+	Home   string
+	Getenv func(string) string
+	Now    libtime.CurrentDateTimeGetter
 	// Interval defaults to DefaultFlaggedTickInterval.
 	Interval time.Duration
 	// ReadTimeout bounds one predicate read, defaulting to predicateTimeout.
@@ -681,8 +687,9 @@ func recentlySpawned(rows []LedgerRow) map[string]time.Time {
 func (t *FlaggedTick) mergeChildSpawnTimes(ctx context.Context, out map[string]time.Time) {
 	store := t.Sessions
 	if store == nil {
-		dir, err := SupervisorStateDir(ctx, "", os.Getenv)
+		dir, err := SupervisorStateDir(ctx, t.Home, t.Getenv)
 		if err != nil {
+			t.logf("flagged-tick: state dir unavailable, recently-spawned guard is ledger-only: %v", err)
 			return
 		}
 		store = NewSessionStore(dir)

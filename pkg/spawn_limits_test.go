@@ -611,18 +611,41 @@ var _ = ginkgo.Describe("spawn cap counting", func() {
 		gomega.Expect(caps.LiveCountSource(ctx)).To(gomega.Equal("heartbeat"))
 	})
 
-	ginkgo.It("counts from the ledger alone when the heartbeat store cannot be read", func() {
+	// ⚠️ The ledger supplies identity; the registry supplies liveness. This spec
+	// covers the degradation where only the heartbeat store is down — NOT the case
+	// where every liveness channel is down, which must refuse (see the sibling
+	// spec). Reading the ledger alone as a count is the fail-open this pair exists
+	// to separate.
+	ginkgo.It("counts from the ledger when the heartbeat store cannot be read", func() {
 		caps := testCaps(
 			&rosterLedger{rows: []LedgerRow{{SessionID: "a", Mode: SpawnModeHeadless}}},
 			&stubHeartbeats{err: errors.New("boom")},
-			writeSpawnConfig(workerAxisConfig(2, 50)),
+			writeSpawnConfig(workerAxisConfig(3, 50)),
 			ginkgo.GinkgoT().TempDir(),
 		)
+		caps.registry = &capsRegistry{live: []RegistryEntry{{SessionID: "a"}}}
 
 		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
 
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(caps.LiveCountSource(ctx)).To(gomega.Equal("ledger"))
+	})
+
+	ginkgo.It("refuses when the ledger answers but no liveness channel does", func() {
+		caps := testCaps(
+			&rosterLedger{rows: []LedgerRow{{SessionID: "a", Mode: SpawnModeHeadless}}},
+			&stubHeartbeats{err: errors.New("boom")},
+			writeSpawnConfig(workerAxisConfig(3, 50)),
+			ginkgo.GinkgoT().TempDir(),
+		)
+		caps.registry = &capsRegistry{err: errors.New("connection refused")}
+
+		err := caps.CheckWorker(ctx, SpawnModeHeadless, false)
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(
+			gomega.ContainSubstring("live-worker count could not be taken"),
+		)
 	})
 
 	ginkgo.It("refuses a manager past spawn.maxManagers, quoting the count and the limit", func() {
@@ -793,6 +816,34 @@ var _ = ginkgo.Describe("spawn caps: degraded count sources", func() {
 			ginkgo.GinkgoT().TempDir(),
 		)
 		caps.registry = &capsRegistry{err: errors.New("down")}
+
+		_, err := caps.countWorkersByMode(ctx)
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(
+			gomega.ContainSubstring("no liveness source could be read"),
+		)
+		gomega.Expect(caps.LiveCountSource(ctx)).To(gomega.Equal("none"))
+	})
+
+	// ⚠️ The ledger is an IDENTITY source, not a liveness one. A readable ledger
+	// with no liveness channel yields an empty live set, so treating the ledger as
+	// sufficient here returns a zero count with no error — the cap then opens the
+	// whole fleet past a limit nobody measured. The controller and the heartbeat
+	// store fail together, so this is the common outage, not a corner case.
+	ginkgo.It("refuses when the ledger answers but no liveness channel does", func() {
+		caps := testCaps(
+			ledgerWith{rows: []LedgerRow{{
+				SessionID: "s1",
+				Label:     "a task",
+				SpawnedAt: time.Now().Add(-time.Minute).Format(time.RFC3339),
+				Status:    "running",
+			}}},
+			&stubHeartbeats{err: errors.New("connection refused")},
+			"",
+			ginkgo.GinkgoT().TempDir(),
+		)
+		caps.registry = &capsRegistry{err: errors.New("connection refused")}
 
 		_, err := caps.countWorkersByMode(ctx)
 

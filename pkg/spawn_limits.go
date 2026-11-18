@@ -629,29 +629,32 @@ type liveCensus struct {
 	childModes map[string]string
 	childRoles map[string]string
 	childOK    bool
+	childErr   error
 }
 
 // source names the channel that supplied the count, for the tick's log line.
 //
-// The ledger leads because it is the only source that carries identity, mode and
-// role in one read; the registry answers alone when the controller is down.
+// ⚠️ Liveness decides first, identity second. A ledger row says who a session is;
+// it never says whether the session is alive. With no liveness channel answering
+// the live set is empty, so a `ledger` here would describe a zero count as a
+// healthy read — the exact fail-open this census exists to prevent.
 func (c liveCensus) source() string {
+	if !c.registryOK && !c.heartbeatOK {
+		return "none"
+	}
 	if c.ledgerOK {
 		return "ledger"
 	}
 	if c.registryOK {
 		return "registry"
 	}
-	if c.heartbeatOK {
-		return "heartbeat"
-	}
-	return "none"
+	return "heartbeat"
 }
 
 // degraded names the channels that could not be read, so an outage is
 // diagnosable from the log rather than inferred from a refusal.
 func (c liveCensus) degraded() string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if !c.ledgerOK {
 		parts = append(parts, fmt.Sprintf("ledger(%v)", c.ledgerErr))
 	}
@@ -660,6 +663,9 @@ func (c liveCensus) degraded() string {
 	}
 	if !c.heartbeatOK {
 		parts = append(parts, fmt.Sprintf("heartbeat(%v)", c.heartbeatErr))
+	}
+	if !c.childOK {
+		parts = append(parts, fmt.Sprintf("child(%v)", c.childErr))
 	}
 	return strings.Join(parts, ";")
 }
@@ -670,8 +676,16 @@ func (c liveCensus) degraded() string {
 // independent of the attention-controller: a heartbeat row is a store's claim
 // about a session, a registry file is a pid on this machine.
 //
-// An error is returned only when NO channel could be read — the one case where
-// the count is genuinely unknown and the cap must refuse.
+// ⚠️ The error condition is about LIVENESS, never identity. The ledger says who a
+// session is and which mode it ran in; it never says whether the session is alive,
+// so a readable ledger with no liveness channel yields an empty live set — a zero
+// count that would open the fleet past a cap nobody measured. Measured on review
+// 2026-11-18: an earlier draft ANDed the ledger into this condition, so a
+// controller outage that took the heartbeat store with it (the two fail together)
+// returned `0` with no error and the cap silently stopped refusing.
+//
+// An error is returned only when NO liveness channel could be read — the one case
+// where the count is genuinely unknown and the cap must refuse.
 func (c *spawnCaps) census(ctx context.Context) (liveCensus, error) {
 	cen := liveCensus{live: map[string]struct{}{}}
 	c.readRegistry(ctx, &cen)
@@ -679,11 +693,11 @@ func (c *spawnCaps) census(ctx context.Context) (liveCensus, error) {
 	c.readHeartbeats(ctx, &cen)
 	c.readChildren(ctx, &cen)
 
-	if !cen.ledgerOK && !cen.registryOK && !cen.heartbeatOK {
+	if !cen.registryOK && !cen.heartbeatOK {
 		return cen, errors.Errorf(
 			ctx,
-			"no liveness source could be read: ledger: %v; registry: %v; heartbeat: %v",
-			cen.ledgerErr, cen.registryErr, cen.heartbeatErr,
+			"no liveness source could be read: registry: %v; heartbeat: %v",
+			cen.registryErr, cen.heartbeatErr,
 		)
 	}
 	return cen, nil
@@ -750,14 +764,18 @@ func (c *spawnCaps) readHeartbeats(ctx context.Context, cen *liveCensus) {
 //
 // Read from the durable child table on disk, so it answers during a controller
 // outage. A store that cannot be listed is degraded like any other channel — it
-// is a cross-check, not a precondition.
+// is a cross-check, not a precondition — but the failure is RECORDED rather than
+// swallowed, so `degraded()` can name it on the tick line instead of leaving a
+// count that quietly lost its mode source.
 func (c *spawnCaps) readChildren(ctx context.Context, cen *liveCensus) {
 	dir, err := SupervisorStateDir(ctx, c.home, c.getenv)
 	if err != nil {
+		cen.childErr = err
 		return
 	}
 	records, err := NewSessionStore(dir).List(ctx)
 	if err != nil {
+		cen.childErr = err
 		return
 	}
 	cen.childOK = true
