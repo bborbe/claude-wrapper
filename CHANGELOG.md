@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.44.0
 
 - feat: **a liveness verdict now carries the session's tab title.** `LivenessVerdict` gains `name`, populated from the registry entry's `Name` when the registry lists the session and left empty on a child-table or heartbeat-only verdict (the name exists only on a registry entry). `flagged-rows.py` decides "is this subject's manager live?" by NAME, so before this field a consumer had to take the verdicts from `/api/1.0/liveness` and still shell out to `session-liveness.py --list` for the identity map — two derivations of one fact, which is what this task removes. Change set: `pkg/liveness_verdict.go`, `pkg/liveness_verdict_test.go`, `CHANGELOG.md`.
 
