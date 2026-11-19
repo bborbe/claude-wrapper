@@ -67,6 +67,11 @@ const (
 	//     registering.
 	recentlySpawnedWindow = 90 * time.Minute
 
+	// idleNudgeWindow is how long a nudged session is left alone before it may be
+	// nudged again. A worker that closes its turn at once — nothing left it can do
+	// — would otherwise be prodded on every tick, spending a turn each time.
+	idleNudgeWindow = 30 * time.Minute
+
 	// predicateTimeout bounds one predicate read.
 	//
 	// ⚠️ Twice raised from measurement, not estimate. At 2 minutes the first live
@@ -115,6 +120,9 @@ const (
 type FlaggedTickResult struct {
 	// Opened holds the key of every row this tick opened.
 	Opened []string
+	// Nudged holds the key of every row whose idle, already-held child this tick
+	// sent a new turn to. It is not Opened: no process was spawned.
+	Nudged []string
 	// Refused holds `key: reason` for every row the tick would not open.
 	Refused []string
 	// Skipped holds `key: reason` for every row that was eligible but not due.
@@ -131,6 +139,15 @@ type FlaggedTickResult struct {
 	// the delay was not measurable; a zero would read as an instant resume, which
 	// is the one reading this measurement exists to distinguish.
 	ResumeDelays []string
+	// ResumeDelaysWaited holds `key=<delay>` for rows this tick opened that it
+	// had held back at least once after their stop — the "nothing to do" class.
+	// Their delay is measured from the last skip, not from `ended_at`, so it
+	// bounds the real wait to one tick instead of counting idle time.
+	//
+	// It is a SEPARATE field, never folded into ResumeDelays: the population the bar applies to is
+	// the could-continue rows, and a p90 over a population that mixes the two
+	// cannot be compared to the two-minute bar the criterion names.
+	ResumeDelaysWaited []string
 	// LiveCountSource names the channel the spawn caps counted from this tick
 	// (`ledger`, `registry`, `heartbeat` or `none`). Empty when the caps cannot
 	// report one.
@@ -175,6 +192,9 @@ func (r FlaggedTickResult) Line() string {
 		len(r.Opened), len(r.Refused), len(r.Skipped), r.Considered,
 		strings.Join(r.Opened, ","),
 	)
+	if len(r.Nudged) > 0 {
+		line += fmt.Sprintf(" nudged=%d nudged_rows=%s", len(r.Nudged), strings.Join(r.Nudged, ","))
+	}
 	if counts := formatCounts(r.Refused); counts != "" {
 		line += " refused_by_reason=" + counts
 	}
@@ -189,6 +209,11 @@ func (r FlaggedTickResult) Line() string {
 	// next to the tick that ended it, or the delay cannot be attributed to a tick.
 	if len(r.ResumeDelays) > 0 {
 		line += " resume_delay=" + strings.Join(r.ResumeDelays, ",")
+	}
+	// Emitted separately so a reader can compute the could-continue p90 without
+	// the idle rows: the two-minute bar applies to `resume_delay=` alone.
+	if len(r.ResumeDelaysWaited) > 0 {
+		line += " resume_delay_waited=" + strings.Join(r.ResumeDelaysWaited, ",")
 	}
 	return line
 }
@@ -298,6 +323,51 @@ type FlaggedTick struct {
 	// names this daemon ever opened fresh; expired entries are ignored by the
 	// window check, not pruned.
 	opened map[string]time.Time
+
+	// skippedMutex guards skipped.
+	skippedMutex sync.Mutex
+	// skipped records, in process, when this tick last held a row back, keyed by
+	// session id. It is what separates the two resume-delay classes: a row with
+	// no entry here was resumable at its stop (the could-continue class), while
+	// a row with one only became able somewhere between that skip and its open.
+	//
+	// ⚠️ In process only, and that is deliberate. A restart empties it, so the
+	// first resume after a restart is measured from `ended_at` and lands in the
+	// could-continue class — the honest reading, since a restart genuinely does
+	// cost that row the restart's duration.
+	skipped map[string]time.Time
+
+	// Idle re-drives a row whose child this process holds idle. Nil disables the
+	// branch: such a row is skipped `not-absent`, as before.
+	Idle FlaggedIdleNudger
+	// nudgedMutex guards nudged.
+	nudgedMutex sync.Mutex
+	// nudged maps a session id to when this process last nudged it.
+	nudged map[string]time.Time
+}
+
+// idleNudgeDue reports whether a not-absent row should be nudged now.
+func (t *FlaggedTick) idleNudgeDue(ctx context.Context, row FlaggedRow, now time.Time) bool {
+	if t.Idle == nil {
+		return false
+	}
+	t.nudgedMutex.Lock()
+	at, ok := t.nudged[row.SessionID]
+	t.nudgedMutex.Unlock()
+	if ok && now.Sub(at) < idleNudgeWindow {
+		return false
+	}
+	return t.Idle.HoldsIdleChild(ctx, row)
+}
+
+// rememberNudged records a session this process just nudged.
+func (t *FlaggedTick) rememberNudged(sessionID string, at time.Time) {
+	t.nudgedMutex.Lock()
+	defer t.nudgedMutex.Unlock()
+	if t.nudged == nil {
+		t.nudged = map[string]time.Time{}
+	}
+	t.nudged[sessionID] = at
 }
 
 // rememberOpened records a never-opened row this process just opened.
@@ -308,6 +378,27 @@ func (t *FlaggedTick) rememberOpened(row FlaggedRow, at time.Time) {
 		t.opened = map[string]time.Time{}
 	}
 	t.opened[labelKey(row.Name)] = at
+}
+
+// rememberSkipped records that this tick held the row back, at `at`.
+func (t *FlaggedTick) rememberSkipped(row FlaggedRow, at time.Time) {
+	if row.SessionID == "" {
+		return
+	}
+	t.skippedMutex.Lock()
+	defer t.skippedMutex.Unlock()
+	if t.skipped == nil {
+		t.skipped = map[string]time.Time{}
+	}
+	t.skipped[row.SessionID] = at
+}
+
+// skippedAt returns when this tick last held the row back, if it did.
+func (t *FlaggedTick) skippedAt(sessionID string) (time.Time, bool) {
+	t.skippedMutex.Lock()
+	defer t.skippedMutex.Unlock()
+	at, ok := t.skipped[sessionID]
+	return at, ok
 }
 
 // mergeOpened folds this process's own opens into the ledger-derived map.
@@ -492,6 +583,9 @@ const (
 	rowSkipped
 	// rowRefused means the predicate's own provenance verdict refuses the row.
 	rowRefused
+	// rowNudge means the row reads not-absent only because this process holds its
+	// child idle; it gets a new turn on that child, and spends no reservation.
+	rowNudge
 )
 
 // classify applies the guards that run before any cap is consulted: the
@@ -511,10 +605,10 @@ func (t *FlaggedTick) classify(
 	now time.Time,
 ) (string, rowAction) {
 	if reason, refused, skipped := decision(row, recent, dead, now); refused || skipped {
-		if skipped {
-			return reason, rowSkipped
+		if refused {
+			return reason, rowRefused
 		}
-		return reason, rowRefused
+		return t.classifySkip(ctx, row, reason, now)
 	}
 	if t.Parked != nil {
 		if reason, held := t.Parked.Hold(ctx, row); held {
@@ -522,6 +616,34 @@ func (t *FlaggedTick) classify(
 		}
 	}
 	return "", rowEligible
+}
+
+// classifySkip turns a not-absent skip into a nudge when this process holds the
+// row's child idle. The park gate still applies: a parked row is not nudged.
+func (t *FlaggedTick) classifySkip(
+	ctx context.Context, row FlaggedRow, reason string, now time.Time,
+) (string, rowAction) {
+	if reason != reasonNotAbsent || !t.idleNudgeDue(ctx, row, now) {
+		return reason, rowSkipped
+	}
+	if t.Parked != nil {
+		if parkReason, held := t.Parked.Hold(ctx, row); held {
+			return parkReason, rowSkipped
+		}
+	}
+	return "", rowNudge
+}
+
+// nudgeRow sends the row's work turn to its idle child and records the outcome.
+func (t *FlaggedTick) nudgeRow(
+	ctx context.Context, row FlaggedRow, now time.Time, result *FlaggedTickResult,
+) {
+	if err := t.Idle.Nudge(ctx, row); err != nil {
+		result.Refused = append(result.Refused, row.Key()+": nudge failed: "+err.Error())
+		return
+	}
+	t.rememberNudged(row.SessionID, now)
+	result.Nudged = append(result.Nudged, row.Key())
 }
 
 // tickFromRows is the decision pass, separated from the read so the running loop
@@ -560,17 +682,25 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+halted)
 			continue
 		}
-		if len(result.Opened) >= maxRowsPerTick {
+		if len(result.Opened)+len(result.Nudged) >= maxRowsPerTick {
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
 		reason, action := t.classify(ctx, row, recent, dead, now)
-		if action == rowSkipped {
+		switch action {
+		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
+			// Remember WHEN this row was last held back, so a later open can tell
+			// "it could continue at its stop" from "it only became able later".
+			// Without this the two classes are indistinguishable and the delay
+			// measurement mixes them — see ResumeDelaysWaited.
+			t.rememberSkipped(row, now)
 			continue
-		}
-		if action == rowRefused {
+		case rowRefused:
 			result.Refused = append(result.Refused, row.Key()+": "+reason)
+			continue
+		case rowNudge:
+			t.nudgeRow(ctx, row, now, &result)
 			continue
 		}
 		// A cap or rate refusal ENDS the tick's opening rather than being retried
@@ -613,21 +743,25 @@ func (t *FlaggedTick) tickFromRows(
 			t.Parked.Opened(ctx, row)
 		}
 		result.Opened = append(result.Opened, row.Key())
-		recordResumeDelay(&result, row, ended, now)
+		t.recordResumeDelay(&result, row, ended, now)
 	}
 	return result
 }
 
-// recordResumeDelay appends `key=<delay>` for a row this tick just opened, where
-// the delay is measured from the ledger's own `ended_at` — the instant the turn
-// that produced the stop closed.
+// recordResumeDelay records one row this tick just opened into exactly one of
+// the two delay populations.
+//
+// A row the tick never held back is measured from the ledger's own `ended_at` —
+// the instant the turn that produced the stop closed — and goes to
+// ResumeDelays. A row it DID hold back goes to ResumeDelaysWaited instead,
+// measured from that last skip; see the branch below for why the two differ.
 //
 // A row with no ended_at — never stopped, or a spawn row whose turn never closed
 // — is omitted rather than recorded as zero: a zero would read as an instant
 // resume, which is the one reading this measurement exists to distinguish. A
 // future ended_at is skipped for the same reason, since clock skew would
 // otherwise print a negative delay.
-func recordResumeDelay(
+func (t *FlaggedTick) recordResumeDelay(
 	result *FlaggedTickResult,
 	row FlaggedRow,
 	ended map[string]time.Time,
@@ -635,6 +769,18 @@ func recordResumeDelay(
 ) {
 	at, ok := ended[row.SessionID]
 	if !ok || at.After(now) {
+		return
+	}
+	// The tick held this row back at least once after its stop, so it did NOT
+	// become able at the stop — it became able somewhere between that last skip
+	// and this open. Measuring from `ended_at` would count the whole idle wait as
+	// resume latency, which is what made the p90 unreadable against the two-minute bar: measured
+	// 2026-11-18, the all-rows p90 was 16.1 min against a could-continue p90 of
+	// 16.2 min, with single rows reaching 21 h. Reporting it from the skip bounds
+	// the real delay to one tick and keeps it out of the could-continue population.
+	if skipped, had := t.skippedAt(row.SessionID); had && skipped.After(at) && !skipped.After(now) {
+		result.ResumeDelaysWaited = append(result.ResumeDelaysWaited,
+			row.Key()+"="+now.Sub(skipped).Round(time.Second).String())
 		return
 	}
 	result.ResumeDelays = append(result.ResumeDelays,

@@ -1,7 +1,10 @@
+# captured 2026-11-18T22:23:35+0100 pane=186
 
   done.
 
 ❯ draft ok
+
+
 
 
 

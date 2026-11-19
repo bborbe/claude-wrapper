@@ -94,18 +94,7 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	}
 	roots := DefaultGitRoots()
 	if len(segments) == 1 {
-		// A single command is approved by a shape guard or not at all; matching it
-		// against the allow rules is Claude Code's own job, and a second matcher
-		// that disagrees with it is a bypass.
-		if matchesAnyPattern(segments[0], rules.Gated) {
-			return Decision{}
-		}
-		words := unquoteStaticWords(strings.Fields(segments[0]))
-		if staticWords(words) && compoundShapeAllows(words, input.Cwd, roots) {
-			return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
-		}
-		// A quoted word with a space (`grep 'a b'`) only parses right as a tree.
-		if CompoundTreeAllows(command, rules, input.Cwd, roots) {
+		if compoundSingleAllows(segments[0], command, rules, input.Cwd, roots) {
 			return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
 		}
 		return Decision{}
@@ -117,6 +106,24 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
 	}
 	return Decision{}
+}
+
+// compoundSingleAllows reports whether a single command is approved by a shape guard.
+//
+// Matching it against the allow rules is Claude Code's own job, and a second
+// matcher that disagrees with it is a bypass. A quoted word with a space
+// (`grep 'a b'`) only parses right as a tree.
+func compoundSingleAllows(
+	segment, command string, rules CompoundRules, cwd string, roots []string,
+) bool {
+	if matchesAnyPattern(segment, rules.Gated) {
+		return false
+	}
+	words := unquoteStaticWords(strings.Fields(segment))
+	if staticWords(words) && compoundShapeAllows(words, cwd, roots) {
+		return true
+	}
+	return CompoundTreeAllows(command, rules, cwd, roots)
 }
 
 // shellReadNames are the variables the shell itself reads, so assigning one changes

@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 
@@ -217,7 +218,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget mode resolution", fun
 
 	ginkgo.It("SC1: spawn.mode interactive + no argument opens a tab", func() {
 		_, err := server(SpawnModeSources{Config: configMode("interactive")}).
-			spawnLocalTarget(ctx, spawnAgentArgs{Vault: "v1", Prompt: "go"}, "manager")
+			spawnLocalTarget(ctx, spawnAgentArgs{Vault: "v1", Prompt: "go", Role: RoleHuman}, "manager")
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
 		gomega.Expect(spawner.requests).To(gomega.HaveLen(1))
@@ -235,7 +236,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget mode resolution", fun
 	ginkgo.It("SC2: interactive:true opens a tab under spawn.mode headless", func() {
 		_, err := server(SpawnModeSources{Config: configMode("headless")}).
 			spawnLocalTarget(ctx, spawnAgentArgs{
-				Vault: "v1", Prompt: "go", Interactive: boolPtr(true),
+				Vault: "v1", Prompt: "go", Interactive: boolPtr(true), Role: RoleHuman,
 			}, "manager")
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
@@ -256,7 +257,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget mode resolution", fun
 
 	ginkgo.It("falls to the interactive default when nothing is configured", func() {
 		_, err := server(SpawnModeSources{}).
-			spawnLocalTarget(ctx, spawnAgentArgs{Vault: "v1", Prompt: "go"}, "manager")
+			spawnLocalTarget(ctx, spawnAgentArgs{Vault: "v1", Prompt: "go", Role: RoleHuman}, "manager")
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(spawner.requests).To(gomega.HaveLen(1))
 		gomega.Expect(spawner.requests[0].ModeSource).To(gomega.Equal("default"))
@@ -278,6 +279,67 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget mode resolution", fun
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("requires `cwd` or `vault`"))
 		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses an explicit agent tab under the interactive default", func() {
+		_, err := server(SpawnModeSources{}).spawnLocalTarget(ctx, spawnAgentArgs{
+			Vault: "v1", Prompt: "go", Role: RoleAgent, Interactive: boolPtr(true),
+		}, "manager")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive=false"))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses an absent role tab under the interactive default", func() {
+		_, err := server(SpawnModeSources{}).spawnLocalTarget(ctx, spawnAgentArgs{
+			Vault: "v1", Prompt: "go", Interactive: boolPtr(true),
+		}, "manager")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive=false"))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses an agent tab chosen by SUPERVISOR_SPAWN_MODE", func() {
+		_, err := server(SpawnModeSources{Env: "interactive"}).spawnLocalTarget(ctx,
+			spawnAgentArgs{Vault: "v1", Prompt: "go", Role: RoleAgent}, "manager")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(stderrors.Is(err, ErrAgentTab)).To(gomega.BeTrue())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive=false"))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses an absent-role tab chosen by spawn.mode", func() {
+		_, err := server(SpawnModeSources{Config: configMode("interactive")}).spawnLocalTarget(ctx,
+			spawnAgentArgs{Vault: "v1", Prompt: "go"}, "manager")
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("interactive=false"))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("spawns an agent headless when interactive is false under spawn.mode interactive", func() {
+		_, err := server(SpawnModeSources{Config: configMode("interactive")}).spawnLocalTarget(ctx,
+			spawnAgentArgs{
+				Vault: "v1", Prompt: "go", Role: RoleAgent, Interactive: boolPtr(false),
+			}, "manager")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(supervisor.spawned).To(gomega.HaveLen(1))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("spawns an agent headless under spawn.mode headless", func() {
+		_, err := server(SpawnModeSources{Config: configMode("headless")}).spawnLocalTarget(ctx,
+			spawnAgentArgs{Vault: "v1", Prompt: "go", Role: RoleAgent}, "manager")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(supervisor.spawned).To(gomega.HaveLen(1))
+		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 	})
 })
 

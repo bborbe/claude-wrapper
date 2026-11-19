@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 
@@ -118,18 +119,36 @@ var _ = ginkgo.Describe("ResolveRole", func() {
 	ginkgo.BeforeEach(func() {
 		ctx = context.Background()
 		reader = &fakeRoleMap{entries: map[string]RoleMapEntry{
-			"Agents":   {Chip: new("pink"), WindowID: new(16)},
 			"Managers": {Chip: new("orange"), WindowID: new(14)},
 			"Direct":   {Chip: new("cyan"), WindowID: new(12)},
 		}}
 	})
 
-	ginkgo.It("defaults an empty role to agent", func() {
+	ginkgo.It("refuses an empty role, which defaults to agent", func() {
 		resolution, err := ResolveRole(ctx, reader, "")
+		gomega.Expect(resolution).To(gomega.BeNil())
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(stderrors.Is(err, ErrAgentTab)).To(gomega.BeTrue())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+	})
+
+	ginkgo.It("resolves manager to the Managers window and chip", func() {
+		resolution, err := ResolveRole(ctx, reader, RoleManager)
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(resolution.Role).To(gomega.Equal(RoleAgent))
-		gomega.Expect(resolution.Chip).To(gomega.Equal("pink"))
-		gomega.Expect(*resolution.WindowID).To(gomega.Equal(16))
+		gomega.Expect(resolution.Role).To(gomega.Equal(RoleManager))
+		gomega.Expect(resolution.Purpose).To(gomega.Equal("Managers"))
+		gomega.Expect(resolution.Chip).To(gomega.Equal("orange"))
+		gomega.Expect(*resolution.WindowID).To(gomega.Equal(14))
+		gomega.Expect(resolution.Resolved).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("resolves human to the Direct window", func() {
+		resolution, err := ResolveRole(ctx, reader, RoleHuman)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(resolution.Role).To(gomega.Equal(RoleHuman))
+		gomega.Expect(resolution.Purpose).To(gomega.Equal("Direct"))
+		gomega.Expect(resolution.Chip).To(gomega.Equal("cyan"))
+		gomega.Expect(*resolution.WindowID).To(gomega.Equal(12))
 		gomega.Expect(resolution.Resolved).To(gomega.BeTrue())
 	})
 
@@ -140,7 +159,7 @@ var _ = ginkgo.Describe("ResolveRole", func() {
 	})
 
 	ginkgo.It("returns an unresolved resolution when the role map lacks the purpose", func() {
-		resolution, err := ResolveRole(ctx, &fakeRoleMap{entries: map[string]RoleMapEntry{}}, "agent")
+		resolution, err := ResolveRole(ctx, &fakeRoleMap{entries: map[string]RoleMapEntry{}}, "human")
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(resolution.Resolved).To(gomega.BeFalse())
 		gomega.Expect(resolution.Chip).To(gomega.BeEmpty())

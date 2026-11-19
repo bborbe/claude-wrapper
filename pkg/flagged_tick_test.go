@@ -81,6 +81,17 @@ type recordingSupervisor struct {
 	spawnErr  error
 	sendErr   error
 	sessionID string
+	// held is the child table Get answers from; an absent id is not held.
+	held map[string]*Session
+}
+
+func (s *recordingSupervisor) Get(_ context.Context, id string) (*Session, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if session, ok := s.held[id]; ok {
+		return session, nil
+	}
+	return nil, ErrSessionNotFound
 }
 
 func (s *recordingSupervisor) Spawn(
@@ -1448,6 +1459,124 @@ var _ = ginkgo.Describe("flagged tick park gate", func() {
 	})
 })
 
+var _ = ginkgo.Describe("flagged tick resume-delay class split", func() {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	row := FlaggedRow{
+		Kind: "task", Vault: "private-personal", Name: "a resumable row",
+		Role: "agent", Mode: "headless",
+		SessionID: "abc-123", Liveness: "ABSENT", Branch: "resume",
+	}
+	endedAt := now.Add(-30 * time.Minute).Format(time.RFC3339)
+
+	newSplitTick := func() *FlaggedTick {
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-60 * time.Minute).Format(time.RFC3339),
+			EndedAt:   &endedAt,
+		}}}
+		return tick
+	}
+
+	ginkgo.It("measures from ended_at when the row was never held back", func() {
+		result, err := newSplitTick().Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.ResumeDelays).To(gomega.ConsistOf("abc-123=30m0s"))
+		gomega.Expect(result.ResumeDelaysWaited).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("measures from the last skip when the row was held back after its stop", func() {
+		// The row stopped 30 min ago but the tick kept skipping it until 10 min
+		// ago, so it only became able then. Counting from ended_at would report
+		// 30 min of "resume latency" for a row that legitimately had nothing to
+		// do — the defect that made the all-rows p90 unreadable against the two-minute bar.
+		tick := newSplitTick()
+		tick.rememberSkipped(row, now.Add(-10*time.Minute))
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.ResumeDelaysWaited).To(gomega.ConsistOf("abc-123=10m0s"))
+		gomega.Expect(result.ResumeDelays).To(gomega.BeEmpty(), "must not pollute the could-continue population")
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("resume_delay_waited="))
+	})
+})
+
+// sequenceSource serves a different row set per call, so a test can drive a real
+// skip on one tick and a real open on the next.
+type sequenceSource struct {
+	mutex sync.Mutex
+	calls int
+	sets  [][]FlaggedRow
+}
+
+func (s *sequenceSource) Rows(context.Context) ([]FlaggedRow, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	i := s.calls
+	if i >= len(s.sets) {
+		i = len(s.sets) - 1
+	}
+	s.calls++
+	return s.sets[i], nil
+}
+
+var _ = ginkgo.Describe("flagged tick resume-delay split via real ticks", func() {
+	// This covers the PRODUCTION wiring: the rowSkipped branch calling
+	// rememberSkipped. The specs above inject the skip directly, so they would
+	// stay green if that call were deleted — which is the one edit that silently
+	// turns the whole split back into a single mixed population.
+	ginkgo.It("records the skip on a real tick and reports waited on the next", func() {
+		now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		base := FlaggedRow{
+			Kind: "task", Vault: "private-personal", Name: "a row that waits",
+			Role: "agent", Mode: "headless",
+			SessionID: "abc-123", Branch: "resume",
+		}
+		skippedRow := base
+		skippedRow.Liveness = "LIVE"
+		openedRow := base
+		openedRow.Liveness = "ABSENT"
+
+		endedAt := now.Add(-30 * time.Minute).Format(time.RFC3339)
+		tick := newTick(
+			&sequenceSource{sets: [][]FlaggedRow{{skippedRow}, {openedRow}}},
+			&recordingReopener{}, &recordingCaps{},
+		)
+		clock := libtime.NewCurrentDateTime()
+		clock.SetNow(libtime.DateTime(now))
+		tick.Now = clock
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-60 * time.Minute).Format(time.RFC3339),
+			EndedAt:   &endedAt,
+		}}}
+
+		first, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(first.Opened).To(gomega.BeEmpty(), "the first tick must really skip")
+		// The ledger row for this session is terminal, so on this branch the skip is
+		// reported as not-absent-dead rather than not-absent. That relabel is the
+		// whole point of this branch: the decision is unchanged, only the claim.
+		gomega.Expect(first.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
+
+		// Ten minutes later the row becomes eligible. It was held back at 12:00,
+		// so the real wait is those ten minutes — not the thirty since its stop.
+		clock.SetNow(libtime.DateTime(now.Add(10 * time.Minute)))
+		second, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", second.Line())
+
+		gomega.Expect(second.Opened).To(gomega.ConsistOf("abc-123"))
+		gomega.Expect(second.ResumeDelaysWaited).To(gomega.ConsistOf("abc-123=10m0s"))
+		gomega.Expect(second.ResumeDelays).To(gomega.BeEmpty())
+	})
+})
+
 var _ = ginkgo.Describe("flagged tick not-absent labelling", func() {
 	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 	// A row the predicate believes is alive: it is not ABSENT, so it is skipped
@@ -1461,7 +1590,7 @@ var _ = ginkgo.Describe("flagged tick not-absent labelling", func() {
 	ginkgo.It("says not-absent-dead when the ledger proves the session ended", func() {
 		// Measured 2026-11-18: 19 of 39 rows skipped as `not-absent` had no entry
 		// in the wrapper's own roster, so the line asserted a live session that
-		// was not there. The decision must not change — only the claim.
+		// was not there. The decision must not change - only the claim.
 		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
 		tick.Now = fixedNow(now)
 		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{

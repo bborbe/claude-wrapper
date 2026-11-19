@@ -963,7 +963,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 		caps := &fakeSpawnCaps{workerErr: errors.New("the fleet-wide concurrent-worker limit is reached")}
 		server := &RosterToolServer{Spawner: spawner, Caps: caps}
 
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x"}, "spawner")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleHuman}, "spawner")
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("concurrent-worker limit is reached"))
@@ -990,10 +990,24 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 		caps := &fakeSpawnCaps{}
 		server := &RosterToolServer{Spawner: &fakeSpawner{}, Caps: caps}
 
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{}, "spawner")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Role: RoleHuman}, "spawner")
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(caps.workerCalls).To(gomega.BeEmpty())
+		gomega.Expect(caps.startCalls).To(gomega.Equal(0))
+	})
+
+	ginkgo.It("refuses an agent tab before consulting the caps", func() {
+		caps := &fakeSpawnCaps{}
+		server := &RosterToolServer{Spawner: &fakeSpawner{}, Caps: caps}
+
+		_, err := server.spawnLocalTarget(ctx,
+			spawnAgentArgs{Prompt: "x", Role: RoleAgent, Interactive: boolPtr(true)}, "spawner")
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
+		gomega.Expect(caps.workerCalls).To(gomega.BeEmpty())
+		gomega.Expect(caps.managerCalls).To(gomega.BeEmpty())
 		gomega.Expect(caps.startCalls).To(gomega.Equal(0))
 	})
 
@@ -1002,7 +1016,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 		caps := &fakeSpawnCaps{}
 		server := &RosterToolServer{Spawner: spawner, Caps: caps}
 
-		_, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x","operator_named":true}`), "spawner")
+		_, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x","role":"human","operator_named":true}`), "spawner")
 
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(caps.workerCalls).To(gomega.Equal([]bool{true}))
@@ -1018,7 +1032,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(caps.managerCalls).To(gomega.HaveLen(1))
 
-		_, err = server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleAgent}, "spawner")
+		_, err = server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleHuman}, "spawner")
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(caps.managerCalls).To(gomega.HaveLen(1))
 		gomega.Expect(caps.workerCalls).To(gomega.HaveLen(2))
@@ -1042,7 +1056,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 		caps := &fakeSpawnCaps{startErr: errors.New("refused rather than parked")}
 		server := &RosterToolServer{Spawner: spawner, Caps: caps}
 
-		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x"}, "spawner")
+		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleHuman}, "spawner")
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
@@ -1072,13 +1086,13 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 			),
 		}
 
-		_, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x"}`), "spawner")
+		_, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x","role":"human"}`), "spawner")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(`the worker interactive cap is reached: 2 live, 2 allowed`))
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring(path))
 		gomega.Expect(spawner.requests).To(gomega.BeEmpty())
 
-		result, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x","operator_named":true}`), "spawner")
+		result, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x","role":"human","operator_named":true}`), "spawner")
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(spawner.requests).To(gomega.HaveLen(1))
 		var parsed map[string]any
@@ -1205,7 +1219,7 @@ var _ = ginkgo.Describe("spawn caps after review", func() {
 			http.MethodPost,
 			httpServer.URL+"/supervisor/mcp",
 			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call",`+
-				`"params":{"name":"spawn_agent","arguments":{"prompt":"x"}}}`),
+				`"params":{"name":"spawn_agent","arguments":{"prompt":"x","role":"human"}}}`),
 		)
 		gomega.Expect(err).To(gomega.BeNil())
 		request.Header.Set("Content-Type", "application/json")
