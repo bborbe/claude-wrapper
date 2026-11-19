@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -405,7 +406,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 
 		ginkgo.DescribeTable("each guard",
 			func(row FlaggedRow, wantOpened bool, wantReason string) {
-				reason, refused, skipped := decision(row, recent, nil, now)
+				reason, refused, skipped := decision(row, recent, nil, now, neverOpened(row), false)
 				ginkgo.GinkgoWriter.Printf(
 					"case=%s reason=%s opened=%t\n", row.Name, reason, !refused && !skipped,
 				)
@@ -745,13 +746,25 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 		newReopener := func(
 			supervisor *recordingSupervisor, spawner *recordingSpawner, ledger *recordingLedger,
 		) FlaggedReopener {
-			return NewFlaggedReopener(
-				supervisor,
-				spawner,
-				testVaults(),
-				ledger,
-				fixedNow(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)),
-			)
+			projectsDir := ginkgo.GinkgoT().TempDir()
+			// A stamped session resumes only when its transcript exists on disk
+			// (see resumableSessionID). The fixture writes one under the vault's
+			// slug so this case exercises the resume path, not the re-create path.
+			slug := strings.NewReplacer("/", "-", ".", "-").
+				Replace("/tmp/vault-private-personal")
+			gomega.Expect(os.MkdirAll(filepath.Join(projectsDir, slug), 0o755)).
+				To(gomega.Succeed())
+			gomega.Expect(os.WriteFile(
+				filepath.Join(projectsDir, slug, "abc-123.jsonl"), []byte("{}\n"), 0o600,
+			)).To(gomega.Succeed())
+			return &flaggedReopener{
+				Supervisor:  supervisor,
+				Spawner:     spawner,
+				Vaults:      testVaults(),
+				Ledger:      ledger,
+				Now:         fixedNow(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)),
+				ProjectsDir: projectsDir,
+			}
 		}
 
 		ginkgo.It("resumes a headless row by its session id and sends the work turn", func() {

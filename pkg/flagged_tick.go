@@ -67,6 +67,14 @@ const (
 	//     registering.
 	recentlySpawnedWindow = 90 * time.Minute
 
+	// spawnNotLandedWindow is how long after a spawn the tick waits before
+	// declaring that the spawn never landed. A child that exits without writing
+	// the row's `claude_session_id` inside this window is `spawn-not-landed` and
+	// is retried once, rather than held for the full 90-min recently-spawned
+	// window. Measured 2026-11-17: a spawn that never landed was held silently
+	// for 2 h 20 min because nothing reported the failed first spawn.
+	spawnNotLandedWindow = 10 * time.Minute
+
 	// idleNudgeWindow is how long a nudged session is left alone before it may be
 	// nudged again. A worker that closes its turn at once — nothing left it can do
 	// — would otherwise be prodded on every tick, spending a turn each time.
@@ -91,6 +99,11 @@ const (
 const (
 	reasonBlocked   = "blocked"
 	reasonNotAbsent = "not-absent"
+	// reasonChainUnreadable marks a never-opened goal or topic whose manager-chain
+	// probe could not read the registry. A failed read is not evidence of absence,
+	// so the row is skipped rather than opened — the same rule the predicate
+	// follows when it refuses to prove a chain dead.
+	reasonChainUnreadable = "chain-unreadable"
 	// reasonNotAbsentDead is `not-absent` for a row whose session the LEDGER
 	// reports as ended. It exists because `not-absent` is a claim about the
 	// session ("the predicate could not prove it absent"), and when the ledger
@@ -106,9 +119,12 @@ const (
 	reasonNotAbsentDead   = "not-absent-dead"
 	reasonAlreadyLive     = "already-live"
 	reasonRecentlySpawned = "recently-spawned"
-	reasonRowBudget       = "row budget"
-	reasonCapsRefused     = "caps refused"
-	reasonRateRefused     = "rate refused"
+	// reasonSpawnNotLanded marks a spawn whose child exited inside the 10-min
+	// window without writing the row's claude_session_id. It is retried once.
+	reasonSpawnNotLanded = "spawn-not-landed"
+	reasonRowBudget      = "row budget"
+	reasonCapsRefused    = "caps refused"
+	reasonRateRefused    = "rate refused"
 	// reasonUnconsidered marks a row the tick never evaluated because an earlier
 	// row's caps or rate refusal ended the opening pass. It exists so such a row
 	// is still accounted for: the alternative is dropping it, which makes the
@@ -285,6 +301,11 @@ type FlaggedTick struct {
 	// RESUMED, and the tab path refuses `resume` by construction.
 	Reopener FlaggedReopener
 	Caps     SpawnCaps
+	// Chain answers whether a never-opened goal or topic already has a live
+	// manager session. Nil disables goal/topic admission — the tick then opens
+	// tasks only, which is the pre-2026-11-19 behaviour and what a test that
+	// predates this field gets.
+	Chain ManagerChainProbe
 	// Ledger supplies the spawn times the recently-spawned guard reads. A nil
 	// ledger disables that half of the guard rather than refusing every row.
 	Ledger LedgerReader
@@ -327,6 +348,11 @@ type FlaggedTick struct {
 	// names this daemon ever opened fresh; expired entries are ignored by the
 	// window check, not pruned.
 	opened map[string]time.Time
+	// spawnNotLandedRetried records, per label, that a `spawn-not-landed` retry
+	// has already been issued. It makes the retry exactly once: without it every
+	// tick inside the 90-min window would retry the same failed spawn again.
+	// Guarded by openedMutex.
+	spawnNotLandedRetried map[string]bool
 
 	// skippedMutex guards skipped.
 	skippedMutex sync.Mutex
@@ -382,6 +408,58 @@ func (t *FlaggedTick) rememberOpened(row FlaggedRow, at time.Time) {
 		t.opened = map[string]time.Time{}
 	}
 	t.opened[labelKey(row.Name)] = at
+}
+
+// spawnNotLandedDue reports whether the row's spawn never landed: this tick
+// opened it more than spawnNotLandedWindow ago, has not retried it yet, and the
+// child table shows its child has exited while the row still has no session id.
+//
+// The exit fact is read from the child table's pid, never from the cached row —
+// the row cache can be 65 minutes old, so a cached `recently-spawned` reading
+// cannot tell a slow start from a dead one.
+func (t *FlaggedTick) spawnNotLandedDue(ctx context.Context, row FlaggedRow) bool {
+	if t.Sessions == nil || row.SessionID != "" {
+		return false
+	}
+	key := labelKey(row.Name)
+	t.openedMutex.Lock()
+	at, opened := t.opened[key]
+	retried := t.spawnNotLandedRetried[key]
+	t.openedMutex.Unlock()
+	if !opened || retried {
+		return false
+	}
+	if t.now().Sub(at) < spawnNotLandedWindow {
+		return false
+	}
+	records, err := t.Sessions.List(ctx)
+	if err != nil {
+		return false
+	}
+	matched := false
+	for _, record := range records {
+		if record.Options.Label != row.Name {
+			continue
+		}
+		matched = true
+		// Any live child is a slow start, not a failed spawn; the normal
+		// recently-spawned guard covers it. Checking every matching record, not
+		// the first in directory order, stops a retry beside a live child.
+		if pidAlive(record.ChildPID) {
+			return false
+		}
+	}
+	return matched
+}
+
+// rememberSpawnNotLanded records that the row's single retry has been issued.
+func (t *FlaggedTick) rememberSpawnNotLanded(row FlaggedRow) {
+	t.openedMutex.Lock()
+	defer t.openedMutex.Unlock()
+	if t.spawnNotLandedRetried == nil {
+		t.spawnNotLandedRetried = map[string]bool{}
+	}
+	t.spawnNotLandedRetried[labelKey(row.Name)] = true
 }
 
 // rememberSkipped records that this tick held the row back, at `at`.
@@ -716,19 +794,72 @@ func (t *FlaggedTick) classify(
 	recent map[string]time.Time,
 	dead map[string]struct{},
 	now time.Time,
-) (string, rowAction) {
-	if reason, refused, skipped := decision(row, recent, dead, now); refused || skipped {
+) (string, rowAction, bool) {
+	// Provenance and blocked_by are checked FIRST, exactly as `decision` orders
+	// them: a refused or blocked row must not spend a registry probe (rowFreshness)
+	// or a retry (spawnNotLandedDue) it will never use, and must report its own
+	// reason rather than `chain-unreadable`.
+	if len(row.Refused) > 0 {
+		return row.Refused[0], rowRefused, false
+	}
+	if len(row.BlockedBy) > 0 {
+		return reasonBlocked, rowSkipped, false
+	}
+	fresh, chainReason, chainSkip := t.rowFreshness(ctx, row)
+	if chainSkip {
+		return chainReason, rowSkipped, false
+	}
+	// A spawn that never landed is retried once, before the recently-spawned
+	// guard can hold it for the full 90-min window. The retry is REMEMBERED by
+	// the caller only after Reopen actually succeeds: a row parked, or refused by
+	// caps/rate, must not burn its one retry without a spawn.
+	retryNotLanded := t.spawnNotLandedDue(ctx, row)
+	if retryNotLanded {
+		t.logf("flagged-tick: spawn-not-landed row=%s — retrying once", row.Name)
+	}
+	if reason, refused, skipped := decision(row, recent, dead, now, fresh, retryNotLanded); refused || skipped {
 		if refused {
-			return reason, rowRefused
+			return reason, rowRefused, false
 		}
-		return t.classifySkip(ctx, row, reason, now)
+		skipReason, skipAction := t.classifySkip(ctx, row, reason, now)
+		return skipReason, skipAction, false
 	}
 	if t.Parked != nil {
 		if reason, held := t.Parked.Hold(ctx, row); held {
-			return reason, rowSkipped
+			return reason, rowSkipped, false
 		}
 	}
-	return "", rowEligible
+	return "", rowEligible, retryNotLanded
+}
+
+// rowFreshness decides whether a row with no session should be opened fresh.
+//
+// A task is fresh under neverOpened. A goal or topic is NOT: the predicate
+// returns `create` for a live manager chain as well as a dead one, so the tick
+// probes the live registry itself. Live → skip (a duplicate manager would start
+// beside it); unreadable → skip (a failed read is not evidence of absence);
+// dead → open.
+func (t *FlaggedTick) rowFreshness(
+	ctx context.Context,
+	row FlaggedRow,
+) (fresh bool, reason string, skip bool) {
+	if neverOpened(row) {
+		return true, "", false
+	}
+	if !neverOpenedManager(row) {
+		return false, "", false
+	}
+	if t.Chain == nil {
+		return false, reasonChainUnreadable, true
+	}
+	live, err := t.Chain.ChainLive(ctx, row)
+	if err != nil {
+		return false, reasonChainUnreadable, true
+	}
+	if live {
+		return false, reasonAlreadyLive, true
+	}
+	return true, "", false
 }
 
 // isNotAbsentReason reports whether the reason is one of the two
@@ -814,7 +945,7 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
-		reason, action := t.classify(ctx, row, recent, dead, now)
+		reason, action, retryNotLanded := t.classify(ctx, row, recent, dead, now)
 		switch action {
 		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
@@ -861,19 +992,34 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
 			continue
 		}
-		if neverOpened(row) {
-			t.rememberOpened(row, now)
-		}
-		// The reopen succeeded, so the park gate may commit the baseline a movement
-		// produced. This is the only place it is committed — a row refused by caps or
-		// rate above never reaches here and keeps its old fingerprint, so it retries.
-		if t.Parked != nil {
-			t.Parked.Opened(ctx, row)
-		}
+		t.commitOpened(ctx, row, retryNotLanded, now)
 		result.Opened = append(result.Opened, row.Key())
 		t.recordResumeDelay(&result, row, ended, now)
 	}
 	return result
+}
+
+// commitOpened records a successful open: the retry (only now that the spawn
+// succeeded), the in-process open time, and the park baseline. Extracted from
+// tickFromRows so its branch count stays under the cognitive-complexity gate.
+func (t *FlaggedTick) commitOpened(
+	ctx context.Context,
+	row FlaggedRow,
+	retryNotLanded bool,
+	now time.Time,
+) {
+	if retryNotLanded {
+		t.rememberSpawnNotLanded(row)
+	}
+	if neverOpened(row) || neverOpenedManager(row) {
+		t.rememberOpened(row, now)
+	}
+	// The reopen succeeded, so the park gate may commit the baseline a movement
+	// produced. This is the only place it is committed — a row refused by caps or
+	// rate above never reaches here and keeps its old fingerprint, so it retries.
+	if t.Parked != nil {
+		t.Parked.Opened(ctx, row)
+	}
 }
 
 // recordResumeDelay records one row this tick just opened into exactly one of
@@ -1118,6 +1264,19 @@ func neverOpened(row FlaggedRow) bool {
 	return row.Branch == "create" || row.Branch == "direct"
 }
 
+// neverOpenedManager reports whether the row is a goal or topic with no session
+// at all, on the predicate's `create` branch.
+//
+// ⚠️ Unlike neverOpened this is NOT sufficient to open: the predicate returns
+// `create` for a goal or topic whose manager chain is live OR unreadable, so the
+// tick probes the registry (see rowFreshness) before treating it as fresh.
+func neverOpenedManager(row FlaggedRow) bool {
+	if row.Kind != "goal" && row.Kind != "topic" {
+		return false
+	}
+	return row.Liveness == "none" && row.SessionID == "" && row.Branch == "create"
+}
+
 func (t *FlaggedTick) now() time.Time {
 	if t.Now == nil {
 		return time.Now()
@@ -1136,6 +1295,8 @@ func decision(
 	recent map[string]time.Time,
 	dead map[string]struct{},
 	now time.Time,
+	fresh bool,
+	retryNotLanded bool,
 ) (reason string, refused bool, skipped bool) {
 	if len(row.Refused) > 0 {
 		return row.Refused[0], true, false
@@ -1155,7 +1316,6 @@ func decision(
 	// "for each ABSENT row"; anything the predicate could not prove absent is
 	// left alone. `none` is what `--no-liveness` reports for every row, so the
 	// permissive form would have reopened the entire fleet.
-	fresh := neverOpened(row)
 	if row.Liveness != "ABSENT" && !fresh {
 		// The ledger knows whether this session ended; the predicate's liveness
 		// claim does not. When the two disagree, say so in the reason instead of
@@ -1173,8 +1333,17 @@ func decision(
 	if fresh {
 		key = labelKey(row.Name)
 	}
-	if at, ok := recent[key]; ok && now.Sub(at) < recentlySpawnedWindow {
-		return reasonRecentlySpawned, false, true
+	if !retryNotLanded {
+		if at, ok := recent[key]; ok && now.Sub(at) < recentlySpawnedWindow {
+			return reasonRecentlySpawned, false, true
+		}
+		// A row RE-CREATED for a missing transcript still carries its old session
+		// id, so `key` misses it; the fresh spawn filed its ledger row under the
+		// label. Check the label too, or such a row whose worker never re-stamps
+		// the page is re-created again on every tick.
+		if at, ok := recent[labelKey(row.Name)]; ok && now.Sub(at) < recentlySpawnedWindow {
+			return reasonRecentlySpawned, false, true
+		}
 	}
 	return "", false, false
 }

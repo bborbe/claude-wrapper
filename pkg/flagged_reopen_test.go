@@ -6,6 +6,8 @@ package pkg
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,11 +32,19 @@ var _ = ginkgo.Describe("flagged reopen prompt", func() {
 		})
 	})
 
-	ginkgo.Context("a non-task row", func() {
-		ginkgo.It("stays the bare open command, because Gate 2 runs there", func() {
+	ginkgo.Context("a goal row", func() {
+		ginkgo.It("opens through the goal loop", func() {
 			prompt := reopenPrompt(FlaggedRow{Kind: "goal", Name: "Some Goal"})
 
-			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:open "Some Goal"`))
+			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:goal-loop "Some Goal"`))
+		})
+	})
+
+	ginkgo.Context("a topic row", func() {
+		ginkgo.It("opens through the goal loop, the command the repo uses for topics", func() {
+			prompt := reopenPrompt(FlaggedRow{Kind: "topic", Name: "Some Topic"})
+
+			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:goal-loop "Some Topic"`))
 		})
 	})
 })
@@ -76,5 +86,42 @@ var _ = ginkgo.Describe("flagged reopen of an interactive row", func() {
 		})
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
+	})
+})
+
+var _ = ginkgo.Describe("resume-no-transcript", func() {
+	cwd := "/Users/bborbe/Documents/Obsidian/private-personal"
+	slug := strings.NewReplacer("/", "-", ".", "-").Replace(cwd)
+
+	ginkgo.It("resumes when the stamped session has a transcript", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		gomega.Expect(os.MkdirAll(filepath.Join(dir, slug), 0o755)).To(gomega.Succeed())
+		gomega.Expect(os.WriteFile(
+			filepath.Join(dir, slug, "sid-1.jsonl"), []byte("{}\n"), 0o600,
+		)).To(gomega.Succeed())
+
+		r := &flaggedReopener{ProjectsDir: dir}
+
+		gomega.Expect(r.resumableSessionID(
+			FlaggedRow{Kind: "task", Name: "T", SessionID: "sid-1"}, cwd,
+		)).To(gomega.Equal("sid-1"))
+	})
+
+	ginkgo.It("re-creates when the stamped session has no transcript", func() {
+		// No file written under the projects dir: the stamp points at a
+		// conversation that does not exist, so the row must be created fresh.
+		r := &flaggedReopener{ProjectsDir: ginkgo.GinkgoT().TempDir()}
+
+		gomega.Expect(r.resumableSessionID(
+			FlaggedRow{Kind: "task", Name: "T", SessionID: "sid-missing"}, cwd,
+		)).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("keeps a row with no session id on the create path", func() {
+		r := &flaggedReopener{ProjectsDir: ginkgo.GinkgoT().TempDir()}
+
+		gomega.Expect(r.resumableSessionID(
+			FlaggedRow{Kind: "task", Name: "T"}, cwd,
+		)).To(gomega.BeEmpty())
 	})
 })
