@@ -51,6 +51,7 @@ func (b *boardSupervisor) Answer(
 type fakeBoardStore struct {
 	items     []BoardItem
 	getErr    error
+	openErr   error
 	attempts  []string
 	openCalls int
 	answers   []string
@@ -59,7 +60,7 @@ type fakeBoardStore struct {
 
 func (s *fakeBoardStore) Open(ctx context.Context) ([]BoardItem, error) {
 	s.openCalls++
-	return s.items, nil
+	return s.items, s.openErr
 }
 
 func (s *fakeBoardStore) Answer(
@@ -356,6 +357,27 @@ var _ = ginkgo.Describe("closeSettledCard", func() {
 
 	ginkgo.It("does nothing when the board is not wired", func() {
 		server := &RosterToolServer{}
+		gomega.Expect(func() {
+			server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+		}).ToNot(gomega.Panic())
+	})
+
+	ginkgo.It("does nothing when the store cannot be read", func() {
+		store := &fakeBoardStore{openErr: stderrors.New("store down")}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("swallows an answer error without panicking", func() {
+		store := &fakeBoardStore{
+			items:     []BoardItem{{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"}},
+			answerErr: stderrors.New("store rejected"),
+		}
+		server := &RosterToolServer{Board: store}
+
 		gomega.Expect(func() {
 			server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
 		}).ToNot(gomega.Panic())

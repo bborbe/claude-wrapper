@@ -16,12 +16,12 @@ import (
 // not turn it into an error the manager reads as a denied permission.
 //
 // The closed card carries `resolved_by`, so it satisfies `answerFor`'s permission
-// arm guard and the daemon's BoardDelivery would try to deliver it. That is safe
-// because the park it belonged to is already settled — the producer's Question is
-// gone, so `deliver` finds nothing to answer — and a later park of the same
-// producer is protected by `stale()`'s FreshnessSkew against an answer that
-// predates it. Those two are the whole guard; there is no separate provenance
-// test.
+// arm guard and the daemon's BoardDelivery may try to deliver it. The park it
+// belonged to is already settled (the producer's Question is gone), so `deliver`
+// finds nothing to answer. The one case `stale()`'s 5 s FreshnessSkew does not
+// cover is a worker that re-parks within 5 s of this card's `created_at`; this
+// change makes such a card automatic rather than operator-made, so that residual
+// is stated rather than hidden.
 func (s *RosterToolServer) closeSettledCard(
 	ctx context.Context,
 	producerID string,
@@ -37,9 +37,13 @@ func (s *RosterToolServer) closeSettledCard(
 		return
 	}
 	cards := openPermissionCards(items, producerID)
-	if len(cards) != 1 {
-		// Zero or more than one: the card carries no per-request field, so which
-		// card this answer settles cannot be told. Leave it for attention-answer.py.
+	if len(cards) == 0 {
+		// The normal case: a tab worker, or a card another arm already closed.
+		return
+	}
+	if len(cards) > 1 {
+		// The card carries no per-request field, so which card this answer settles
+		// cannot be told. Leave them for attention-answer.py answer.
 		log.Printf("attention card close skipped for %q: %d open permission cards (need exactly 1)", producerID, len(cards))
 		return
 	}
