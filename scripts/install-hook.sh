@@ -51,15 +51,20 @@ bash_payload() {
 		"$1" "$HOME/Documents/workspaces"
 }
 
-# 3 allow: a compound the guard composes, a read-only git chain, a sed filter.
-check allow "$(bash_payload 'ls /tmp | head -1')"
-check allow "$(bash_payload "git -C $HOME/Documents/workspaces/claude-wrapper log --oneline | head -3")"
-check allow "$(bash_payload 'echo a | sed -n 1p')"
+# Every probe is chosen to be independent of the operator's allow list, so the
+# smoke tests the binary and not the settings file on this machine.
+REPO="$HOME/Documents/workspaces/claude-wrapper"
 
-# 3 pass: shapes no guard approves and none refuses.
-check pass "$(bash_payload 'openssl rand -hex 4')"
-check pass "$(bash_payload 'rsync -a /tmp/a /tmp/b')"
-check pass "$(bash_payload 'dig +short example.com')"
+# 3 allow: shape-guard approvals (a read-only git chain, a git + sed pipe, a compound
+# of two shape-approved calls), which need no allow rule.
+check allow "$(bash_payload "git -C $REPO log --oneline | head -3")"
+check allow "$(bash_payload "git -C $REPO diff --stat | sed -n 1p")"
+check allow "$(bash_payload "git -C $REPO status --porcelain && git -C $REPO rev-parse HEAD")"
+
+# 3 pass: absolute-path programs, which no prefix rule can name.
+check pass "$(bash_payload '/usr/bin/true')"
+check pass "$(bash_payload '/usr/bin/false')"
+check pass "$(bash_payload '/bin/pwd')"
 
 # 2 deny: a prod cluster mutation and a branch upload. The verbs are assembled so a
 # hook scanning this file for them does not refuse the file.
