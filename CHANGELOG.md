@@ -5,13 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **a liveness verdict now carries the session's tab title.** `LivenessVerdict` gains `name`, populated from the registry entry's `Name` when the registry lists the session and left empty on a child-table or heartbeat-only verdict (the name exists only on a registry entry). `flagged-rows.py` decides "is this subject's manager live?" by NAME, so before this field a consumer had to take the verdicts from `/api/1.0/liveness` and still shell out to `session-liveness.py --list` for the identity map — two derivations of one fact, which is what this task removes. Change set: `pkg/liveness_verdict.go`, `pkg/liveness_verdict_test.go`, `CHANGELOG.md`.
+
 ## v0.43.2
 
 - fix: **a manager's answer records `latency_ms`, so the answer-speed reading has a producer again.** `answerPermission` passed a literal `nil` for the record's latency, and `PermissionRecord.LatencyMS` is `*int` with `omitempty`, so the key was omitted entirely rather than zeroed. Measured 2026-11-19 over the 7 days to that date: **0 of 2,024 `decided_by: manager` rows carried the field**, while **877 of 877 `timeout` rows did** — the last manager row carrying it is `2026-10-30T14:50:42Z`, the day this file took over the log from the node server, whose `logDecision` set it. The park's `Question.RequestedAt` is already stamped at registration and was already an argument at the call site, so the interval is now computed the same way the timeout path computes it. A test asserts the written row is non-nil **and greater than 0**, so a stub write cannot satisfy it. Change set: `pkg/roster_mcp.go`, `pkg/roster_manager_latency_test.go`, `CHANGELOG.md`.
 
 ## v0.43.1
 
-- feat: **a liveness verdict now carries the session's tab title.** `LivenessVerdict` gains `name`, populated from the registry entry's `Name` when the registry lists the session and left empty on a child-table or heartbeat-only verdict (the name exists only on a registry entry). `flagged-rows.py` decides "is this subject's manager live?" by NAME, so before this field a consumer had to take the verdicts from `/api/1.0/liveness` and still shell out to `session-liveness.py --list` for the identity map — two derivations of one fact, which is what this task removes. Change set: `pkg/liveness_verdict.go`, `pkg/liveness_verdict_test.go`, `CHANGELOG.md`.
 - fix: **a restart no longer costs a dead flagged tick.** The row cache was in process only, so the first tick after every start logged `flagged-tick skipped: predicate has not returned yet` and opened nothing until the first read returned — measured 2026-11-19 over `2026-11-18 13:18:17 → 2026-11-19 13:18:17`: 7 starts and 7 such ticks, one per start, because the daemon restarts on every deploy. The last good row set is now persisted to `flagged-rows-cache.json` in the daemon's state directory and loaded at start, so the first tick serves it — naming the set and its age — instead of skipping. A set older than `2 × predicateTimeout + interval` is refused with its age and the bound rather than served. Change set: `pkg/flagged_cache.go`, `pkg/flagged_cache_test.go`, `pkg/flagged_tick.go`, `main.go`, `CHANGELOG.md`.
 
 ## v0.43.0
