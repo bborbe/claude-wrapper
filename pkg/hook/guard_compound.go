@@ -74,15 +74,19 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	}
 	// The rewritten text carries the syntax check; the original only has to be
 	// free of a substitution, since its `${NAME}` words are what got rewritten.
-	if UnsafeSyntax(command) || strings.Contains(original, "`") ||
-		strings.Contains(original, "$(") {
-		return Decision{}
-	}
+	// Text the split cannot account for — a redirect, a heredoc, a substitution,
+	// a long chain — goes to the syntax tree alone, which models each node or
+	// refuses it.
+	treeOnly := UnsafeSyntax(command) || strings.Contains(original, "`") ||
+		strings.Contains(original, "$(")
 	segments, ok := SplitCompound(command)
-	if !ok || len(segments) < 1 || len(segments) > maxCompoundSegments {
+	if !ok || len(segments) < 1 {
 		return Decision{}
 	}
-	if len(segments) == 1 && !singleShapeHeads[firstWord(segments[0])] {
+	if len(segments) > maxCompoundSegments {
+		treeOnly = true
+	}
+	if len(segments) == 1 && !treeOnly && !singleShapeHeads[firstWord(segments[0])] {
 		return Decision{}
 	}
 	rules, err := g.loadRules(input.Cwd)
@@ -93,6 +97,12 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 		return Decision{}
 	}
 	roots := DefaultGitRoots()
+	if treeOnly {
+		if CompoundTreeAllows(command, rules, input.Cwd, roots) {
+			return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
+		}
+		return Decision{}
+	}
 	if len(segments) == 1 {
 		if compoundSingleAllows(segments[0], command, rules, input.Cwd, roots) {
 			return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))

@@ -64,11 +64,51 @@ func TmpTarget(path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		real = path
+	if hasDotDot(path) {
+		return false
 	}
+	real := ResolvePath(path)
 	return strings.HasPrefix(real, "/tmp/") || strings.HasPrefix(real, "/private/tmp/")
+}
+
+// WriteTargetUnderRoots reports whether a file a command writes lands under one of
+// roots. Unlike UnderRoots the file need not exist yet: its longest existing prefix
+// is resolved instead. A `..` component is refused, as in UnderRoots.
+func WriteTargetUnderRoots(path string, roots []string) bool {
+	if !filepath.IsAbs(path) || hasDotDot(path) {
+		return false
+	}
+	real := ResolvePath(path) + string(filepath.Separator)
+	for _, root := range roots {
+		resolved := root
+		if link, err := filepath.EvalSymlinks(root); err == nil {
+			resolved = link
+		}
+		if strings.HasPrefix(real, resolved+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolvePath returns the cleaned absolute path with every symlink in
+// its longest existing prefix resolved. A file that does not exist yet is written
+// through its parent, so the parent's real location is what decides where it lands;
+// falling back to the raw text let a not-yet-existing file under a symlinked
+// directory pass a `/tmp/` prefix test. Callers refuse `..` first: Clean folds
+// `<dir>/link/..` lexically while the kernel follows the link.
+func ResolvePath(path string) string {
+	clean := filepath.Clean(path)
+	rest := ""
+	for dir := clean; ; dir = filepath.Dir(dir) {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
+		}
+		if dir == filepath.Dir(dir) {
+			return clean
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+	}
 }
 
 // GhMergeAllows reports whether the invocation is the one approved merge shape:

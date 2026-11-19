@@ -138,6 +138,9 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 		}
 		words = append(words, value)
 	}
+	if w.calls >= maxTreeCalls {
+		return errCompoundUnmodelled
+	}
 	segment := strings.Join(words, " ")
 	if matchesAnyPattern(segment, w.rules.Gated) {
 		return errCompoundUnmodelled
@@ -151,7 +154,7 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
 		return errCompoundUnmodelled
 	}
-	if wrapperProgram(words[0]) {
+	if wrapperProgram(words[0]) || shellStateBuiltin(words) {
 		return errCompoundUnmodelled
 	}
 	if !matchesAnyPattern(segment, w.rules.Allow) {
@@ -159,6 +162,40 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 	}
 	w.calls++
 	return nil
+}
+
+// shellStateBuiltins run another command or change shell state a later command in
+// the same line inherits, so a prefix rule naming one is no capability limit.
+// Mirrors AST_WRAPPERS in the retired allow-compound-bash.py.
+var shellStateBuiltins = map[string]bool{
+	"trap": true, "source": true, ".": true, "command": true, "builtin": true,
+	"timeout": true, "nohup": true, "nice": true, "watch": true, "time": true,
+	"doas": true, "parallel": true, "noglob": true, "nocorrect": true, "-": true,
+	"hash": true, "unhash": true, "alias": true, "unalias": true, "unset": true,
+	"set": true, "setopt": true, "unsetopt": true, "emulate": true, "enable": true,
+	"disable": true, "zmodload": true, "autoload": true, "functions": true,
+	"typeset": true, "declare": true, "export": true, "local": true, "readonly": true,
+	"integer": true, "float": true, "let": true, "read": true, "vared": true,
+	"getopts": true, "mapfile": true, "readarray": true, "shift": true, "zstyle": true,
+	"bindkey": true, "exec": true, "eval": true,
+}
+
+// shellStateBuiltin reports whether the call is one of shellStateBuiltins.
+// `command -v|-V <name>…` only looks a name up and never runs it, so it stays
+// with the allow rules.
+func shellStateBuiltin(words []string) bool {
+	if !shellStateBuiltins[words[0]] {
+		return false
+	}
+	if words[0] == "command" && len(words) > 2 && (words[1] == "-v" || words[1] == "-V") {
+		for _, word := range words[2:] {
+			if strings.HasPrefix(word, "-") {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // redirects refuses every redirect this walker does not explicitly model.
@@ -173,11 +210,19 @@ func (w *compoundWalker) redirects(redirs []*syntax.Redirect) error {
 			if target, ok := literalWord(redir.Word); !ok || !isDupTarget(target) {
 				return errCompoundUnmodelled
 			}
-		case syntax.RdrOut, syntax.AppOut, syntax.RdrIn:
-			if redir.Word == nil {
+		case syntax.RdrOut, syntax.AppOut, syntax.RdrIn, syntax.RdrAll, syntax.AppAll,
+			syntax.RdrClob:
+			if err := w.fileRedirect(redir); err != nil {
+				return err
+			}
+		case syntax.Hdoc, syntax.DashHdoc:
+			// Data on stdin. The body must be free of expansions: an unquoted
+			// delimiter lets `$(…)` inside the body run.
+			if redir.Hdoc != nil && !literalParts(redir.Hdoc) {
 				return errCompoundUnmodelled
 			}
-			if target, ok := literalWord(redir.Word); !ok || target != "/dev/null" {
+		case syntax.WordHdoc:
+			if _, ok := literalWord(redir.Word); !ok {
 				return errCompoundUnmodelled
 			}
 		default:
@@ -186,6 +231,50 @@ func (w *compoundWalker) redirects(redirs []*syntax.Redirect) error {
 	}
 	return nil
 }
+
+// fileRedirect allows a file redirect to `/dev/null`, or a write whose resolved
+// target stays inside /tmp or under the session roots. A `{fd}>` allocation and an
+// input redirect from anything but `/dev/null` are refused.
+func (w *compoundWalker) fileRedirect(redir *syntax.Redirect) error {
+	if redir.Word == nil {
+		return errCompoundUnmodelled
+	}
+	if redir.N != nil && !allDigits(redir.N.Value) {
+		return errCompoundUnmodelled
+	}
+	target, ok := literalWord(redir.Word)
+	if !ok {
+		return errCompoundUnmodelled
+	}
+	if target == "/dev/null" {
+		return nil
+	}
+	if redir.Op == syntax.RdrIn {
+		return errCompoundUnmodelled
+	}
+	if TmpTarget(target) {
+		return nil
+	}
+	// A relative or `~` target would resolve against a cwd the shell may have
+	// changed; only an absolute path under the roots is bounded.
+	if WriteTargetUnderRoots(target, w.roots) {
+		return nil
+	}
+	return errCompoundUnmodelled
+}
+
+// literalParts reports whether a word (a heredoc body) carries no expansion.
+func literalParts(word *syntax.Word) bool {
+	for _, part := range word.Parts {
+		if _, ok := part.(*syntax.Lit); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// maxTreeCalls bounds how many simple commands one tree may carry.
+const maxTreeCalls = 24
 
 // errCompoundUnmodelled marks a tree shape the walker refuses.
 var errCompoundUnmodelled = &compoundRefusalError{}

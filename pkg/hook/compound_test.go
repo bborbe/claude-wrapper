@@ -7,6 +7,7 @@ package hook_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,7 +203,7 @@ var _ = Describe("GitMergeAllows", func() {
 
 var _ = Describe("CompoundTreeAllows", func() {
 	rules := hook.CompoundRules{
-		Allow: []string{"pwd", "ls", "make build:*"},
+		Allow: []string{"pwd", "ls", "make build:*", "timeout:*", "command:*", "export:*"},
 		Gated: []string{"ls -R"},
 	}
 	cwd := tempRepo(map[string]string{})
@@ -223,12 +224,37 @@ var _ = Describe("CompoundTreeAllows", func() {
 		Entry("an assignment prefix", "PATH=/evil ls", false),
 		Entry("a command substitution", "ls $(date)", false),
 		Entry("a shell wrapper", "bash -c 'ls'", false),
-		Entry("a redirect to a file", "ls > /tmp/x", false),
+		Entry("a runner builtin even when a rule names it", "timeout 5 ls", false),
+		Entry("a state-changing builtin", "pwd && export X=1", false),
+		Entry("command running a program", "command ls", false),
+		Entry("command -v only looks a name up", "command -v ls || pwd", true),
+		Entry("a redirect to a /tmp scratch file", "ls > /tmp/x", true),
+		Entry("an append to a /tmp scratch file", "ls >> /tmp/x 2>&1", true),
+		Entry("a redirect escaping /tmp through ..", "ls > /tmp/../etc/x", false),
+		Entry("a redirect outside /tmp and the roots", "ls > /etc/x", false),
+		Entry("a relative redirect target", "ls > x", false),
+		Entry("an allocated descriptor", "ls {fd}> /tmp/x", false),
+		Entry("an input redirect from a file", "ls < /etc/passwd", false),
+		Entry("a heredoc with a literal body", "ls <<'EOF'\nx\nEOF", true),
+		Entry("a heredoc body with a substitution", "ls <<EOF\n$(date)\nEOF", false),
+		Entry("a heredoc body with a parameter", "ls <<EOF\n$HOME\nEOF", false),
 		Entry("a descriptor duplication", "ls 2>&1", true),
 		Entry("a redirect to /dev/null", "ls > /dev/null", true),
 		Entry("a background job", "ls &", false),
 		Entry("an unparsable command", "ls &&", false),
 	)
+
+	It("allows a write to a file that does not exist yet under a root", func() {
+		Expect(hook.CompoundTreeAllows("ls > "+filepath.Join(cwd, "new.txt"), rules, cwd, roots)).
+			To(BeTrue())
+	})
+
+	It("refuses a write through a /tmp symlink that points outside /tmp", func() {
+		link := filepath.Join("/tmp", fmt.Sprintf("hook-escape-%d", GinkgoRandomSeed()))
+		Expect(os.Symlink("/etc", link)).To(Succeed())
+		DeferCleanup(os.Remove, link)
+		Expect(hook.TmpTarget(filepath.Join(link, "x"))).To(BeFalse())
+	})
 })
 
 var _ = Describe("CompoundBashGuard", func() {
@@ -251,7 +277,10 @@ var _ = Describe("CompoundBashGuard", func() {
 		Entry("a part matching no rule", "pwd && curl example.com", false),
 		Entry("a gated part", "pwd && ls -R", false),
 		Entry("a substitution", "pwd && ls $(date)", false),
-		Entry("nine parts", "pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd", false),
+		Entry("nine parts go to the tree", "pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd", true),
+		Entry("twenty-five calls exceed the tree bound", strings.TrimSuffix(strings.Repeat("pwd && ", 25), " && "), false),
+		Entry("a redirect to /tmp in a chain", "pwd && ls > /tmp/x 2>&1", true),
+		Entry("a redirect outside /tmp in a chain", "pwd && ls > /etc/x", false),
 	)
 
 	It("makes no decision for a single plain command", func() {
