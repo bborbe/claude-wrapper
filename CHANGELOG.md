@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.43.0
 
 - feat: **`pending_permissions` carries the command (or file path) of each park.** The entry listed only `tool` and `kind`, so a manager answering a park had to spend a second `agent_status` read to see what the worker was actually asking to run — or allowed it blind. Each row now includes `command` for a Bash park and `file_path` for a Write/Edit park (never a Write's content, so a park can be judged without dumping the payload). Change set: `pkg/roster_mcp.go`, `pkg/roster_mcp_test.go`, `CHANGELOG.md`.
 
