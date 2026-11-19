@@ -67,6 +67,14 @@ const (
 	//     registering.
 	recentlySpawnedWindow = 90 * time.Minute
 
+	// spawnNotLandedWindow is how long after a spawn the tick waits before
+	// declaring that the spawn never landed. A child that exits without writing
+	// the row's `claude_session_id` inside this window is `spawn-not-landed` and
+	// is retried once, rather than held for the full 90-min recently-spawned
+	// window. Measured 2026-11-17: a spawn that never landed was held silently
+	// for 2 h 20 min because nothing reported the failed first spawn.
+	spawnNotLandedWindow = 10 * time.Minute
+
 	// idleNudgeWindow is how long a nudged session is left alone before it may be
 	// nudged again. A worker that closes its turn at once — nothing left it can do
 	// — would otherwise be prodded on every tick, spending a turn each time.
@@ -98,9 +106,12 @@ const (
 	reasonChainUnreadable = "chain-unreadable"
 	reasonAlreadyLive     = "already-live"
 	reasonRecentlySpawned = "recently-spawned"
-	reasonRowBudget       = "row budget"
-	reasonCapsRefused     = "caps refused"
-	reasonRateRefused     = "rate refused"
+	// reasonSpawnNotLanded marks a spawn whose child exited inside the 10-min
+	// window without writing the row's claude_session_id. It is retried once.
+	reasonSpawnNotLanded = "spawn-not-landed"
+	reasonRowBudget      = "row budget"
+	reasonCapsRefused    = "caps refused"
+	reasonRateRefused    = "rate refused"
 	// reasonUnconsidered marks a row the tick never evaluated because an earlier
 	// row's caps or rate refusal ended the opening pass. It exists so such a row
 	// is still accounted for: the alternative is dropping it, which makes the
@@ -320,6 +331,11 @@ type FlaggedTick struct {
 	// names this daemon ever opened fresh; expired entries are ignored by the
 	// window check, not pruned.
 	opened map[string]time.Time
+	// spawnNotLandedRetried records, per label, that a `spawn-not-landed` retry
+	// has already been issued. It makes the retry exactly once: without it every
+	// tick inside the 90-min window would retry the same failed spawn again.
+	// Guarded by openedMutex.
+	spawnNotLandedRetried map[string]bool
 
 	// skippedMutex guards skipped.
 	skippedMutex sync.Mutex
@@ -375,6 +391,53 @@ func (t *FlaggedTick) rememberOpened(row FlaggedRow, at time.Time) {
 		t.opened = map[string]time.Time{}
 	}
 	t.opened[labelKey(row.Name)] = at
+}
+
+// spawnNotLandedDue reports whether the row's spawn never landed: this tick
+// opened it more than spawnNotLandedWindow ago, has not retried it yet, and the
+// child table shows its child has exited while the row still has no session id.
+//
+// The exit fact is read from the child table's pid, never from the cached row —
+// the row cache can be 65 minutes old, so a cached `recently-spawned` reading
+// cannot tell a slow start from a dead one.
+func (t *FlaggedTick) spawnNotLandedDue(ctx context.Context, row FlaggedRow) bool {
+	if t.Sessions == nil || row.SessionID != "" {
+		return false
+	}
+	key := labelKey(row.Name)
+	t.openedMutex.Lock()
+	at, opened := t.opened[key]
+	retried := t.spawnNotLandedRetried[key]
+	t.openedMutex.Unlock()
+	if !opened || retried {
+		return false
+	}
+	if t.now().Sub(at) < spawnNotLandedWindow {
+		return false
+	}
+	records, err := t.Sessions.List(ctx)
+	if err != nil {
+		return false
+	}
+	for _, record := range records {
+		if record.Options.Label != row.Name {
+			continue
+		}
+		// A child still alive is a slow start, not a failed spawn; the normal
+		// recently-spawned guard covers it.
+		return !pidAlive(record.ChildPID)
+	}
+	return false
+}
+
+// rememberSpawnNotLanded records that the row's single retry has been issued.
+func (t *FlaggedTick) rememberSpawnNotLanded(row FlaggedRow) {
+	t.openedMutex.Lock()
+	defer t.openedMutex.Unlock()
+	if t.spawnNotLandedRetried == nil {
+		t.spawnNotLandedRetried = map[string]bool{}
+	}
+	t.spawnNotLandedRetried[labelKey(row.Name)] = true
 }
 
 // rememberSkipped records that this tick held the row back, at `at`.
@@ -604,7 +667,14 @@ func (t *FlaggedTick) classify(
 	if chainSkip {
 		return chainReason, rowSkipped
 	}
-	if reason, refused, skipped := decision(row, recent, now, fresh); refused || skipped {
+	// A spawn that never landed is retried once, before the recently-spawned
+	// guard can hold it for the full 90-min window.
+	retryNotLanded := t.spawnNotLandedDue(ctx, row)
+	if retryNotLanded {
+		t.logf("flagged-tick: spawn-not-landed row=%s — retrying once", row.Name)
+		t.rememberSpawnNotLanded(row)
+	}
+	if reason, refused, skipped := decision(row, recent, now, fresh, retryNotLanded); refused || skipped {
 		if refused {
 			return reason, rowRefused
 		}
@@ -1020,6 +1090,7 @@ func decision(
 	recent map[string]time.Time,
 	now time.Time,
 	fresh bool,
+	retryNotLanded bool,
 ) (reason string, refused bool, skipped bool) {
 	if len(row.Refused) > 0 {
 		return row.Refused[0], true, false
@@ -1049,8 +1120,10 @@ func decision(
 	if fresh {
 		key = labelKey(row.Name)
 	}
-	if at, ok := recent[key]; ok && now.Sub(at) < recentlySpawnedWindow {
-		return reasonRecentlySpawned, false, true
+	if !retryNotLanded {
+		if at, ok := recent[key]; ok && now.Sub(at) < recentlySpawnedWindow {
+			return reasonRecentlySpawned, false, true
+		}
 	}
 	return "", false, false
 }
