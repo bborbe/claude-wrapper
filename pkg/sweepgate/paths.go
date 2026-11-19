@@ -65,6 +65,20 @@ func TickPath(ctx context.Context, cfg Config, subject string) (string, error) {
 	return sluggedPath(ctx, cfg.StateDir, subject, ".tick.txt")
 }
 
+// RowsPath is `<StateDir>/<slug>.rows.json` — the classified rows as DATA.
+//
+// The tick file is the rendered frame; this is the same tick's classification in
+// a form a reader can serve without re-running Prepare. It exists because the
+// sweep is expensive (a full vault scan, measured at 3m12s across three roots)
+// and an HTTP route that re-ran it per request timed out before answering.
+//
+// ⚠️ The frame is never parsed to recover this: it is a rendered box table, and
+// parsing it would reintroduce the "derive it again" defect the cached rows
+// exist to remove.
+func RowsPath(ctx context.Context, cfg Config, subject string) (string, error) {
+	return sluggedPath(ctx, cfg.StateDir, subject, ".rows.json")
+}
+
 // CardPath is `<StateDir>/<slug>.card.json` — the card payload side file.
 func CardPath(ctx context.Context, cfg Config, subject string) (string, error) {
 	return sluggedPath(ctx, cfg.StateDir, subject, ".card.json")
