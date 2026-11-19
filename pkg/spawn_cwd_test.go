@@ -19,9 +19,13 @@ import (
 type fakeRoleMap struct {
 	entries map[string]RoleMapEntry
 	err     error
+	// reads counts Read calls, so a spec can pin that a role map is consulted
+	// once per tab row and never for an agent row.
+	reads int
 }
 
 func (f *fakeRoleMap) Read(context.Context) (map[string]RoleMapEntry, error) {
+	f.reads++
 	return f.entries, f.err
 }
 
@@ -31,13 +35,18 @@ type fakeRegistry struct {
 	names map[string][]string
 	live  []RegistryEntry
 	err   error
+	// liveErr fails Live only, so a spec can distinguish an unreadable registry
+	// from an unreadable name lookup.
+	liveErr error
 }
 
 func (f *fakeRegistry) Status(context.Context, string) (*string, error) { return nil, nil }
 
 func (f *fakeRegistry) Cwd(context.Context, string) (*string, error) { return nil, nil }
 
-func (f *fakeRegistry) Live(context.Context) ([]RegistryEntry, error) { return f.live, nil }
+func (f *fakeRegistry) Live(context.Context) ([]RegistryEntry, error) {
+	return f.live, f.liveErr
+}
 
 // Entries answers the bulk read with the same fixed set Live does.
 func (f *fakeRegistry) Entries(context.Context) ([]RegistryEntry, error) { return f.live, nil }

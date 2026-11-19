@@ -20,10 +20,12 @@ import (
 // fakeTabClient records every call and renders a pane that is always ready and
 // always confirms a submission.
 type fakeTabClient struct {
-	spawned  []TabSpawnOptions
-	texts    []string
-	onSpawn  func()
-	spawnErr error
+	spawned     []TabSpawnOptions
+	texts       []string
+	onSpawn     func()
+	spawnErr    error
+	activated   []string
+	activateErr error
 }
 
 func (f *fakeTabClient) Spawn(_ context.Context, options TabSpawnOptions) (string, error) {
@@ -37,7 +39,10 @@ func (f *fakeTabClient) Spawn(_ context.Context, options TabSpawnOptions) (strin
 	return "pane-1", nil
 }
 
-func (f *fakeTabClient) Activate(context.Context, string) error { return nil }
+func (f *fakeTabClient) Activate(_ context.Context, paneID string) error {
+	f.activated = append(f.activated, paneID)
+	return f.activateErr
+}
 
 func (f *fakeTabClient) SendText(_ context.Context, _ string, text string) error {
 	f.texts = append(f.texts, text)

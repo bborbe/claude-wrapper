@@ -113,6 +113,10 @@ var (
 	// ErrUnknownVault is returned when a spawn names a vault the vault-cli config
 	// does not list, or names neither a vault nor a cwd.
 	ErrUnknownVault = stderrors.New("unknown vault")
+	// ErrInvalidOpenRequest is returned when an open request is malformed: not
+	// JSON, empty rows, an unknown kind, an empty or unsafe name, an empty or
+	// unconfigured vault. Nothing has been opened when it is returned.
+	ErrInvalidOpenRequest = stderrors.New("invalid open request")
 	// ErrNoLauncher is returned when a vault or cwd resolves to no launcher.
 	//
 	// Never defaulted to the bare `claude` binary: that routes around the router

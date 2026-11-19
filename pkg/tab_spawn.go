@@ -346,13 +346,26 @@ func (s *tabSpawner) awaitRegistration(
 	tabName string,
 	preexisting map[string]struct{},
 ) string {
-	deadline := s.now.Now().Time().Add(registrationDeadline)
+	return awaitTabRegistration(ctx, s.registry, s.now, s.sleep, tabName, preexisting)
+}
+
+// awaitTabRegistration is awaitRegistration's poll, shared with the open
+// endpoint so both paths join a tab to its session the same way.
+func awaitTabRegistration(
+	ctx context.Context,
+	registry SessionRegistry,
+	now libtime.CurrentDateTimeGetter,
+	sleep func(time.Duration),
+	tabName string,
+	preexisting map[string]struct{},
+) string {
+	deadline := now.Now().Time().Add(registrationDeadline)
 	for {
-		sessionID, err := FindRegisteredByName(ctx, s.registry, tabName, preexisting)
+		sessionID, err := FindRegisteredByName(ctx, registry, tabName, preexisting)
 		if err == nil && sessionID != "" {
 			return sessionID
 		}
-		if s.now.Now().Time().After(deadline) {
+		if now.Now().Time().After(deadline) {
 			return ""
 		}
 		select {
@@ -360,6 +373,6 @@ func (s *tabSpawner) awaitRegistration(
 			return ""
 		default:
 		}
-		s.sleep(registrationInterval)
+		sleep(registrationInterval)
 	}
 }
