@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.43.1
 
 - fix: **a restart no longer costs a dead flagged tick.** The row cache was in process only, so the first tick after every start logged `flagged-tick skipped: predicate has not returned yet` and opened nothing until the first read returned — measured 2026-11-19 over `2026-11-18 13:18:17 → 2026-11-19 13:18:17`: 7 starts and 7 such ticks, one per start, because the daemon restarts on every deploy. The last good row set is now persisted to `flagged-rows-cache.json` in the daemon's state directory and loaded at start, so the first tick serves it — naming the set and its age — instead of skipping. A set older than `2 × predicateTimeout + interval` is refused with its age and the bound rather than served. Change set: `pkg/flagged_cache.go`, `pkg/flagged_cache_test.go`, `pkg/flagged_tick.go`, `main.go`, `CHANGELOG.md`.
 
