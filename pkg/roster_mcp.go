@@ -814,13 +814,26 @@ func (s *RosterToolServer) pendingPermissions(ctx context.Context) (string, erro
 		if sessions[index].Question == nil {
 			continue
 		}
-		rows = append(rows, map[string]any{
+		row := map[string]any{
 			"agent_id":   sessions[index].ID,
 			"request_id": sessions[index].Question.RequestID,
 			"tool":       sessions[index].Question.ToolName,
 			"kind":       string(sessions[index].Question.Kind),
 			"cwd":        sessions[index].Cwd,
-		})
+		}
+		// The command (or file path) is what a manager needs to answer a park
+		// without a second agent_status read: the entry names only the tool, so
+		// without it the manager allows or denies blind. Only the identifying
+		// input is surfaced — a Write's content is never included — so a park can
+		// be judged without dumping the payload. Indexing a nil Input is safe
+		// (the zero value and ok=false), so a park with no input still lists.
+		if command, ok := sessions[index].Question.Input["command"].(string); ok && command != "" {
+			row["command"] = command
+		}
+		if path, ok := sessions[index].Question.Input["file_path"].(string); ok && path != "" {
+			row["file_path"] = path
+		}
+		rows = append(rows, row)
 	}
 	return marshalJSON(ctx, rows)
 }
@@ -1888,7 +1901,9 @@ func parkToolDefinitions() []any {
 			},
 			"agent_id"),
 		toolDef(ToolPendingPermissions,
-			"Every park this daemon holds right now: agent id, request id, tool and kind.",
+			"Every park this daemon holds right now: agent id, request id, tool, kind, cwd, and the "+
+				"command (a Bash park) or file path (a Write/Edit park) so a manager can answer "+
+				"without a second agent_status read.",
 			map[string]any{}),
 		toolDef(ToolReadPushConfig,
 			"Read a worker's registered A2A push config back FROM THE WORKER — "+
