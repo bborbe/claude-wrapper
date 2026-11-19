@@ -682,6 +682,16 @@ func (t *FlaggedTick) classify(
 	dead map[string]struct{},
 	now time.Time,
 ) (string, rowAction) {
+	// Provenance and blocked_by are checked FIRST, exactly as `decision` orders
+	// them: a refused or blocked row must not spend a registry probe (rowFreshness)
+	// or a retry (spawnNotLandedDue) it will never use, and must report its own
+	// reason rather than `chain-unreadable`.
+	if len(row.Refused) > 0 {
+		return row.Refused[0], rowRefused
+	}
+	if len(row.BlockedBy) > 0 {
+		return reasonBlocked, rowSkipped
+	}
 	fresh, chainReason, chainSkip := t.rowFreshness(ctx, row)
 	if chainSkip {
 		return chainReason, rowSkipped
@@ -691,13 +701,17 @@ func (t *FlaggedTick) classify(
 	retryNotLanded := t.spawnNotLandedDue(ctx, row)
 	if retryNotLanded {
 		t.logf("flagged-tick: spawn-not-landed row=%s — retrying once", row.Name)
-		t.rememberSpawnNotLanded(row)
 	}
 	if reason, refused, skipped := decision(row, recent, dead, now, fresh, retryNotLanded); refused || skipped {
 		if refused {
 			return reason, rowRefused
 		}
 		return t.classifySkip(ctx, row, reason, now)
+	}
+	// Remember the retry only once the row is actually eligible: a row refused or
+	// skipped below keeps its one retry for the tick that can use it.
+	if retryNotLanded {
+		t.rememberSpawnNotLanded(row)
 	}
 	if t.Parked != nil {
 		if reason, held := t.Parked.Hold(ctx, row); held {

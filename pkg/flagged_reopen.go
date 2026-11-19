@@ -345,10 +345,10 @@ func reopenPrompt(row FlaggedRow) string {
 	switch row.Kind {
 	case "task":
 		return readinessFirstStep + `/vault-cli:work-on-task "` + row.Name + `"`
-	case "goal":
+	case "goal", "topic":
+		// The repo opens BOTH a goal and a topic through `/supervisor:goal-loop`
+		// (open_tab.go's OpenKindTopic case); there is no `topic-loop` command.
 		return `/supervisor:goal-loop "` + row.Name + `"`
-	case "topic":
-		return `/supervisor:topic-loop "` + row.Name + `"`
 	default:
 		return `/supervisor:open "` + row.Name + `"`
 	}

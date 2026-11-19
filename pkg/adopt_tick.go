@@ -59,7 +59,7 @@ type AdoptResult struct {
 // Run adopts every stranded worker this round, applying the five guards.
 func (t *AdoptTick) Run(ctx context.Context) (AdoptResult, error) {
 	var result AdoptResult
-	if t.Ledger == nil || t.Registry == nil || t.Claims == nil {
+	if t.Ledger == nil || t.Registry == nil || t.Claims == nil || t.Self == "" {
 		return result, nil
 	}
 	live, err := t.liveSet(ctx)
@@ -183,7 +183,10 @@ func strandedWorkers(rows []LedgerRow, live map[string]bool) map[string][]string
 		if parent == "" || live[parent] {
 			continue
 		}
-		if row.Role != "manager" && !isManagerRow(rows, parent) {
+		// The ROW must be a worker (never a manager — a manager is not adopted),
+		// and its PARENT must be a manager. The `&&` form admitted a manager row
+		// whose spawner was not a manager, writing a claim under a non-manager.
+		if row.Role == "manager" || !isManagerRow(rows, parent) {
 			continue
 		}
 		out[parent] = append(out[parent], row.SessionID)

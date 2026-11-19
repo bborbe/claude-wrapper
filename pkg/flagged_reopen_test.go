@@ -41,10 +41,10 @@ var _ = ginkgo.Describe("flagged reopen prompt", func() {
 	})
 
 	ginkgo.Context("a topic row", func() {
-		ginkgo.It("opens through the topic loop", func() {
+		ginkgo.It("opens through the goal loop, the command the repo uses for topics", func() {
 			prompt := reopenPrompt(FlaggedRow{Kind: "topic", Name: "Some Topic"})
 
-			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:topic-loop "Some Topic"`))
+			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:goal-loop "Some Topic"`))
 		})
 	})
 })

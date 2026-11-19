@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"time"
 
@@ -66,4 +67,44 @@ var _ = ginkgo.Describe("spawn-not-landed", func() {
 
 		gomega.Expect(tick.spawnNotLandedDue(ctx, row)).To(gomega.BeFalse())
 	})
+
+	ginkgo.It("is not due when one of two same-label records is still alive", func() {
+		tick := newTick(999999)
+		// A second record under the same label, with a live pid.
+		_, err := tick.Sessions.Create(ctx, SessionRecord{
+			ID:       "s2",
+			ChildPID: os.Getpid(),
+			Options:  SpawnOptions{Label: row.Name},
+		})
+		gomega.Expect(err).To(gomega.BeNil())
+
+		gomega.Expect(tick.spawnNotLandedDue(ctx, row)).To(gomega.BeFalse())
+	})
+
+	ginkgo.It("is not due when no record carries the label", func() {
+		tick := &FlaggedTick{
+			Sessions: NewSessionStore(ginkgo.GinkgoT().TempDir()),
+			Now:      fixedNow(now),
+			opened:   map[string]time.Time{labelKey(row.Name): now.Add(-20 * time.Minute)},
+		}
+
+		gomega.Expect(tick.spawnNotLandedDue(ctx, row)).To(gomega.BeFalse())
+	})
+
+	ginkgo.It("is not due when the child-table read fails", func() {
+		tick := &FlaggedTick{
+			Sessions: errSessionStore{},
+			Now:      fixedNow(now),
+			opened:   map[string]time.Time{labelKey(row.Name): now.Add(-20 * time.Minute)},
+		}
+
+		gomega.Expect(tick.spawnNotLandedDue(ctx, row)).To(gomega.BeFalse())
+	})
 })
+
+// errSessionStore fails every List, so spawnNotLandedDue's error path is covered.
+type errSessionStore struct{ SessionStore }
+
+func (errSessionStore) List(context.Context) ([]SessionRecord, error) {
+	return nil, stderrors.New("store down")
+}
