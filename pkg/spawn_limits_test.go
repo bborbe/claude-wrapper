@@ -1132,38 +1132,38 @@ var _ = ginkgo.Describe("spawn caps after review", func() {
 		ledger := &rosterLedger{}
 		// The live channel and the prompt are both load-bearing: a headless resume
 		// with no opening turn is refused, and a prompt makes the fake supervisor Send.
+		// The role is `agent` because a manager is never headless (role-mode matrix
+		// Rule 2, enforced in `startHeadless`); the property under test is that the row
+		// carries the REQUEST's role and its resumed_from, not which role it is.
 		server := &RosterToolServer{
 			Supervisor: &toolSupervisor{live: make(chan Event, 64)},
 			Ledger:     ledger,
 		}
 
 		_, err := server.spawnAgent(ctx, json.RawMessage(
-			`{"interactive":false,"cwd":"/tmp","role":"manager","prompt":"continue",`+
+			`{"interactive":false,"cwd":"/tmp","role":"agent","prompt":"continue",`+
 				`"resume":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`,
 		), "caller")
 
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(ledger.posted).To(gomega.HaveLen(1))
-		gomega.Expect(ledger.posted[0].Role).To(gomega.Equal(RoleManager))
+		gomega.Expect(ledger.posted[0].Role).To(gomega.Equal(RoleAgent))
 		gomega.Expect(ledger.posted[0].ResumedFrom).To(gomega.Equal("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"))
 	})
 
 	ginkgo.It("charges a headless manager spawn to the manager cap, not the worker cap", func() {
-		ledger := &rosterLedger{}
-		server := &RosterToolServer{Supervisor: &toolSupervisor{}, Ledger: ledger}
-
-		_, err := server.spawnAgent(ctx, json.RawMessage(
-			`{"interactive":false,"cwd":"/tmp","role":"manager"}`,
-		), "caller")
-		gomega.Expect(err).To(gomega.BeNil())
-
-		// The recorded row IS the ledger's content, and every spawned session is live.
-		ledger.rows = ledger.posted
-		beats := make([]HeartbeatRow, 0, len(ledger.posted))
-		for _, row := range ledger.posted {
-			beats = append(beats, liveBeat(row.SessionID))
-		}
-		caps := testCaps(ledger, &stubHeartbeats{rows: beats}, writeSpawnConfig(`{}`), ginkgo.GinkgoT().TempDir())
+		// A manager is never headless (role-mode matrix Rule 2), so the row is built
+		// directly rather than spawned: the property under test is how the cap COUNTS a
+		// manager row, not how the row got there.
+		ledger := &rosterLedger{rows: []LedgerRow{
+			{SessionID: "m1", Role: RoleManager},
+		}}
+		caps := testCaps(
+			ledger,
+			&stubHeartbeats{rows: []HeartbeatRow{liveBeat("m1")}},
+			writeSpawnConfig(`{}`),
+			ginkgo.GinkgoT().TempDir(),
+		)
 		workers, err := caps.countWorkers(ctx)
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(workers).To(gomega.Equal(0))

@@ -25,6 +25,14 @@ func (s *RosterToolServer) startHeadless(
 	if s.Supervisor == nil {
 		return nil, "", "", errors.Errorf(ctx, "spawn_agent is not wired")
 	}
+	// Role-mode matrix Rule 2: a manager is interactive always. Refused first, before
+	// any guard that costs a subprocess and before any side effect — a headless
+	// manager is unreachable by the pane wake and does no manager work while reading
+	// as alive. This covers both a fresh spawn and a resume, since a resume is a
+	// headless-capable spawn_agent call.
+	if err := RefuseManagerHeadless(ctx, body.Role, true); err != nil {
+		return nil, "", "", err
+	}
 	cwd, err := s.headlessCwd(ctx, body)
 	if err != nil {
 		return nil, "", "", err

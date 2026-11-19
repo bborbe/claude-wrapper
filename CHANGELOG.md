@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **`spawn_agent` refuses a headless manager.** Role-mode matrix Rule 2 makes a manager interactive always, but nothing enforced it: `census-manager-mode.py` found live headless managers carrying goal session ids (2026-11-19). `RefuseManagerHeadless` (`pkg/role_map.go`, sentinel `ErrManagerHeadless`) runs first in `startHeadless`, so both a fresh spawn and a resume of a `role: manager` row with `interactive=false` are refused with a named token before any side effect. A `role: agent` headless spawn is unaffected. Change set: `pkg/role_map.go`, `pkg/errors.go`, `pkg/open_headless.go`, `pkg/manager_headless_test.go`, `CHANGELOG.md`.
+
 ## v0.41.1
 
 - fix: **the `not-absent-dead` relabel no longer disables the idle-child nudge.** The first version claimed to be label-only and was not: `classifySkip` forwards to the idle-nudge only when the reason is `not-absent`, so the new reason returned early and every terminal-status session stopped being nudged. A finished turn writes a terminal ledger status, so that is exactly the population the nudge was built for (measured 2026-11-18, session `990b29b4` held dark from 09:17 until a 16:23 restart) — the relabel would have re-introduced the bug it was meant to report on. Both reasons now reach the nudge. Caught in review before merge; the existing nudge specs use a nil-returning ledger, so a spec with a terminal ledger row and a held idle child was added to cover it.
