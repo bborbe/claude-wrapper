@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the `not-absent-dead` relabel no longer disables the idle-child nudge.** The first version claimed to be label-only and was not: `classifySkip` forwards to the idle-nudge only when the reason is `not-absent`, so the new reason returned early and every terminal-status session stopped being nudged. A finished turn writes a terminal ledger status, so that is exactly the population the nudge was built for (measured 2026-11-18, session `990b29b4` held dark from 09:17 until a 16:23 restart) — the relabel would have re-introduced the bug it was meant to report on. Both reasons now reach the nudge. Caught in review before merge; the existing nudge specs use a nil-returning ledger, so a spec with a terminal ledger row and a held idle child was added to cover it.
+
+- fix: **the flagged tick no longer calls a dead session `not-absent`.** `not-absent` asserts the predicate could not prove the session gone, but the ledger often already records the session as ended — measured 2026-11-18, 19 of 39 rows skipped with that reason had no entry in the wrapper's own roster, so the tick line was misreporting the fleet's state on half of its skips. A skip whose ledger status is terminal now reports `not-absent-dead`. ⚠️ The **decision** is deliberately unchanged: treating those rows as eligible was considered and declined, because `decision`'s conservatism exists precisely to stop an unproven row reopening the whole fleet. Only the label moves, so the log tells the truth without the blast radius.
+
 ## v0.41.0
 
 - feat: **the open endpoint's decision core** turns one row's facts into one verdict with no side effects — role and mode per the role-mode matrix, branch from the session registry, and every named refusal before any write, plus tab window resolution against the role map (`Direct` for humans, `Managers` for managers, never `Hold`) and the one log-line formatter.
