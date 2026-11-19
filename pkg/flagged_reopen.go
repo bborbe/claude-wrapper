@@ -8,6 +8,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -76,6 +77,10 @@ type flaggedReopener struct {
 	// The tab path files its own row inside the spawner.
 	Ledger LedgerReader
 	Now    libtime.CurrentDateTimeGetter
+	// ProjectsDir is the Claude Code projects directory the resume check reads.
+	// Empty resolves to ~/.claude/projects. It is a field so a test can point it
+	// at a temp dir instead of the operator's own transcripts.
+	ProjectsDir string
 }
 
 // NewFlaggedReopener wires the two spawn paths a flagged row may take.
@@ -138,13 +143,14 @@ func (r *flaggedReopener) reopenHeadless(
 		)
 	}
 	mode, _ := headlessPermissionMode(false)
+	resume := r.resumableSessionID(row, target.Cwd)
 	session, err := r.Supervisor.Spawn(ctx, SpawnOptions{
 		Cwd:            target.Cwd,
 		Model:          LauncherModel(target.Launcher),
 		PermissionMode: mode,
 		Label:          row.Name,
 		Role:           row.Role,
-		Resume:         row.SessionID,
+		Resume:         resume,
 		MCPConfigs:     launcherMCPConfigs(target.Launcher),
 	})
 	if err != nil {
@@ -159,8 +165,57 @@ func (r *flaggedReopener) reopenHeadless(
 		_ = r.Supervisor.Stop(context.Background(), session.ID)
 		return errors.Wrap(ctx, err, "deliver opening turn")
 	}
-	r.recordSpawn(ctx, row, session)
+	r.recordSpawn(ctx, row, session, resume)
 	return nil
+}
+
+// resumableSessionID returns the id to resume with, or "" when the row has no
+// session or its stamped session has no transcript.
+//
+// ⚠️ A stamped claude_session_id with no transcript strands the row: the child
+// is resumed, exits at once with "No conversation found with session ID"
+// (num_turns: 0), and every later tick resumes the same missing conversation.
+// Measured 2026-11-17: two rows stamped at spawn, killed at the startup deadline
+// before any transcript was written, then resumed and exiting at once. A missing
+// transcript is treated as never-opened — the row is created fresh instead.
+func (r *flaggedReopener) resumableSessionID(
+	row FlaggedRow,
+	cwd string,
+) string {
+	if row.SessionID == "" {
+		return ""
+	}
+	if r.transcriptExists(cwd, row.SessionID) {
+		return row.SessionID
+	}
+	log.Printf(
+		"flagged-tick: resume-no-transcript session=%s row=%s — re-creating instead of resuming",
+		row.SessionID, row.Name,
+	)
+	return ""
+}
+
+// transcriptExists reports whether the stamped session has a transcript on disk.
+//
+// A read error that is not "not found" (a permission problem, an unresolvable
+// home) returns true: keeping the resume is the safe default, because creating
+// fresh beside a live conversation would start a duplicate.
+func (r *flaggedReopener) transcriptExists(cwd, sessionID string) bool {
+	projectsDir := r.ProjectsDir
+	if projectsDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return true
+		}
+		projectsDir = filepath.Join(home, ".claude", "projects")
+	}
+	slug := strings.NewReplacer("/", "-", ".", "-").Replace(cwd)
+	path := filepath.Join(projectsDir, slug, sessionID+".jsonl")
+	_, err := os.Stat(path)
+	if err == nil {
+		return true
+	}
+	return !os.IsNotExist(err)
 }
 
 // HoldsIdleChild reports whether the row's headless child is held and idle.
@@ -200,6 +255,7 @@ func (r *flaggedReopener) recordSpawn(
 	ctx context.Context,
 	row FlaggedRow,
 	session *Session,
+	resumedFrom string,
 ) {
 	if r.Ledger == nil {
 		return
@@ -212,7 +268,7 @@ func (r *flaggedReopener) recordSpawn(
 		Mode:        SpawnModeHeadless,
 		ModeSource:  modeSourceFlaggedTick,
 		Role:        row.Role,
-		ResumedFrom: row.SessionID,
+		ResumedFrom: resumedFrom,
 		Location:    "local",
 		SpawnedAt:   r.now().Format(time.RFC3339),
 	}); err != nil {

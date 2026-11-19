@@ -6,6 +6,8 @@ package pkg
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -84,5 +86,42 @@ var _ = ginkgo.Describe("flagged reopen of an interactive row", func() {
 		})
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
+	})
+})
+
+var _ = ginkgo.Describe("resume-no-transcript", func() {
+	cwd := "/Users/bborbe/Documents/Obsidian/private-personal"
+	slug := strings.NewReplacer("/", "-", ".", "-").Replace(cwd)
+
+	ginkgo.It("resumes when the stamped session has a transcript", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		gomega.Expect(os.MkdirAll(filepath.Join(dir, slug), 0o755)).To(gomega.Succeed())
+		gomega.Expect(os.WriteFile(
+			filepath.Join(dir, slug, "sid-1.jsonl"), []byte("{}\n"), 0o600,
+		)).To(gomega.Succeed())
+
+		r := &flaggedReopener{ProjectsDir: dir}
+
+		gomega.Expect(r.resumableSessionID(
+			FlaggedRow{Kind: "task", Name: "T", SessionID: "sid-1"}, cwd,
+		)).To(gomega.Equal("sid-1"))
+	})
+
+	ginkgo.It("re-creates when the stamped session has no transcript", func() {
+		// No file written under the projects dir: the stamp points at a
+		// conversation that does not exist, so the row must be created fresh.
+		r := &flaggedReopener{ProjectsDir: ginkgo.GinkgoT().TempDir()}
+
+		gomega.Expect(r.resumableSessionID(
+			FlaggedRow{Kind: "task", Name: "T", SessionID: "sid-missing"}, cwd,
+		)).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("keeps a row with no session id on the create path", func() {
+		r := &flaggedReopener{ProjectsDir: ginkgo.GinkgoT().TempDir()}
+
+		gomega.Expect(r.resumableSessionID(
+			FlaggedRow{Kind: "task", Name: "T"}, cwd,
+		)).To(gomega.BeEmpty())
 	})
 })
