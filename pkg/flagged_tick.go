@@ -993,10 +993,19 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonCapsRefused+": "+err.Error())
 			continue
 		}
-		if err := t.Caps.ReserveStart(ctx); err != nil {
-			halted = reasonUnconsidered
-			result.Refused = append(result.Refused, row.Key()+": "+reasonRateRefused+": "+err.Error())
-			continue
+		// The start slot is reserved exactly once per row, by whichever opener runs.
+		// With an executor wired, the executor's own caps guard reserves it
+		// (enforceSpawnCaps → ReserveStart) as it opens the row; reserving here too
+		// spent two slots per tick-opened row, so a batch of N counted as 2N against
+		// the start rate and roughly doubled the tick's runtime past its 15-minute
+		// interval. On the legacy path (no executor) nothing else reserves, so the
+		// tick keeps doing it and keeps halting on a rate refusal as documented.
+		if t.Open == nil {
+			if err := t.Caps.ReserveStart(ctx); err != nil {
+				halted = reasonUnconsidered
+				result.Refused = append(result.Refused, row.Key()+": "+reasonRateRefused+": "+err.Error())
+				continue
+			}
 		}
 		pending = append(pending, row)
 		pendingRetry = append(pendingRetry, retryNotLanded)
