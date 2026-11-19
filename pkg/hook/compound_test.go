@@ -483,6 +483,37 @@ func (alwaysAllow) Evaluate(hook.Input) hook.Decision {
 	return hook.AllowDecision("allowed")
 }
 
+var _ = Describe("CompoundTreeAllows dynamic words", func() {
+	rules := hook.CompoundRules{Allow: []string{"echo:*", "ls:*", "make test:*"}, Gated: []string{"ls -R:*"}}
+	root := tempRepo(map[string]string{"notes.txt": "x"})
+	roots := []string{root}
+
+	DescribeTable("composes rules over words that only read",
+		func(command func() string, allowed bool) {
+			Expect(hook.CompoundTreeAllows(command(), rules, root, roots)).To(Equal(allowed))
+		},
+		Entry("a loop variable in a quoted banner", func() string { return `for c in a b; do echo "=== $c ==="; done` }, true),
+		Entry("a fresh local", func() string { return `x=foo; echo "$x"` }, true),
+		Entry("a substitution whose command is allowed", func() string { return `echo "$(ls)"` }, true),
+		Entry("a substitution whose command is not", func() string { return `echo "$(curl example.com)"` }, false),
+		Entry("a gated call inside a substitution", func() string { return `echo "$(ls -R)"` }, false),
+		Entry("an assigning expansion", func() string { return `echo "${x:=y}"` }, false),
+		Entry("an indirect expansion", func() string { return `echo "${!x}"` }, false),
+		Entry("a default expansion", func() string { return `echo "${x:-none}"` }, true),
+		Entry("assigning PATH", func() string { return `PATH=/x; ls` }, false),
+		Entry("a loop over PATH", func() string { return `for PATH in /x; do ls; done` }, false),
+		Entry("a literal env prefix", func() string { return `FOO=bar ls` }, true),
+		Entry("an env prefix redirecting a tool", func() string { return `KUBECONFIG=/x ls` }, false),
+		Entry("an env prefix with a dynamic value", func() string { return `FOO=$x ls` }, false),
+		Entry("printf -v assigns", func() string { return `printf -v x y` }, false),
+		Entry("a dynamic program word", func() string { return `$x ls` }, false),
+		Entry("cd under a root, then a rule", func() string { return "cd " + root + " && make test 2>&1 | ls" }, true),
+		Entry("cd outside the roots", func() string { return "cd /etc && ls" }, false),
+		Entry("a relative sed operand before cd", func() string { return "sed -n 1p notes.txt" }, true),
+		Entry("a relative sed operand after cd", func() string { return "cd " + root + " && sed -n 1p notes.txt" }, false),
+	)
+})
+
 var _ = Describe("GitWriteAllows", func() {
 	root := tempRepo(map[string]string{})
 	repo := filepath.Join(root, "repo")

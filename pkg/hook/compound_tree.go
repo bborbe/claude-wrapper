@@ -5,6 +5,7 @@
 package hook
 
 import (
+	"regexp"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -28,7 +29,7 @@ func CompoundTreeAllows(
 	if err != nil {
 		return false
 	}
-	walker := &compoundWalker{rules: rules, cwd: cwd, roots: roots}
+	walker := &compoundWalker{rules: rules, cwd: cwd, roots: roots, src: command}
 	if err := walker.walk(file); err != nil {
 		return false
 	}
@@ -41,6 +42,7 @@ type compoundWalker struct {
 	cwd   string
 	roots []string
 	calls int
+	src   string
 }
 
 // walk visits the file's statements.
@@ -100,6 +102,16 @@ func (w *compoundWalker) command(cmd syntax.Command) error {
 		if _, ok := node.Loop.(*syntax.WordIter); !ok {
 			return errCompoundUnmodelled
 		}
+		if iter := node.Loop.(*syntax.WordIter); !localName(iter.Name.Value) {
+			// `for PATH in …` assigns the loop variable.
+			return errCompoundUnmodelled
+		} else {
+			for _, item := range iter.Items {
+				if err := w.dynamicWord(item); err != nil {
+					return err
+				}
+			}
+		}
 		return w.stmts(node.Do)
 	case *syntax.WhileClause:
 		// No bound on the iteration count: `while true; do <allowlisted>; done`
@@ -122,45 +134,56 @@ func (w *compoundWalker) stmts(stmts []*syntax.Stmt) error {
 
 // call checks one simple command against the rule set.
 func (w *compoundWalker) call(call *syntax.CallExpr) error {
-	if len(call.Assigns) > 0 {
-		// `VAR=value cmd` defeats prefix matching, and an assignment can change
-		// what a later command reads.
-		return errCompoundUnmodelled
-	}
 	if len(call.Args) == 0 {
-		return errCompoundUnmodelled
-	}
-	words := make([]string, 0, len(call.Args))
-	bare := make([]string, 0, len(call.Args))
-	for _, arg := range call.Args {
-		value, ok := literalWord(arg)
-		if !ok {
+		if len(call.Assigns) == 0 {
 			return errCompoundUnmodelled
 		}
-		words = append(words, value)
-		if _, unquoted := arg.Parts[0].(*syntax.Lit); unquoted {
-			// Only an unquoted word is subject to glob and tilde expansion.
-			bare = append(bare, value)
-		}
+		// A bare assignment sets a fresh local; its value is walked.
+		return w.assigns(call.Assigns, false)
+	}
+	if err := w.assigns(call.Assigns, true); err != nil {
+		return err
 	}
 	if w.calls >= maxTreeCalls {
 		return errCompoundUnmodelled
 	}
-	segment := strings.Join(words, " ")
-	if matchesAnyPattern(segment, w.rules.Gated) {
+	program, ok := literalWord(call.Args[0])
+	if !ok || program == "" || strings.ContainsAny(program, "*?[") {
 		return errCompoundUnmodelled
 	}
-	if unexpandedWords(bare) && shapeAllows(words, w.cwd, w.roots) {
-		w.calls++
-		return nil
+	words, bare, static := staticCallWords(call.Args)
+	if static {
+		if matchesAnyPattern(strings.Join(words, " "), w.rules.Gated) {
+			return errCompoundUnmodelled
+		}
+		if unexpandedWords(bare) && shapeAllows(words, w.cwd, w.roots) {
+			w.calls++
+			return nil
+		}
+		if program == "cd" {
+			return w.cd(words)
+		}
 	}
-	if singleShapeHeads[words[0]] {
+	if singleShapeHeads[program] {
 		// git / sed / gh are approved by their shape guard or not at all: a broad
 		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
 		return errCompoundUnmodelled
 	}
-	if wrapperProgram(words[0]) || shellStateBuiltin(words) {
+	if wrapperProgram(program) || (static && shellStateBuiltin(words)) ||
+		(!static && shellStateBuiltins[program]) || printSetsVariable(call.Args) {
 		return errCompoundUnmodelled
+	}
+	segment := strings.Join(words, " ")
+	if !static {
+		for _, arg := range call.Args[1:] {
+			if err := w.dynamicWord(arg); err != nil {
+				return err
+			}
+		}
+		segment = w.sourceText(call.Args)
+		if segment == "" || matchesAnyPattern(segment, w.rules.Gated) {
+			return errCompoundUnmodelled
+		}
 	}
 	if !matchesAnyPattern(segment, w.rules.Allow) {
 		return errCompoundUnmodelled
@@ -168,6 +191,62 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 	w.calls++
 	return nil
 }
+
+// staticCallWords renders every argument as a literal, and the unquoted ones the
+// shell can still glob. static is false when any word carries an expansion.
+func staticCallWords(args []*syntax.Word) (words []string, bare []string, static bool) {
+	for _, arg := range args {
+		value, ok := literalWord(arg)
+		if !ok {
+			return nil, nil, false
+		}
+		words = append(words, value)
+		if _, unquoted := arg.Parts[0].(*syntax.Lit); unquoted {
+			// Only an unquoted word is subject to glob and tilde expansion.
+			bare = append(bare, value)
+		}
+	}
+	return words, bare, true
+}
+
+// cd allows `cd <dir under the roots>` — the documented `cd /abs && <cmd>` form.
+// Every later command still matches its own rule; only the directory moves. The
+// walker forgets the cwd from here on, so a shape guard refuses a relative operand
+// it can no longer resolve: `cd /tmp && sed -n p ../x` reads outside the roots
+// otherwise, and a `cd` in a subshell or one that fails leaves the real cwd unknown.
+func (w *compoundWalker) cd(words []string) error {
+	if len(words) != 2 || !UnderRoots(words[1], w.roots) {
+		return errCompoundUnmodelled
+	}
+	w.cwd = ""
+	w.calls++
+	return nil
+}
+
+// printSetsVariable reports whether a printf/print call takes `-v NAME`, which
+// assigns a variable, or a dynamic word where it reads its options.
+func printSetsVariable(args []*syntax.Word) bool {
+	program, _ := literalWord(args[0])
+	if program != "printf" && program != "print" {
+		return false
+	}
+	for _, arg := range args[1:] {
+		value, ok := literalWord(arg)
+		if !ok {
+			return true
+		}
+		if value == "--" || !strings.HasPrefix(value, "-") {
+			return false
+		}
+		if printVarFlag.MatchString(value) {
+			return true
+		}
+	}
+	return false
+}
+
+// printVarFlag matches a bundled printf/print option set that carries `-v`.
+var printVarFlag = regexp.MustCompile(`^-[A-Za-z]*v`)
 
 // shellStateBuiltins run another command or change shell state a later command in
 // the same line inherits, so a prefix rule naming one is no capability limit.
