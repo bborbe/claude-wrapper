@@ -87,7 +87,6 @@ func Tick(
 			}
 		}
 	}
-	persistFleetSnapshot(ctx, cfg, prepared, stderr)
 	if changed {
 		fmt.Fprintln(stdout, frame)
 		reason := failReason
@@ -114,6 +113,8 @@ func Tick(
 		fmt.Fprintf(stderr, "fail-open: could not record state (%v)\n", err)
 		return ExitFailed
 	}
+
+	persistFleetSnapshot(ctx, cfg, prepared, stderr)
 
 	if changed {
 		return ExitChange

@@ -39,10 +39,16 @@ func FleetSnapshotPath() string {
 // session ids contributes one entry per id, which is why the projection is a
 // fan-out rather than a rename.
 //
-// `prev` is the snapshot the caller LOADED. It is a value, not a pointer, so a
-// caller that never loaded one passes the zero value and every counter starts at
-// zero — correct for a fresh install, and the reason the load guard lives on
-// Persist rather than here.
+// ⚠️ **This MERGES into `prev`, it does not replace it.** The store is
+// fleet-wide, but `Tick` runs once per configured SUBJECT — so a replace would
+// leave only the last subject's sessions in the file, and `stall_count` could
+// never accumulate past 1: each subject's tick would erase the others' counters
+// before the next round read them. Carrying `prev` forward is what makes the
+// store fleet-wide when the writer is per-subject.
+//
+// `prev` is the snapshot the caller LOADED. A caller that never loaded one
+// passes the zero value and the merge is a no-op — correct for a fresh install,
+// and the reason the load guard lives on Persist rather than here.
 func FleetSnapshot(
 	prepared Prepared,
 	sweptAt string,
@@ -50,7 +56,13 @@ func FleetSnapshot(
 ) fleetsnapshot.Snapshot {
 	out := fleetsnapshot.Snapshot{
 		SweptAt:  sweptAt,
-		Sessions: make(map[string]fleetsnapshot.Entry, len(prepared.Tasks)),
+		Sessions: make(map[string]fleetsnapshot.Entry, len(prev.Sessions)+len(prepared.Tasks)),
+	}
+	// Every other subject's sessions survive this tick untouched. Their counters
+	// are advanced only by their own subject's tick, which is what keeps one
+	// increment per round.
+	for id, entry := range prev.Sessions {
+		out.Sessions[id] = entry
 	}
 	for _, task := range prepared.Tasks {
 		for _, sid := range task.SessionIDs {
@@ -58,10 +70,13 @@ func FleetSnapshot(
 				continue
 			}
 			next := fleetsnapshot.Entry{
-				Name:      task.Name,
-				Status:    prepared.Registry[sid].Status,
-				TaskFile:  task.Name,
-				TaskMtime: task.Mtime.Format(time.RFC3339),
+				Name:   task.Name,
+				Status: prepared.Registry[sid].Status,
+				TaskFile: task.Name,
+				// RFC3339Nano, not RFC3339: a task file rewritten twice inside one
+				// second must still read as ADVANCED, or the counter increments on
+				// a session that is moving.
+				TaskMtime: task.Mtime.Format(time.RFC3339Nano),
 			}
 			next.StallCount = nextStallCount(prev.Sessions[sid], next)
 			out.Sessions[sid] = next
