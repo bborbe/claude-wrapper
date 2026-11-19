@@ -88,10 +88,12 @@ func (p *LapsedManagerProcedure) Run(ctx context.Context) (KeepaliveEffect, erro
 			return KeepaliveEffect{}, errors.Wrapf(ctx, claimErr, "claim %s failed", decision.SessionID)
 		}
 		if !claimed {
+			// The script's word for the writer that LOST the claim is `claimed`;
+			// `claim-taken` means this writer won it.
 			return KeepaliveEffect{
 				Result:    KeepaliveResultSkipped,
 				SessionID: decision.SessionID,
-				Reason:    "claim-taken",
+				Reason:    "claimed",
 			}, nil
 		}
 		// `claim-taken` carries no act of its own — the probe already decided what

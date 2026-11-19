@@ -64,7 +64,7 @@ var _ = ginkgo.Describe("LapsedManagerProcedure", func() {
 		gomega.Expect(effect).To(gomega.Equal(KeepaliveEffect{
 			Result:    KeepaliveResultSkipped,
 			SessionID: "s1",
-			Reason:    "claim-taken",
+			Reason:    "claimed",
 		}))
 		gomega.Expect(*acts).To(gomega.BeEmpty())
 	})

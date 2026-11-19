@@ -78,12 +78,14 @@ func (p *DeadWorkerProcedure) Run(ctx context.Context) (KeepaliveEffect, error) 
 			return KeepaliveEffect{}, errors.Wrapf(ctx, claimErr, "claim %s failed", verdict.SessionID)
 		}
 		if !claimed {
-			// Another actor is already resuming this one. Reporting `skipped` with
-			// the reason keeps the line joinable to the session it declined.
+			// Another writer is already resuming this one. The script's word for
+			// THAT writer is `claimed`; `claim-taken` means the opposite — that
+			// this writer won the claim — so reporting it here would invert the
+			// one vocabulary the round and the tick share.
 			return KeepaliveEffect{
 				Result:    KeepaliveResultSkipped,
 				SessionID: verdict.SessionID,
-				Reason:    "claim-taken",
+				Reason:    "claimed",
 			}, nil
 		}
 		if resumeErr := p.Resume(ctx, verdict.SessionID); resumeErr != nil {

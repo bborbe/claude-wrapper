@@ -99,7 +99,7 @@ var _ = ginkgo.Describe("DeadWorkerProcedure", func() {
 		gomega.Expect(effect).To(gomega.Equal(KeepaliveEffect{
 			Result:    KeepaliveResultSkipped,
 			SessionID: "dead-1",
-			Reason:    "claim-taken",
+			Reason:    "claimed",
 		}))
 		gomega.Expect(*resumed).To(gomega.BeEmpty())
 	})
