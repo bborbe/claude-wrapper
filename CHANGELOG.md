@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the fleet snapshot's persist moves into the wrapper, with its load guard made structural.** New `pkg/fleetsnapshot` owns `~/.claude/state/fleet-snapshot.json` — the store keyed by **session id** that the fleet round diffs against, deliberately distinct from `sweepgate`'s subject→tasks `Snapshot`. `Load` returns `(snapshot, loaded, error)`: a missing file is not-loaded **without** an error (a fresh install's first round), while a corrupt file is not-loaded **with** one. `Persist` takes the `loaded` flag explicitly and refuses when it is false, because `stall_count` is computed from the previous snapshot — persisting without one resets every counter and makes every session read first-seen, and the file it writes is well-formed so the loss is silent. The refusal leaves the existing file byte-identical; the write is tmp+rename so a crash mid-write cannot truncate it; an empty session set is refused separately (a failed read and an empty fleet must not look alike). Change set: `pkg/fleetsnapshot/snapshot.go`, `pkg/fleetsnapshot/snapshot_test.go`, `pkg/fleetsnapshot/fleetsnapshot_suite_test.go`, `CHANGELOG.md`.
+
 ## v0.44.0
 
 - feat: **a liveness verdict now carries the session's tab title.** `LivenessVerdict` gains `name`, populated from the registry entry's `Name` when the registry lists the session and left empty on a child-table or heartbeat-only verdict (the name exists only on a registry entry). `flagged-rows.py` decides "is this subject's manager live?" by NAME, so before this field a consumer had to take the verdicts from `/api/1.0/liveness` and still shell out to `session-liveness.py --list` for the identity map — two derivations of one fact, which is what this task removes. Change set: `pkg/liveness_verdict.go`, `pkg/liveness_verdict_test.go`, `CHANGELOG.md`.
