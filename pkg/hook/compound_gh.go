@@ -64,7 +64,13 @@ func TmpTarget(path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	if hasDotDot(path) {
+	return TmpPath(path)
+}
+
+// TmpPath reports whether an absolute path with no `..` resolves inside /tmp. It
+// applies no shell rules, so a file tool's literal `$$` in a name is just a name.
+func TmpPath(path string) bool {
+	if !filepath.IsAbs(path) || hasDotDot(path) {
 		return false
 	}
 	real := ResolvePath(path)
