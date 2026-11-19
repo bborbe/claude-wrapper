@@ -618,8 +618,6 @@ func (t *FlaggedTick) classify(
 	return "", rowEligible
 }
 
-// classifySkip turns a not-absent skip into a nudge when this process holds the
-// row's child idle. The park gate still applies: a parked row is not nudged.
 // isNotAbsentReason reports whether the reason is one of the two
 // "the predicate could not prove the session gone" variants. Both must reach
 // the idle-nudge - see the comment inside classifySkip.
@@ -627,6 +625,8 @@ func isNotAbsentReason(reason string) bool {
 	return reason == reasonNotAbsent || reason == reasonNotAbsentDead
 }
 
+// classifySkip turns a not-absent skip into a nudge when this process holds the
+// row's child idle. The park gate still applies: a parked row is not nudged.
 func (t *FlaggedTick) classifySkip(
 	ctx context.Context, row FlaggedRow, reason string, now time.Time,
 ) (string, rowAction) {
@@ -850,13 +850,22 @@ func (t *FlaggedTick) ledgerRows(ctx context.Context) []LedgerRow {
 // proof that it is. Unlike recentlySpawned, this does NOT skip terminal rows —
 // they are the whole point.
 func endedSessions(rows []LedgerRow) map[string]struct{} {
-	out := make(map[string]struct{}, len(rows))
+	// LAST ROW WINS, per the ledger's own contract. "Any terminal row" is wrong:
+	// a session that is resumed keeps its id, and its later row re-opens the
+	// status to `running`. Scanning for any terminal row would then mark a LIVE
+	// session dead and label its skip not-absent-dead, which is the exact lie
+	// this function exists to stop. Caught in review 2026-11-19.
+	last := make(map[string]string, len(rows))
 	for _, row := range rows {
 		if row.SessionID == "" {
 			continue
 		}
-		if terminalLedgerStatuses[row.Status] {
-			out[row.SessionID] = struct{}{}
+		last[row.SessionID] = row.Status
+	}
+	out := make(map[string]struct{}, len(last))
+	for sessionID, status := range last {
+		if terminalLedgerStatuses[status] {
+			out[sessionID] = struct{}{}
 		}
 	}
 	return out

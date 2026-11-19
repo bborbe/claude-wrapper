@@ -1621,3 +1621,25 @@ var _ = ginkgo.Describe("flagged tick not-absent labelling", func() {
 		gomega.Expect(result.Skipped).NotTo(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
 	})
 })
+
+var _ = ginkgo.Describe("endedSessions", func() {
+	ginkgo.It("treats a session as ended only when its LAST row is terminal", func() {
+		// A resumed session keeps its id and its later row re-opens the status to
+		// `running`. Scanning for ANY terminal row would mark it dead and label
+		// its skip not-absent-dead while it is live - the exact lie this function
+		// exists to stop. Caught in review 2026-11-19.
+		rows := []LedgerRow{
+			{SessionID: "s1", Status: "done"},
+			{SessionID: "s1", Status: "running"},
+			{SessionID: "s2", Status: "running"},
+			{SessionID: "s2", Status: "error"},
+			{SessionID: "s3", Status: "running"},
+		}
+
+		got := endedSessions(rows)
+
+		gomega.Expect(got).To(gomega.HaveKey("s2"))
+		gomega.Expect(got).NotTo(gomega.HaveKey("s1"), "resumed session keeps its id; last row wins")
+		gomega.Expect(got).NotTo(gomega.HaveKey("s3"))
+	})
+})
