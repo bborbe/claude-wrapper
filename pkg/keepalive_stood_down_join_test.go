@@ -16,8 +16,11 @@ var _ = ginkgo.Describe("stood-down candidate join", func() {
 	ctx := context.Background()
 
 	ginkgo.Describe("ParseStoodDownCandidates", func() {
-		ginkgo.It("splits a slug into branch and base", func() {
-			output := "\tgoal--my-goal\n\ttopic--my-topic\n"
+		ginkgo.It("splits a slug into branch and base, dropping the age column", func() {
+			// ⚠️ The REAL shape: `print(f"{int(age)}\t{s}")`. A fixture with a bare
+			// or leading-tab slug is the shape the script never emits, and it hides
+			// a parser that drops every row.
+			output := "3600\tgoal--my-goal\n900\ttopic--my-topic\n"
 
 			candidates, err := ParseStoodDownCandidates(ctx, output)
 
@@ -32,7 +35,7 @@ var _ = ginkgo.Describe("stood-down candidate join", func() {
 		// this leg closes managers, never workers, and the LIVE test downstream
 		// passes on a task-- marker by construction.
 		ginkgo.It("drops task-- slugs", func() {
-			output := "\ttask--my-task\n\tgoal--my-goal\n"
+			output := "3600\ttask--my-task\n900\tgoal--my-goal\n"
 
 			candidates, err := ParseStoodDownCandidates(ctx, output)
 
@@ -42,7 +45,7 @@ var _ = ginkgo.Describe("stood-down candidate join", func() {
 		})
 
 		ginkgo.It("ignores prose and blank lines", func() {
-			output := "stood-down past 60m:\n\n\tgoal--my-goal\n"
+			output := "stood-down past 60m:\n\n900\tgoal--my-goal\n"
 
 			candidates, err := ParseStoodDownCandidates(ctx, output)
 
@@ -50,8 +53,8 @@ var _ = ginkgo.Describe("stood-down candidate join", func() {
 			gomega.Expect(candidates).To(gomega.HaveLen(1))
 		})
 
-		ginkgo.It("refuses a row with no -- separator", func() {
-			_, err := ParseStoodDownCandidates(ctx, "\tnotaslug\n")
+		ginkgo.It("refuses a slug with no -- separator", func() {
+			_, err := ParseStoodDownCandidates(ctx, "900\tnotaslug\n")
 			gomega.Expect(err).To(gomega.HaveOccurred())
 		})
 	})

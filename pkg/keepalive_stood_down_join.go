@@ -24,22 +24,37 @@ type StoodDownCandidate struct {
 
 // ParseStoodDownCandidates reads `manager-liveness.py --stood-down-past`'s rows.
 //
-// Each row is a tab-indented `<slug>`. ⚠️ **`task--` slugs are dropped here, not
-// later.** This leg closes MANAGERS, never workers: a `task--<base>` marker is
-// written by `/supervisor:stop "<task>"`, and the LIVE test downstream passes on
-// it *by construction* — the guard that wrote it required the caller to be
-// exactly the session the page records. Consuming one would turn a deliberate
-// stand-down into a close.
+// ⚠️ **Each row is `<age-seconds>\t<slug>`, not a bare slug.** The script's own
+// emitting line is `print(f"{int(age)}\t{s}")`, so a parser that skips lines
+// containing a tab drops EVERY row and leaves this leg reporting `none` forever —
+// the failure mode is silent, because a fixture built on the wrong shape stays
+// green. The age is discarded here; it is the script's ordering key, not part of
+// the slug.
+//
+// ⚠️ **`task--` slugs are dropped here, not later.** This leg closes MANAGERS,
+// never workers: a `task--<base>` marker is written by `/supervisor:stop "<task>"`,
+// and the LIVE test downstream passes on it *by construction* — the guard that
+// wrote it required the caller to be exactly the session the page records.
+// Consuming one would turn a deliberate stand-down into a close.
 func ParseStoodDownCandidates(ctx context.Context, output string) ([]StoodDownCandidate, error) {
 	candidates := []StoodDownCandidate{}
 	for _, line := range strings.Split(output, "\n") {
-		slug := strings.TrimSpace(line)
-		if slug == "" || strings.ContainsAny(slug, " \t") {
-			// Not a slug row — the script's own prose, a header, or a summary.
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
-		branch, base, found := strings.Cut(slug, "--")
-		if !found || branch == "" || base == "" {
+		// The age column is separated by a TAB; everything after the first tab is
+		// the slug. A line with no tab is prose or a summary and is skipped.
+		_, slug, found := strings.Cut(trimmed, "\t")
+		if !found {
+			continue
+		}
+		slug = strings.TrimSpace(slug)
+		if slug == "" || strings.ContainsAny(slug, " \t") {
+			continue
+		}
+		branch, base, split := strings.Cut(slug, "--")
+		if !split || branch == "" || base == "" {
 			return nil, errors.Errorf(ctx, "stood-down row is not <branch>--<base>: %q", slug)
 		}
 		if branch == "task" {
