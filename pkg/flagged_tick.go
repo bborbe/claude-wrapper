@@ -620,10 +620,25 @@ func (t *FlaggedTick) classify(
 
 // classifySkip turns a not-absent skip into a nudge when this process holds the
 // row's child idle. The park gate still applies: a parked row is not nudged.
+// isNotAbsentReason reports whether the reason is one of the two
+// "the predicate could not prove the session gone" variants. Both must reach
+// the idle-nudge - see the comment inside classifySkip.
+func isNotAbsentReason(reason string) bool {
+	return reason == reasonNotAbsent || reason == reasonNotAbsentDead
+}
+
 func (t *FlaggedTick) classifySkip(
 	ctx context.Context, row FlaggedRow, reason string, now time.Time,
 ) (string, rowAction) {
-	if reason != reasonNotAbsent || !t.idleNudgeDue(ctx, row, now) {
+	// BOTH not-absent reasons must reach the idle-nudge. reasonNotAbsentDead is
+	// the same condition reported truthfully - the predicate could not prove the
+	// session absent, and the ledger says the session ended - and a session that
+	// finished its turn but is still held idle is EXACTLY what the nudge exists
+	// for. Gating on reasonNotAbsent alone silently disabled the nudge for every
+	// terminal-status session, which is the whole population it was built for: a
+	// finished turn writes a terminal ledger status, so those rows would skip
+	// without a nudge and stay dark until a restart. Caught in review 2026-11-19.
+	if !isNotAbsentReason(reason) || !t.idleNudgeDue(ctx, row, now) {
 		return reason, rowSkipped
 	}
 	if t.Parked != nil {
