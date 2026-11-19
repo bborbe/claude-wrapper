@@ -6,8 +6,23 @@ package hook
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// credentialPaths matches a reference to a credential store or a secret-printing
+// CLI. A command naming one is never approved by this guard.
+var credentialPaths = regexp.MustCompile(
+	`\.netrc\b|\.ssh/|\bid_(rsa|ed25519|ecdsa|dsa)\b|\.aws/|\.kube/config|` +
+		`\.docker/config\.json|gh/hosts\.yml|\.gnupg/|\.pgpass\b|\.npmrc\b|\.pypirc\b|` +
+		`\bteamvault[-a-z]*\b|\bsecurity\s+find-(generic|internet)-password\b`,
+)
+
+// CredentialRead reports whether the command names a credential store or a
+// secret-printing CLI.
+func CredentialRead(command string) bool {
+	return credentialPaths.MatchString(command)
+}
 
 // maxCompoundSegments bounds how many subcommands a compound may carry; a long
 // chain is not something to compose.
@@ -63,6 +78,11 @@ var singleShapeHeads = map[string]bool{"git": true, "sed": true, "gh": true}
 // matches no `Bash(git <sub>:*)` rule, so only the shape guard can approve it.
 func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	original, _ := input.BashCommand()
+	if CredentialRead(original) {
+		// No arm may approve a read of a credential store, whatever rule names the
+		// program: the value would land in the transcript.
+		return Decision{}
+	}
 	command := original
 	substituted, rewritten := SubstituteLiterals(original)
 	literalFallback := false
@@ -98,7 +118,12 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 		treeOnly = true
 	}
 	if len(segments) == 1 && !treeOnly && !singleShapeHeads[firstWord(segments[0])] {
-		return Decision{}
+		// A single command matching a `permissions.allow` rule. Under
+		// `defaultMode: auto` Claude Code grants nothing from that list, so a headless
+		// worker parked on every routine `ls` / `grep` / `vault-cli task get`. The
+		// tree arm applies the rule with the same gates as a compound: deny and ask
+		// rules win, wrappers and shell-state builtins are refused.
+		treeOnly = true
 	}
 	rules, err := g.loadRules(input.Cwd)
 	if err != nil {

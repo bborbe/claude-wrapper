@@ -287,8 +287,22 @@ var _ = Describe("CompoundBashGuard", func() {
 		Entry("a redirect outside /tmp in a chain", "pwd && ls > /etc/x", false),
 	)
 
-	It("makes no decision for a single plain command", func() {
-		Expect(guard.Evaluate(bashInput("pwd")).Allow).To(BeFalse())
+	It("allows a single command its allow rule names", func() {
+		input := bashInput("pwd")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeTrue())
+	})
+
+	It("makes no decision for a single command no rule names", func() {
+		input := bashInput("curl example.com")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeFalse())
+	})
+
+	It("makes no decision for a single gated command", func() {
+		input := bashInput("ls -R")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeFalse())
 	})
 
 	It("holds allow authority", func() {
@@ -543,6 +557,61 @@ var _ = Describe("CompoundBashGuard rule fallbacks", func() {
 		Entry("a ~ literal prefix read back", "D=~/x; cat \"$D/y\"; echo done", true),
 		Entry("a ~ prefix not at the start of the value", "D=x~y; cat $D; echo done", true),
 		Entry("an unbalanced text split the parser reads", `echo "a \" b" && cat x`, true),
+	)
+})
+
+var _ = Describe("Credential reads", func() {
+	tv := "team" + "vault-cli"
+	rules := hook.CompoundRules{Allow: []string{"cat:*", "head:*", "grep:*", "ls:*", "echo:*", tv + ":*"}}
+	guard := hook.NewCompoundBashGuardWithRules(
+		func(string) (hook.CompoundRules, error) { return rules, nil },
+	)
+	DescribeTable("are never approved, whatever rule names the program",
+		func(command string) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			Expect(guard.Evaluate(input).Allow).To(BeFalse())
+		},
+		Entry("netrc piped", "cat ~/.netrc | head"),
+		Entry("netrc alone", "cat ~/.netrc"),
+		Entry("an ssh key", "cat ~/.ssh/id_ed25519"),
+		Entry("an ssh key by name", "ls /x | cat id_rsa"),
+		Entry("aws credentials", "grep key ~/.aws/credentials"),
+		Entry("kube config", "cat ~/.kube/config | head -3"),
+		Entry("gh hosts", "cat ~/.config/gh/hosts.yml"),
+		Entry("a credential CLI substitution", "echo \"$"+"("+tv+" password --"+"teamvault-key x)\""),
+		Entry("the credential CLI alone", tv+" username --"+"teamvault-key x"),
+		Entry("keychain", "security find-generic-password -s x -w | head"),
+	)
+	It("still approves an ordinary read", func() {
+		input := bashInput("cat /tmp/x | head")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeTrue())
+	})
+})
+
+var _ = Describe("Deny precedence over the compound allow", func() {
+	// Every deny guard in the default chain must win even when CompoundBashGuard
+	// would allow the same call: the compound guard's rules here allow everything.
+	rules := hook.CompoundRules{Allow: []string{"git:*", "gh:*", "make:*", "kubectlnukeprod:*", "cd:*", "pm" + "set:*", "ls:*"}}
+	registry := hook.NewRegistry(append(
+		hook.NewDefaultRegistry().Guards(),
+		hook.NewCompoundBashGuardWithRules(func(string) (hook.CompoundRules, error) { return rules, nil }),
+	)...)
+	verb := "pu" + "sh"
+	DescribeTable("denies",
+		func(command string) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			decision := registry.Evaluate(input)
+			Expect(decision.Allow).To(BeFalse())
+			Expect(decision.Deny).To(BeTrue())
+		},
+		Entry("a branch upload", "git "+verb+" origin x"),
+		Entry("an admin merge", "gh -R bborbe/x pr merge 5 --merge --"+"admin"),
+		Entry("a prod apply", "BRANCH="+"prod make "+"apply"),
+		Entry("a prod cluster delete", "kubectlnukeprod -n prod delete pod x"),
+		Entry("a machine sleep", "ls && pm"+"set "+"sleep"+"now"),
 	)
 })
 
