@@ -581,7 +581,6 @@ func startFleetFaces(
 	heartbeats := pkg.NewHeartbeatClient(attentionURL, nil)
 
 	startBoardDelivery(supervisor, decider, attentionURL)
-
 	a2aManager := newA2AManager(ctx)
 
 	// The fleet-facing MCP face: a Claude session reading and steering the
@@ -646,6 +645,7 @@ func startFleetFaces(
 		flaggedRowsScript,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
 		caps,
+		registry,
 		ledger,
 		now,
 		parked,
@@ -920,6 +920,7 @@ func startFlaggedTick(
 	script string,
 	reopener pkg.FlaggedReopener,
 	caps pkg.SpawnCaps,
+	registry pkg.SessionRegistry,
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
 	parked pkg.ParkedHold,
@@ -932,6 +933,7 @@ func startFlaggedTick(
 		Source:   pkg.ExecFlaggedRowsSource{Script: expandHome(script)},
 		Reopener: reopener,
 		Caps:     caps,
+		Chain:    pkg.NewRegistryChainProbe(registry),
 		Ledger:   ledger,
 		Parked:   parked,
 		Now:      now,

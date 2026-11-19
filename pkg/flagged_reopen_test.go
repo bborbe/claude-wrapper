@@ -30,11 +30,19 @@ var _ = ginkgo.Describe("flagged reopen prompt", func() {
 		})
 	})
 
-	ginkgo.Context("a non-task row", func() {
-		ginkgo.It("stays the bare open command, because Gate 2 runs there", func() {
+	ginkgo.Context("a goal row", func() {
+		ginkgo.It("opens through the goal loop", func() {
 			prompt := reopenPrompt(FlaggedRow{Kind: "goal", Name: "Some Goal"})
 
-			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:open "Some Goal"`))
+			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:goal-loop "Some Goal"`))
+		})
+	})
+
+	ginkgo.Context("a topic row", func() {
+		ginkgo.It("opens through the topic loop", func() {
+			prompt := reopenPrompt(FlaggedRow{Kind: "topic", Name: "Some Topic"})
+
+			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:topic-loop "Some Topic"`))
 		})
 	})
 })

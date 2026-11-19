@@ -286,10 +286,16 @@ const readinessFirstStep = "FIRST STEP — readiness gate, before any other tool
 // chained plan-task consumes the turn before a trailing instruction can be acted on.
 // The `/supervisor:open` branch reaches Gate 2 and would run the audit twice.
 func reopenPrompt(row FlaggedRow) string {
-	if row.Kind == "task" {
+	switch row.Kind {
+	case "task":
 		return readinessFirstStep + `/vault-cli:work-on-task "` + row.Name + `"`
+	case "goal":
+		return `/supervisor:goal-loop "` + row.Name + `"`
+	case "topic":
+		return `/supervisor:topic-loop "` + row.Name + `"`
+	default:
+		return `/supervisor:open "` + row.Name + `"`
 	}
-	return `/supervisor:open "` + row.Name + `"`
 }
 
 // isHeadlessRow reports whether the row's own mode is headless.

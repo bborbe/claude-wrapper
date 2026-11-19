@@ -405,7 +405,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 
 		ginkgo.DescribeTable("each guard",
 			func(row FlaggedRow, wantOpened bool, wantReason string) {
-				reason, refused, skipped := decision(row, recent, now)
+				reason, refused, skipped := decision(row, recent, now, neverOpened(row))
 				ginkgo.GinkgoWriter.Printf(
 					"case=%s reason=%s opened=%t\n", row.Name, reason, !refused && !skipped,
 				)

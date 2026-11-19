@@ -89,8 +89,13 @@ const (
 // The refusal and skip reasons, named so the log line is greppable and so a
 // test asserts on the same string the operator reads.
 const (
-	reasonBlocked         = "blocked"
-	reasonNotAbsent       = "not-absent"
+	reasonBlocked   = "blocked"
+	reasonNotAbsent = "not-absent"
+	// reasonChainUnreadable marks a never-opened goal or topic whose manager-chain
+	// probe could not read the registry. A failed read is not evidence of absence,
+	// so the row is skipped rather than opened — the same rule the predicate
+	// follows when it refuses to prove a chain dead.
+	reasonChainUnreadable = "chain-unreadable"
 	reasonAlreadyLive     = "already-live"
 	reasonRecentlySpawned = "recently-spawned"
 	reasonRowBudget       = "row budget"
@@ -272,6 +277,11 @@ type FlaggedTick struct {
 	// RESUMED, and the tab path refuses `resume` by construction.
 	Reopener FlaggedReopener
 	Caps     SpawnCaps
+	// Chain answers whether a never-opened goal or topic already has a live
+	// manager session. Nil disables goal/topic admission — the tick then opens
+	// tasks only, which is the pre-2026-11-19 behaviour and what a test that
+	// predates this field gets.
+	Chain ManagerChainProbe
 	// Ledger supplies the spawn times the recently-spawned guard reads. A nil
 	// ledger disables that half of the guard rather than refusing every row.
 	Ledger LedgerReader
@@ -590,7 +600,11 @@ func (t *FlaggedTick) classify(
 	recent map[string]time.Time,
 	now time.Time,
 ) (string, rowAction) {
-	if reason, refused, skipped := decision(row, recent, now); refused || skipped {
+	fresh, chainReason, chainSkip := t.rowFreshness(ctx, row)
+	if chainSkip {
+		return chainReason, rowSkipped
+	}
+	if reason, refused, skipped := decision(row, recent, now, fresh); refused || skipped {
 		if refused {
 			return reason, rowRefused
 		}
@@ -602,6 +616,36 @@ func (t *FlaggedTick) classify(
 		}
 	}
 	return "", rowEligible
+}
+
+// rowFreshness decides whether a row with no session should be opened fresh.
+//
+// A task is fresh under neverOpened. A goal or topic is NOT: the predicate
+// returns `create` for a live manager chain as well as a dead one, so the tick
+// probes the live registry itself. Live → skip (a duplicate manager would start
+// beside it); unreadable → skip (a failed read is not evidence of absence);
+// dead → open.
+func (t *FlaggedTick) rowFreshness(
+	ctx context.Context,
+	row FlaggedRow,
+) (fresh bool, reason string, skip bool) {
+	if neverOpened(row) {
+		return true, "", false
+	}
+	if !neverOpenedManager(row) {
+		return false, "", false
+	}
+	if t.Chain == nil {
+		return false, reasonChainUnreadable, true
+	}
+	live, err := t.Chain.ChainLive(ctx, row)
+	if err != nil {
+		return false, reasonChainUnreadable, true
+	}
+	if live {
+		return false, reasonAlreadyLive, true
+	}
+	return true, "", false
 }
 
 // classifySkip turns a not-absent skip into a nudge when this process holds the
@@ -716,7 +760,7 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
 			continue
 		}
-		if neverOpened(row) {
+		if neverOpened(row) || neverOpenedManager(row) {
 			t.rememberOpened(row, now)
 		}
 		// The reopen succeeded, so the park gate may commit the baseline a movement
@@ -945,6 +989,19 @@ func neverOpened(row FlaggedRow) bool {
 	return row.Branch == "create" || row.Branch == "direct"
 }
 
+// neverOpenedManager reports whether the row is a goal or topic with no session
+// at all, on the predicate's `create` branch.
+//
+// ⚠️ Unlike neverOpened this is NOT sufficient to open: the predicate returns
+// `create` for a goal or topic whose manager chain is live OR unreadable, so the
+// tick probes the registry (see rowFreshness) before treating it as fresh.
+func neverOpenedManager(row FlaggedRow) bool {
+	if row.Kind != "goal" && row.Kind != "topic" {
+		return false
+	}
+	return row.Liveness == "none" && row.SessionID == "" && row.Branch == "create"
+}
+
 func (t *FlaggedTick) now() time.Time {
 	if t.Now == nil {
 		return time.Now()
@@ -962,6 +1019,7 @@ func decision(
 	row FlaggedRow,
 	recent map[string]time.Time,
 	now time.Time,
+	fresh bool,
 ) (reason string, refused bool, skipped bool) {
 	if len(row.Refused) > 0 {
 		return row.Refused[0], true, false
@@ -981,7 +1039,6 @@ func decision(
 	// "for each ABSENT row"; anything the predicate could not prove absent is
 	// left alone. `none` is what `--no-liveness` reports for every row, so the
 	// permissive form would have reopened the entire fleet.
-	fresh := neverOpened(row)
 	if row.Liveness != "ABSENT" && !fresh {
 		return reasonNotAbsent, false, true
 	}
