@@ -624,7 +624,6 @@ func startFleetFaces(
 	heartbeats := pkg.NewHeartbeatClient(attentionURL, nil)
 	startBoardDelivery(supervisor, decider, attentionURL)
 	a2aManager := newA2AManager(ctx)
-
 	// The fleet-facing MCP face: a Claude session reading and steering the roster,
 	// a third face beside /mcp and --mcp-stdio. The local-tab spawn path opens a
 	// tab under the vault's cc-* launcher; without it every `local` spawn is
@@ -642,7 +641,6 @@ func startFleetFaces(
 		// path omits the hook rather than naming one that does not exist.
 		"",
 	)
-
 	// The fleet-wide caps; shared with the flagged tick so both read one limit.
 	caps := pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil)
 

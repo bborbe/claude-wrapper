@@ -135,6 +135,17 @@ var _ = ginkgo.Describe("registry chain probe", func() {
 		gomega.Expect(live).To(gomega.BeTrue())
 	})
 
+	ginkgo.It("reports live when the open endpoint named the tab `<name> Manager`", func() {
+		probe := NewRegistryChainProbe(&fakeFleetRegistry{
+			entries: []RegistryEntry{{Name: "Some Goal Manager", SessionID: "s1"}},
+		})
+
+		live, err := probe.ChainLive(ctx, row)
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(live).To(gomega.BeTrue())
+	})
+
 	ginkgo.It("reports not-live when no live entry matches", func() {
 		probe := NewRegistryChainProbe(&fakeFleetRegistry{
 			entries: []RegistryEntry{{Name: TabNameFor("Another Row"), SessionID: "s2"}},

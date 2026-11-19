@@ -794,44 +794,42 @@ func (t *FlaggedTick) classify(
 	recent map[string]time.Time,
 	dead map[string]struct{},
 	now time.Time,
-) (string, rowAction) {
+) (string, rowAction, bool) {
 	// Provenance and blocked_by are checked FIRST, exactly as `decision` orders
 	// them: a refused or blocked row must not spend a registry probe (rowFreshness)
 	// or a retry (spawnNotLandedDue) it will never use, and must report its own
 	// reason rather than `chain-unreadable`.
 	if len(row.Refused) > 0 {
-		return row.Refused[0], rowRefused
+		return row.Refused[0], rowRefused, false
 	}
 	if len(row.BlockedBy) > 0 {
-		return reasonBlocked, rowSkipped
+		return reasonBlocked, rowSkipped, false
 	}
 	fresh, chainReason, chainSkip := t.rowFreshness(ctx, row)
 	if chainSkip {
-		return chainReason, rowSkipped
+		return chainReason, rowSkipped, false
 	}
 	// A spawn that never landed is retried once, before the recently-spawned
-	// guard can hold it for the full 90-min window.
+	// guard can hold it for the full 90-min window. The retry is REMEMBERED by
+	// the caller only after Reopen actually succeeds: a row parked, or refused by
+	// caps/rate, must not burn its one retry without a spawn.
 	retryNotLanded := t.spawnNotLandedDue(ctx, row)
 	if retryNotLanded {
 		t.logf("flagged-tick: spawn-not-landed row=%s — retrying once", row.Name)
 	}
 	if reason, refused, skipped := decision(row, recent, dead, now, fresh, retryNotLanded); refused || skipped {
 		if refused {
-			return reason, rowRefused
+			return reason, rowRefused, false
 		}
-		return t.classifySkip(ctx, row, reason, now)
-	}
-	// Remember the retry only once the row is actually eligible: a row refused or
-	// skipped below keeps its one retry for the tick that can use it.
-	if retryNotLanded {
-		t.rememberSpawnNotLanded(row)
+		skipReason, skipAction := t.classifySkip(ctx, row, reason, now)
+		return skipReason, skipAction, false
 	}
 	if t.Parked != nil {
 		if reason, held := t.Parked.Hold(ctx, row); held {
-			return reason, rowSkipped
+			return reason, rowSkipped, false
 		}
 	}
-	return "", rowEligible
+	return "", rowEligible, retryNotLanded
 }
 
 // rowFreshness decides whether a row with no session should be opened fresh.
@@ -947,7 +945,7 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
-		reason, action := t.classify(ctx, row, recent, dead, now)
+		reason, action, retryNotLanded := t.classify(ctx, row, recent, dead, now)
 		switch action {
 		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
@@ -994,19 +992,34 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
 			continue
 		}
-		if neverOpened(row) || neverOpenedManager(row) {
-			t.rememberOpened(row, now)
-		}
-		// The reopen succeeded, so the park gate may commit the baseline a movement
-		// produced. This is the only place it is committed — a row refused by caps or
-		// rate above never reaches here and keeps its old fingerprint, so it retries.
-		if t.Parked != nil {
-			t.Parked.Opened(ctx, row)
-		}
+		t.commitOpened(ctx, row, retryNotLanded, now)
 		result.Opened = append(result.Opened, row.Key())
 		t.recordResumeDelay(&result, row, ended, now)
 	}
 	return result
+}
+
+// commitOpened records a successful open: the retry (only now that the spawn
+// succeeded), the in-process open time, and the park baseline. Extracted from
+// tickFromRows so its branch count stays under the cognitive-complexity gate.
+func (t *FlaggedTick) commitOpened(
+	ctx context.Context,
+	row FlaggedRow,
+	retryNotLanded bool,
+	now time.Time,
+) {
+	if retryNotLanded {
+		t.rememberSpawnNotLanded(row)
+	}
+	if neverOpened(row) || neverOpenedManager(row) {
+		t.rememberOpened(row, now)
+	}
+	// The reopen succeeded, so the park gate may commit the baseline a movement
+	// produced. This is the only place it is committed — a row refused by caps or
+	// rate above never reaches here and keeps its old fingerprint, so it retries.
+	if t.Parked != nil {
+		t.Parked.Opened(ctx, row)
+	}
 }
 
 // recordResumeDelay records one row this tick just opened into exactly one of

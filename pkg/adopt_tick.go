@@ -7,7 +7,7 @@ package pkg
 import (
 	"context"
 
-	libtime "github.com/bborbe/time"
+	"github.com/bborbe/errors"
 )
 
 // ClaimStore reads and writes worker ownership claims.
@@ -46,8 +46,6 @@ type AdoptTick struct {
 	Subjects SubjectReader
 	// Self is the adopter when no unique successor exists.
 	Self string
-	Now  libtime.CurrentDateTimeGetter
-	Logf func(format string, args ...any)
 }
 
 // AdoptResult is one round's outcome.
@@ -64,15 +62,15 @@ func (t *AdoptTick) Run(ctx context.Context) (AdoptResult, error) {
 	}
 	live, err := t.liveSet(ctx)
 	if err != nil {
-		return result, err
+		return result, errors.Wrap(ctx, err, "read live registry")
 	}
 	rows, err := t.Ledger.Rows(ctx)
 	if err != nil {
-		return result, err
+		return result, errors.Wrap(ctx, err, "read ledger rows")
 	}
 	for exited, workers := range strandedWorkers(rows, live) {
 		if err := t.adoptManager(ctx, exited, workers, live, &result); err != nil {
-			return result, err
+			return result, errors.Wrapf(ctx, err, "adopt manager %s", exited)
 		}
 	}
 	return result, nil
@@ -82,7 +80,7 @@ func (t *AdoptTick) Run(ctx context.Context) (AdoptResult, error) {
 func (t *AdoptTick) liveSet(ctx context.Context) (map[string]bool, error) {
 	entries, err := t.Registry.Live(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(ctx, err, "read live registry entries")
 	}
 	live := make(map[string]bool, len(entries))
 	for _, entry := range entries {
@@ -154,13 +152,13 @@ func (t *AdoptTick) adoptWorker(
 ) error {
 	holder, err := t.Claims.Holder(ctx, worker)
 	if err != nil {
-		return err
+		return errors.Wrapf(ctx, err, "read claim holder for %s", worker)
 	}
 	if alreadyOwned(holder, live) {
 		return nil
 	}
 	if err := t.Claims.Claim(ctx, worker, adopter, "adopted from "+exited+" ("+how+")"); err != nil {
-		return err
+		return errors.Wrapf(ctx, err, "write ownership claim for %s", worker)
 	}
 	result.Adopted = append(result.Adopted, worker)
 	return nil
@@ -174,6 +172,14 @@ func (t *AdoptTick) adoptWorker(
 // field reads as empty, which is treated as "no spawner" and skipped — never as
 // a reason to adopt.
 func strandedWorkers(rows []LedgerRow, live map[string]bool) map[string][]string {
+	// One pass builds the manager set, so the worker loop stays O(rows) rather
+	// than rescanning the ledger per candidate.
+	managers := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.SessionID != "" && row.Role == "manager" {
+			managers[row.SessionID] = true
+		}
+	}
 	out := map[string][]string{}
 	for _, row := range rows {
 		if row.SessionID == "" || !live[row.SessionID] {
@@ -186,22 +192,12 @@ func strandedWorkers(rows []LedgerRow, live map[string]bool) map[string][]string
 		// The ROW must be a worker (never a manager — a manager is not adopted),
 		// and its PARENT must be a manager. The `&&` form admitted a manager row
 		// whose spawner was not a manager, writing a claim under a non-manager.
-		if row.Role == "manager" || !isManagerRow(rows, parent) {
+		if row.Role == "manager" || !managers[parent] {
 			continue
 		}
 		out[parent] = append(out[parent], row.SessionID)
 	}
 	return out
-}
-
-// isManagerRow reports whether the session id appears as a manager in the ledger.
-func isManagerRow(rows []LedgerRow, sessionID string) bool {
-	for _, row := range rows {
-		if row.SessionID == sessionID && row.Role == "manager" {
-			return true
-		}
-	}
-	return false
 }
 
 // alreadyOwned reports whether a LIVE manager already holds the worker.

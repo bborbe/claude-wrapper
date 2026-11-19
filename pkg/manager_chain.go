@@ -59,10 +59,18 @@ func (p *registryChainProbe) ChainLive(ctx context.Context, row FlaggedRow) (boo
 	// `⚙ ` and `UniqueTabName` appends ` (n)` on a collision. Joining on the raw
 	// row name would never match a live tab-spawned manager, so the tick would
 	// open a duplicate — the exact hazard this probe exists to prevent.
-	base := TabNameFor(row.Name)
-	for _, entry := range live {
-		if matchesTabName(entry.Name, base) {
-			return true, nil
+	name := strings.TrimSpace(row.Name)
+	// Two conventions name a goal/topic manager tab: the flagged tick sets
+	// `⚙ <name>` (TabNameFor), and the open endpoint sets `<name> Manager`
+	// (open_decision.go's `verdict.Name+" Manager"`, open_tab.go's openTabName).
+	// Matching only one misses a manager opened by the other path — and a live
+	// manager is exactly what this probe exists to detect, so the miss would open
+	// a duplicate. The ` (n)` collision suffix is handled by matchesTabName.
+	for _, base := range []string{TabNameFor(name), name + " Manager"} {
+		for _, entry := range live {
+			if matchesTabName(entry.Name, base) {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
