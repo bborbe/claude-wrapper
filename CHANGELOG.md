@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.45.0
 
 - feat: **the fleet snapshot's persist moves into the wrapper, with its load guard made structural.** New `pkg/fleetsnapshot` owns `~/.claude/state/fleet-snapshot.json` — the store keyed by **session id** that the fleet round diffs against, deliberately distinct from `sweepgate`'s subject→tasks `Snapshot`. `Load` treats a **missing file as an empty snapshot with no error** (a fresh install's first round must still be able to create one) and returns an error only for a file that exists and cannot be read or parsed. `Persist` takes **that error** and refuses when it is non-nil, because `stall_count` is computed from the previous snapshot — persisting after a failed load resets every counter and makes every session read first-seen, and the file it writes is well-formed so the loss is silent. ⚠️ **The guard is about a failed load, never an absent file:** an earlier shape shared one `loaded` boolean between the two meanings, which deadlocked every fresh install into persisting nothing. The refusal leaves the existing file byte-identical; the write is tmp+rename so a crash mid-write cannot truncate it; an empty session set is refused separately (a failed read and an empty fleet must not look alike). Change set: `pkg/fleetsnapshot/snapshot.go`, `pkg/fleetsnapshot/snapshot_test.go`, `pkg/fleetsnapshot/fleetsnapshot_suite_test.go`, `CHANGELOG.md`.
 
