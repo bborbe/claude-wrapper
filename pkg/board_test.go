@@ -203,6 +203,51 @@ var _ = ginkgo.Describe("board delivery", func() {
 				To(gomega.Equal(OperatorPrefix + " use the staging bucket"))
 		})
 
+		ginkgo.It("answers a manager's answer in the manager's voice, never the operator's", func() {
+			session := parkedSession("headless")
+			item := permissionItem("")
+			item.AnswerMechanism = "message"
+			item.Answer = &BoardAnswer{
+				Kind:     "text",
+				Value:    "Manager answer, via supervisor: Approve",
+				Answerer: "manager",
+			}
+
+			answer, ok := answerFor(item, "message", *session.Question, session)
+
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(answer.Behavior).To(gomega.Equal("deny"))
+			gomega.Expect(answer.Message).
+				To(gomega.Equal("Manager answer, via supervisor: Approve"))
+			gomega.Expect(answer.Message).NotTo(gomega.ContainSubstring("Operator answer"))
+		})
+
+		ginkgo.It("prefixes a bare manager label exactly once", func() {
+			session := parkedSession("headless")
+			item := permissionItem("")
+			item.AnswerMechanism = "message"
+			item.Answer = &BoardAnswer{Kind: "option", Value: "Approve", Answerer: "manager"}
+
+			answer, ok := answerFor(item, "message", *session.Question, session)
+
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(answer.Message).
+				To(gomega.Equal("Manager answer, via supervisor: Approve"))
+		})
+
+		ginkgo.It("answers an explicit operator answer exactly as before", func() {
+			session := parkedSession("headless")
+			item := permissionItem("")
+			item.AnswerMechanism = "message"
+			item.Answer = &BoardAnswer{Kind: "text", Value: "use the staging bucket", Answerer: "operator"}
+
+			answer, ok := answerFor(item, "message", *session.Question, session)
+
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(answer.Message).
+				To(gomega.Equal(OperatorPrefix + " use the staging bucket"))
+		})
+
 		ginkgo.It("refuses a message card with no answer content", func() {
 			session := parkedSession("headless")
 			item := permissionItem("")

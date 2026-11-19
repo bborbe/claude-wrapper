@@ -26,6 +26,15 @@ import (
 // answers carry.
 const OperatorPrefix = "Operator answer, via supervisor:"
 
+// ManagerPrefix is the voice a manager's board answer is delivered in. The
+// store marks such an answer `answerer: manager`; it must never reach the
+// worker wrapped in OperatorPrefix, which would turn a manager's decision into
+// a claimed operator release.
+const ManagerPrefix = "Manager answer, via supervisor:"
+
+// ManagerAnswerer is the store's `answer.answerer` value for a manager's answer.
+const ManagerAnswerer = "manager"
+
 // FreshnessSkew is how far an item may predate the park it would settle.
 //
 // The two timestamps are written by different processes, so an exact ordering
@@ -56,6 +65,9 @@ type BoardAnswer struct {
 	Value  string   `json:"value"`
 	Values []string `json:"values"`
 	Tab    string   `json:"tab"`
+	// Answerer is whose answer this is — `operator` or `manager`. Empty on every
+	// answer recorded before the store carried it, which reads as the operator's.
+	Answerer string `json:"answerer"`
 }
 
 // BoardStore is the attention store's read and record surface.
@@ -389,8 +401,36 @@ func messageAnswer(item BoardItem, question Question) (Answer, bool) {
 	return Answer{
 		Kind:     question.Kind,
 		Behavior: "deny",
-		Message:  OperatorPrefix + " " + text,
+		Message:  voicedMessage(item, text),
 	}, true
+}
+
+// voicedMessage prefixes the answer text with the voice of the party who gave
+// it. A manager's answer carries ManagerPrefix exactly once — the supervisor's
+// gate answerer already writes it into the value — and never OperatorPrefix.
+func voicedMessage(item BoardItem, text string) string {
+	if !managerAnswered(item) {
+		return OperatorPrefix + " " + text
+	}
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, ManagerPrefix) {
+		return trimmed
+	}
+	return ManagerPrefix + " " + trimmed
+}
+
+// managerAnswered reports whether a manager supplied any of the item's answer
+// content.
+func managerAnswered(item BoardItem) bool {
+	if item.Answer != nil && item.Answer.Answerer == ManagerAnswerer {
+		return true
+	}
+	for _, entry := range item.Answers {
+		if entry.Answerer == ManagerAnswerer {
+			return true
+		}
+	}
+	return false
 }
 
 // stale reports whether an item was answered at an earlier gate than the park it
