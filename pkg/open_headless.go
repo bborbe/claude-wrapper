@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"strings"
 
 	"github.com/bborbe/errors"
 )
@@ -30,7 +31,12 @@ func (s *RosterToolServer) startHeadless(
 	// manager is unreachable by the pane wake and does no manager work while reading
 	// as alive. This covers both a fresh spawn and a resume, since a resume is a
 	// headless-capable spawn_agent call.
-	if err := RefuseManagerHeadless(ctx, body.Role, true); err != nil {
+	//
+	// ⚠️ A resume often carries no `role` (the keep-alive path-A call passes only the
+	// session id), so the request's role alone would let a manager resume headless.
+	// The role is then read from the session's own spawn-ledger row, which recorded
+	// what the original spawn ran under.
+	if err := RefuseManagerHeadless(ctx, s.roleForHeadlessSpawn(ctx, body), true); err != nil {
 		return nil, "", "", err
 	}
 	cwd, err := s.headlessCwd(ctx, body)
@@ -74,6 +80,33 @@ func (s *RosterToolServer) startHeadless(
 	}
 	s.recordSpawn(ctx, session, sessionID, body, resolution.Source)
 	return session, mode, modeSource, nil
+}
+
+// roleForHeadlessSpawn resolves the role a headless spawn runs under: the
+// request's own role when it names one, else the role the resumed session's
+// spawn-ledger row recorded.
+//
+// An unreadable ledger or no matching row returns the request's role unchanged
+// (possibly empty, which RefuseManagerHeadless reads as agent) — the ledger is
+// an extra signal for a role-less resume, never a new refusal path of its own.
+func (s *RosterToolServer) roleForHeadlessSpawn(
+	ctx context.Context,
+	body spawnAgentArgs,
+) string {
+	role := strings.TrimSpace(body.Role)
+	if role != "" || strings.TrimSpace(body.Resume) == "" || s.Ledger == nil {
+		return role
+	}
+	rows, err := s.Ledger.Rows(ctx)
+	if err != nil {
+		return role
+	}
+	for _, row := range rows {
+		if row.SessionID == body.Resume && strings.TrimSpace(row.Role) != "" {
+			return strings.TrimSpace(row.Role)
+		}
+	}
+	return role
 }
 
 // OpenHeadlessRequest is one agent row the open executor starts or resumes.

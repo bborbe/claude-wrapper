@@ -66,6 +66,38 @@ var _ = ginkgo.Describe("RosterToolServer manager headless refusal", func() {
 		gomega.Expect(supervisor.spawned).To(gomega.HaveLen(1))
 	})
 
+	ginkgo.It("refuses a role-less resume whose ledger row recorded a manager", func() {
+		// The keep-alive path-A resume passes only the session id. The request's
+		// role is therefore empty, and the guard reads the role the original spawn
+		// recorded on the ledger.
+		headless := false
+		server.Ledger = &rosterLedger{rows: []LedgerRow{
+			{SessionID: resumeID, Role: RoleManager},
+		}}
+		_, err := server.spawnLocalTarget(
+			ctx,
+			spawnAgentArgs{Resume: resumeID, Cwd: "/tmp", Prompt: "continue", Interactive: &headless},
+			"spawner",
+		)
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(errors.Is(err, ErrManagerHeadless)).To(gomega.BeTrue())
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("still resumes a role-less agent session recorded on the ledger", func() {
+		headless := false
+		server.Ledger = &rosterLedger{rows: []LedgerRow{
+			{SessionID: resumeID, Role: RoleAgent},
+		}}
+		_, err := server.spawnLocalTarget(
+			ctx,
+			spawnAgentArgs{Resume: resumeID, Cwd: "/tmp", Prompt: "continue", Interactive: &headless},
+			"spawner",
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(supervisor.spawned).To(gomega.HaveLen(1))
+	})
+
 	ginkgo.It("refuses a manager headless spawn chosen by the config, not the argument", func() {
 		// No `interactive` argument: the mode comes from the resolved source. A
 		// guard keyed on the argument alone would let this one through.
