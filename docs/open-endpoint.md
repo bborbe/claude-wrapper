@@ -40,6 +40,9 @@ wrapper executes those rules. It does not re-decide them.
 | `window_key`, `window_id` | role-map key and id; set only when `path` is `tab` |
 | `session_id`, `pane_id` | set when known |
 | `reason`, `remedy` | set only when `branch` is `refused` |
+| `message` | free text: the refusal's detail, or a best-effort start-command note on an opened tab |
+
+A field that is not decided for a row (a row refused at the page read has no role yet) is the empty string; `window_id` is null unless the row opened a tab.
 
 `reason` tokens: `missing-row`, `row-unreadable`, `undecidable-role`, `manager-mode-headless`,
 `truncated-id`, `liveness-unreadable`, `answer-path`, `role-map-key-missing`, `hold-window`,
@@ -50,6 +53,15 @@ Each verdict also writes one log line:
 ```
 open: row=<vault>/<kind>/<name> role=<r> mode=<m> branch=<b> path=<p> window=<id|none> reason=<reason|->
 ```
+
+## Response
+
+```json
+{"verdicts": [<verdict>, ...]}
+```
+
+One verdict per request row, in request order. A malformed request is `400` on REST and `isError`
+on `open_rows`, with nothing opened.
 
 ## Decision order
 
@@ -183,6 +195,17 @@ not made.
   branch stays `create`/`resume` rather than `refused`.
 - `resume` sends the same commands: a resumed manager with no turn is idle, and its loop must
   re-arm.
+
+## Daemon flags
+
+Each defaults to the deployed marketplace clone the running fleet uses, matching
+`--flagged-rows-script`.
+
+| Flag | Default | Script it locates |
+|---|---|---|
+| `--answer-path-check-script` | `~/.claude/plugins/marketplaces/claude-supervisor/scripts/answer-path-check.py` | the answer-path probe |
+| `--manager-launcher-script` | `~/.claude/plugins/marketplaces/claude-supervisor/scripts/manager-launcher.py` | resolves a goal or topic manager's launcher |
+| `--topic-spawn-script` | `~/.claude/plugins/marketplaces/claude-supervisor/scripts/topic-spawn.py` | the topic manager ceiling checked before a topic create |
 
 ## Known limitations
 

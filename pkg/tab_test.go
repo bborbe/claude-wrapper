@@ -5,6 +5,11 @@
 package pkg
 
 import (
+	"context"
+	"strings"
+	"time"
+
+	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
@@ -66,6 +71,99 @@ var _ = ginkgo.Describe("BuildTabInner", func() {
 			Cwd: "/work", Launcher: "/scripts/cc-x", TabName: "⚙ t", Prompt: "do it",
 		})
 		gomega.Expect(inner).To(gomega.ContainSubstring(`'/scripts/cc-x' -n '⚙ t' 'do it'`))
+	})
+
+	ginkgo.It("drops the spawner's session identity and marks the pane a CLI session first", func() {
+		inner := BuildTabInner(TabSpawnOptions{
+			Cwd: "/work", Launcher: "/scripts/cc-x", TabName: "⚙ t", Prompt: "do it",
+			Env:             map[string]string{"PERMISSION_MODE": "acceptEdits"},
+			ResetSessionEnv: true,
+		})
+		const prefix = "unset CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN " +
+			"CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION; " +
+			"export CLAUDE_CODE_ENTRYPOINT='cli'; "
+		gomega.Expect(inner).To(gomega.HavePrefix(prefix))
+		gomega.Expect(strings.Index(inner, "unset ")).To(gomega.BeNumerically("<",
+			strings.Index(inner, "export PERMISSION_MODE")))
+	})
+
+	ginkgo.It("renders --resume between the launcher and -n", func() {
+		const id = "1b6a7c3e-0000-4000-8000-000000000000"
+		inner := BuildTabInner(TabSpawnOptions{
+			Cwd: "/work", Launcher: "/scripts/cc-x", TabName: "⚙ t", Prompt: "do it",
+			Resume: id,
+		})
+		gomega.Expect(inner).To(gomega.ContainSubstring(
+			`'/scripts/cc-x' --resume '` + id + `' -n '⚙ t' 'do it'`))
+	})
+
+	ginkgo.It("omits the trailing prompt word when the prompt is empty", func() {
+		inner := BuildTabInner(TabSpawnOptions{
+			Cwd: "/work", Launcher: "/scripts/cc-x", TabName: "⚙ t",
+		})
+		gomega.Expect(inner).To(gomega.HaveSuffix(`'/scripts/cc-x' -n '⚙ t'; }`))
+	})
+})
+
+// notReadyTabClient never shows an empty composer, so a ready-gated send times
+// out without typing anything.
+type notReadyTabClient struct {
+	spawned []TabSpawnOptions
+	texts   []string
+	onSpawn func()
+}
+
+func (f *notReadyTabClient) Spawn(_ context.Context, options TabSpawnOptions) (string, error) {
+	f.spawned = append(f.spawned, options)
+	if f.onSpawn != nil {
+		f.onSpawn()
+	}
+	return "pane-1", nil
+}
+
+func (f *notReadyTabClient) Activate(context.Context, string) error { return nil }
+
+func (f *notReadyTabClient) SendText(_ context.Context, _ string, text string) error {
+	f.texts = append(f.texts, text)
+	return nil
+}
+
+func (f *notReadyTabClient) Text(context.Context, string) (string, error) {
+	return "still booting\n", nil
+}
+
+// steppingClockEvery advances step per read, so a poll loop's deadline is
+// reached without sleeping.
+func steppingClockEvery(step time.Duration) libtime.CurrentDateTimeGetter {
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	return libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
+		now = now.Add(step)
+		return libtime.DateTime(now)
+	})
+}
+
+var _ = ginkgo.Describe("SendWhenReadyWithin", func() {
+	ginkgo.It("sends the text once when the composer is ready", func() {
+		tabs := &fakeTabClient{}
+		err := SendWhenReadyWithin(
+			context.Background(), tabs, "pane-1", "hello", steppingClock(), time.Minute,
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(tabs.texts).To(gomega.Equal([]string{"hello"}))
+	})
+
+	ginkgo.It("returns an error and sends nothing when the composer never becomes ready", func() {
+		tabs := &notReadyTabClient{}
+		err := SendWhenReadyWithin(
+			context.Background(),
+			tabs,
+			"pane-1",
+			"hello",
+			steppingClockEvery(30*time.Second),
+			time.Minute,
+		)
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(tabs.texts).To(gomega.BeEmpty())
 	})
 })
 

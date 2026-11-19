@@ -406,7 +406,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 
 		ginkgo.DescribeTable("each guard",
 			func(row FlaggedRow, wantOpened bool, wantReason string) {
-				reason, refused, skipped := decision(row, recent, now, neverOpened(row), false)
+				reason, refused, skipped := decision(row, recent, nil, now, neverOpened(row), false)
 				ginkgo.GinkgoWriter.Printf(
 					"case=%s reason=%s opened=%t\n", row.Name, reason, !refused && !skipped,
 				)
@@ -1572,7 +1572,10 @@ var _ = ginkgo.Describe("flagged tick resume-delay split via real ticks", func()
 		first, err := tick.Tick(context.Background())
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(first.Opened).To(gomega.BeEmpty(), "the first tick must really skip")
-		gomega.Expect(first.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsent))
+		// The ledger row for this session is terminal, so on this branch the skip is
+		// reported as not-absent-dead rather than not-absent. That relabel is the
+		// whole point of this branch: the decision is unchanged, only the claim.
+		gomega.Expect(first.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
 
 		// Ten minutes later the row becomes eligible. It was held back at 12:00,
 		// so the real wait is those ten minutes — not the thirty since its stop.
@@ -1584,5 +1587,72 @@ var _ = ginkgo.Describe("flagged tick resume-delay split via real ticks", func()
 		gomega.Expect(second.Opened).To(gomega.ConsistOf("abc-123"))
 		gomega.Expect(second.ResumeDelaysWaited).To(gomega.ConsistOf("abc-123=10m0s"))
 		gomega.Expect(second.ResumeDelays).To(gomega.BeEmpty())
+	})
+})
+
+var _ = ginkgo.Describe("flagged tick not-absent labelling", func() {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	// A row the predicate believes is alive: it is not ABSENT, so it is skipped
+	// either way. Only the REASON is under test.
+	row := FlaggedRow{
+		Kind: "task", Vault: "private-personal", Name: "a live-looking row",
+		Role: "agent", Mode: "headless",
+		SessionID: "abc-123", Liveness: "LIVE", Branch: "resume",
+	}
+
+	ginkgo.It("says not-absent-dead when the ledger proves the session ended", func() {
+		// Measured 2026-11-18: 19 of 39 rows skipped as `not-absent` had no entry
+		// in the wrapper's own roster, so the line asserted a live session that
+		// was not there. The decision must not change - only the claim.
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "done",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
+
+		gomega.Expect(result.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
+		gomega.Expect(result.Opened).To(gomega.BeEmpty(), "the decision must not change")
+	})
+
+	ginkgo.It("still says not-absent when the ledger says the session is running", func() {
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, &recordingReopener{}, &recordingCaps{})
+		tick.Now = fixedNow(now)
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: "abc-123", Status: "running",
+			SpawnedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		}}}
+
+		result, err := tick.Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+		gomega.Expect(result.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsent))
+		gomega.Expect(result.Skipped).NotTo(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
+	})
+})
+
+var _ = ginkgo.Describe("endedSessions", func() {
+	ginkgo.It("treats a session as ended only when its LAST row is terminal", func() {
+		// A resumed session keeps its id and its later row re-opens the status to
+		// `running`. Scanning for ANY terminal row would mark it dead and label
+		// its skip not-absent-dead while it is live - the exact lie this function
+		// exists to stop. Caught in review 2026-11-19.
+		rows := []LedgerRow{
+			{SessionID: "s1", Status: "done"},
+			{SessionID: "s1", Status: "running"},
+			{SessionID: "s2", Status: "running"},
+			{SessionID: "s2", Status: "error"},
+			{SessionID: "s3", Status: "running"},
+		}
+
+		got := endedSessions(rows)
+
+		gomega.Expect(got).To(gomega.HaveKey("s2"))
+		gomega.Expect(got).NotTo(gomega.HaveKey("s1"), "resumed session keeps its id; last row wins")
+		gomega.Expect(got).NotTo(gomega.HaveKey("s3"))
 	})
 })

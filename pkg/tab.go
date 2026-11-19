@@ -53,6 +53,16 @@ type TabSpawnOptions struct {
 	// record, but an empty path would run `"" append …` and print noise into the
 	// worker's own tab.
 	ExitRecord string
+	// Resume is the full session id the launcher continues with `--resume`, or
+	// empty for a fresh conversation. Only the open endpoint sets it.
+	Resume string
+	// ResetSessionEnv clears the spawning process's session identity in the
+	// pane and marks the session a CLI one, as claude-supervisor's own spawn
+	// recipe does: `wezterm cli spawn` forwards the caller's environment, so
+	// without the unset the session registers under its spawner's name, and
+	// without CLAUDE_CODE_ENTRYPOINT=cli it registers as sdk-cli. Only the open
+	// endpoint sets it; existing tab spawns are unchanged.
+	ResetSessionEnv bool
 }
 
 // NewTabClient creates a TabClient over the wezterm binary.
@@ -187,6 +197,17 @@ func (t *tabClient) Text(ctx context.Context, paneID string) (string, error) {
 	return string(output), nil
 }
 
+// inheritedSessionVars are the session identity variables a pane must drop when
+// ResetSessionEnv is set. `wezterm cli spawn` forwards the caller's environment,
+// so a manager spawned from another session would otherwise register under that
+// session's name.
+var inheritedSessionVars = []string{
+	"CLAUDE_CODE_MESSAGING_SOCKET",
+	"CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_CODE_CHILD_SESSION",
+}
+
 // BuildTabInner renders the `bash -lc` command a spawned pane runs.
 //
 // Three details are load-bearing and each was a measured defect:
@@ -199,8 +220,21 @@ func (t *tabClient) Text(ctx context.Context, paneID string) (string, error) {
 //     worker, in the wrong directory.
 //   - There is no `exec`. `exec` replaces the pane's shell, so the EXIT trap
 //     never runs and exit 137 can never be recorded.
+//
+// Two behaviours serve the open endpoint alone:
+//
+//   - ResetSessionEnv puts an `unset …; export CLAUDE_CODE_ENTRYPOINT='cli'; `
+//     ahead of the env exports and the `cd`, so the pane drops its spawner's
+//     session identity before anything else runs.
+//   - A non-empty Resume renders `--resume <id>` between the launcher and `-n`,
+//     and an empty Prompt omits the trailing prompt word.
 func BuildTabInner(options TabSpawnOptions) string {
 	var builder strings.Builder
+	if options.ResetSessionEnv {
+		builder.WriteString("unset ")
+		builder.WriteString(strings.Join(inheritedSessionVars, " "))
+		builder.WriteString("; export CLAUDE_CODE_ENTRYPOINT='cli'; ")
+	}
 	for name, value := range options.Env {
 		builder.WriteString("export ")
 		builder.WriteString(name)
@@ -218,10 +252,16 @@ func BuildTabInner(options TabSpawnOptions) string {
 		builder.WriteString("trap _sx EXIT; ")
 	}
 	builder.WriteString(shellQuote(options.Launcher))
+	if options.Resume != "" {
+		builder.WriteString(" --resume ")
+		builder.WriteString(shellQuote(options.Resume))
+	}
 	builder.WriteString(" -n ")
 	builder.WriteString(shellQuote(options.TabName))
-	builder.WriteString(" ")
-	builder.WriteString(shellQuote(options.Prompt))
+	if options.Prompt != "" {
+		builder.WriteString(" ")
+		builder.WriteString(shellQuote(options.Prompt))
+	}
 	builder.WriteString("; }")
 	return builder.String()
 }
@@ -415,7 +455,37 @@ func SendWhenReadyWith(
 	ready func(string) bool,
 	confirmed func(screen, message string) bool,
 ) error {
-	if err := waitComposerWith(ctx, tabs, paneID, composerDeadline, now, ready); err != nil {
+	return sendWhenReady(ctx, tabs, paneID, text, now, composerDeadline, ready, confirmed)
+}
+
+// SendWhenReadyWithin is SendWhenReady with the composer wait given by the
+// caller: a manager's start command waits up to five minutes for the
+// previous command's planning turn to finish. The readiness and confirmation
+// rules are SendWhenReady's own (ComposerReady, SubmissionConfirmed).
+func SendWhenReadyWithin(
+	ctx context.Context,
+	tabs TabClient,
+	paneID string,
+	text string,
+	now libtime.CurrentDateTimeGetter,
+	wait time.Duration,
+) error {
+	return sendWhenReady(ctx, tabs, paneID, text, now, wait, ComposerReady, SubmissionConfirmed)
+}
+
+// sendWhenReady is the shared ready-gated send, with the composer wait as a
+// parameter so the spawn and open paths can choose their own bound.
+func sendWhenReady(
+	ctx context.Context,
+	tabs TabClient,
+	paneID string,
+	text string,
+	now libtime.CurrentDateTimeGetter,
+	composerTimeout time.Duration,
+	ready func(string) bool,
+	confirmed func(screen, message string) bool,
+) error {
+	if err := waitComposerWith(ctx, tabs, paneID, composerTimeout, now, ready); err != nil {
 		return err
 	}
 	if err := tabs.SendText(ctx, paneID, text); err != nil {

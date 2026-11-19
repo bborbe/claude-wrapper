@@ -49,8 +49,9 @@ codex mcp list          # confirm: transport streamable_http, status enabled
 ```
 
 Codex namespaces the tools it exposes as `mcp__<server_name>__<tool_name>`, so
-the nine below appear as `mcp__claude_wrapper__spawn_session` and so on. The
-server name is chosen at `mcp add` time, not here.
+the nine `/mcp` tools below appear as `mcp__claude_wrapper__spawn_session` and so
+on. The server name is chosen at `mcp add` time, not here. `open_rows` is the
+one row served on `/supervisor/mcp`, the fleet face, rather than on `/mcp`.
 
 ### Tools
 
@@ -65,6 +66,7 @@ server name is chosen at `mcp add` time, not here.
 | `answer_pending` | answer that request: `behavior` for a permission, `answers` for a question |
 | `set_model` | change a running session's model; returns the model that served the next turn |
 | `set_permission_mode` | change a running session's permission mode; returns the mode the child reports |
+| `open_rows` | open task, goal or topic rows by role — served on `/supervisor/mcp`, the fleet face; same rows and verdicts as `POST /api/1.0/open` |
 
 `send_message` is the one tool that cannot delegate to REST: `POST
 …/message` answers `202 {"status":"sent"}` and carries no answer, so the tool
@@ -167,6 +169,17 @@ session.
 - `mcp_configs` are extra MCP config files, loaded alongside the generated one.
   This is how a launcher's own `--mcp-config` file reaches the child: it arrives
   as a CLI flag, not as a setting, so no setting source can reach it.
+
+### POST /api/1.0/open
+
+Opens a list of rows the way each row's role requires:
+`{"rows": [{"kind": "task", "vault": "...", "name": "...", "first_step": "..."}]}`.
+The caller's session id travels in `X-Claude-Code-Session-Id`. Returns `200` with
+one verdict per row in request order. An empty `rows`, an unknown `kind`, an
+empty or unsafe `name`, an empty or unconfigured `vault`, a non-JSON body or a
+body over 1 MiB is refused `400` before anything opens. See
+[docs/open-endpoint.md](docs/open-endpoint.md) for the verdict fields, the
+decision order and the open recipes.
 
 ### POST /api/1.0/sessions/{id}/answer
 
