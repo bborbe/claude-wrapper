@@ -63,6 +63,27 @@ var _ = ginkgo.Describe("flagged tick: idle held child", func() {
 		gomega.Expect(result.Line()).To(gomega.ContainSubstring("nudged=1"))
 	})
 
+	ginkgo.It("still nudges when the ledger says the session is terminal", func() {
+		// The regression caught in review 2026-11-19. A finished turn writes a
+		// TERMINAL ledger status, so the dead set is true for exactly the sessions
+		// the idle-nudge exists for. Relabelling that skip as not-absent-dead must
+		// not divert it away from the nudge — otherwise every idle held child
+		// stops being nudged and stays dark until a restart, which is the bug the
+		// nudge was added to fix. The pre-existing nudge specs use a nil-returning
+		// ledger, so nothing else covers this.
+		hold(Session{State: StateIdle})
+		tick.Ledger = fakeLedgerRows{rows: []LedgerRow{{
+			SessionID: sessionID, Status: "done",
+			SpawnedAt: time.Date(2026, 11, 18, 11, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		}}}
+
+		result := tick.tickFromRows(context.Background(), []FlaggedRow{row})
+
+		ginkgo.GinkgoWriter.Printf("line=%s sent=%v\n", result.Line(), supervisor.sent())
+		gomega.Expect(result.Nudged).To(gomega.Equal([]string{row.Key()}))
+		gomega.Expect(result.Skipped).To(gomega.BeEmpty())
+	})
+
 	ginkgo.DescribeTable("leaves a child alone that is not finished",
 		func(session Session) {
 			hold(session)

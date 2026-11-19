@@ -243,4 +243,50 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 		gomega.Expect(recorder.Body.String()).To(gomega.ContainSubstring(`"isError":true`))
 		gomega.Expect(recorder.Body.String()).To(gomega.ContainSubstring("unknown agent"))
 	})
+
+	ginkgo.It("carries the command of a Bash park so a manager answers without a second read", func() {
+		server := rosterForServer()
+		server.Supervisor = &rosterSupervisor{sessions: []Session{
+			{ID: "w-bash", Cwd: "/tmp", Question: &Question{
+				RequestID: "r1", Kind: AnswerKindPermission, ToolName: "Bash",
+				Input: map[string]any{"command": "git push origin fix/x", "description": "push"},
+			}},
+			{ID: "w-write", Cwd: "/tmp", Question: &Question{
+				RequestID: "r2", Kind: AnswerKindPermission, ToolName: "Write",
+				Input: map[string]any{"file_path": "/tmp/scratch.py", "content": "SECRET"},
+			}},
+		}}
+		recorder := postRPC(
+			server,
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pending_permissions","arguments":{}}}`,
+			"caller-session",
+		)
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
+
+		var body struct {
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		gomega.Expect(json.Unmarshal(recorder.Body.Bytes(), &body)).To(gomega.Succeed())
+		gomega.Expect(body.Result.Content).NotTo(gomega.BeEmpty())
+
+		var rows []map[string]any
+		gomega.Expect(json.Unmarshal([]byte(body.Result.Content[0].Text), &rows)).To(gomega.Succeed())
+		gomega.Expect(rows).To(gomega.HaveLen(2))
+
+		byAgent := map[string]map[string]any{}
+		for _, row := range rows {
+			id, ok := row["agent_id"].(string)
+			gomega.Expect(ok).To(gomega.BeTrue(), "a pending row carries no string agent_id")
+			byAgent[id] = row
+		}
+		gomega.Expect(byAgent["w-bash"]["command"]).To(gomega.Equal("git push origin fix/x"))
+		gomega.Expect(byAgent["w-write"]["file_path"]).To(gomega.Equal("/tmp/scratch.py"))
+		// Only the identifying path is surfaced — a Write's content must never
+		// reach the pending list, or a manager could read the file's body.
+		gomega.Expect(byAgent["w-write"]).NotTo(gomega.HaveKey("content"))
+	})
 })

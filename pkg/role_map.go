@@ -55,6 +55,32 @@ func RefuseAgentTab(ctx context.Context, role string) error {
 	return errors.Wrap(ctx, ErrAgentTab, agentTabRefusal)
 }
 
+// managerHeadlessRefusal is the text every manager-headless refusal carries. It
+// names the rule and the call that works, so the caller can fix the call without
+// reading the source.
+const managerHeadlessRefusal = "a manager never runs headless — role-mode matrix Rule 2 " +
+	"(manager → interactive always). A headless manager has no tab, no pane and no " +
+	"jump link, and the pane wake cannot reach it, so its loop is never armed. Open " +
+	"it as a tab with interactive=true (or omit interactive under the interactive " +
+	"default); use role: agent for a headless worker"
+
+// RefuseManagerHeadless returns ErrManagerHeadless when a HEADLESS spawn's role
+// resolves to manager, and nil otherwise. `headless` is the resolved mode, not
+// the argument: a spawn.mode of headless routes an argument-less call here too.
+//
+// A manager resume is a headless-capable spawn_agent call, so the same guard
+// covers the resume path when the caller names the role. An empty role defaults
+// to agent, which is never refused.
+func RefuseManagerHeadless(ctx context.Context, role string, headless bool) error {
+	if !headless {
+		return nil
+	}
+	if strings.TrimSpace(role) != RoleManager {
+		return nil
+	}
+	return errors.Wrap(ctx, ErrManagerHeadless, managerHeadlessRefusal)
+}
+
 // familyChips maps a vault's family to the chip a human-role spawn takes.
 //
 // A human spawn is the operator's own work, so it is coloured by which vault it

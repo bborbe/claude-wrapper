@@ -6,6 +6,7 @@ package sweepgate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 )
@@ -69,6 +70,19 @@ func Tick(
 	if err := WriteTickFile(ctx, tickPath, frame); err != nil {
 		fmt.Fprintf(stderr, "fail-open: could not write tick file (%v)\n", err)
 		return ExitFailed
+	}
+
+	// The rows file is the SAME classification as data, written beside the frame
+	// so a reader can serve it without re-running Prepare — that scan is minutes.
+	// A failure here does not fail the tick: the frame is the primary artifact
+	// and the rows are an optimisation, so this degrades to "no cache" rather
+	// than to a subject the operator cannot read.
+	if rowsPath, err := RowsPath(ctx, cfg, cfg.Subject); err == nil {
+		if data, err := json.Marshal(rowsFrom(cfg.Now.Now().Time(), prepared)); err == nil {
+			if err := writeFileAtomic(ctx, rowsPath, data); err != nil {
+				fmt.Fprintf(stderr, "sweep-gate: could not write rows file (%v)\n", err)
+			}
+		}
 	}
 
 	if changed {

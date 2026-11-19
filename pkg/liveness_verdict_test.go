@@ -120,4 +120,30 @@ var _ = ginkgo.Describe("LivenessVerdicts", func() {
 		gomega.Expect(verdicts[0].SessionID).To(gomega.Equal("a"))
 		gomega.Expect(verdicts[1].SessionID).To(gomega.Equal("b"))
 	})
+
+	ginkgo.It("carries the registry tab title on a registry verdict", func() {
+		// `flagged-rows.py` decides "is this subject's manager live?" by NAME, so a
+		// verdict without the name forces a second derivation of the identity map.
+		dir := ginkgo.GinkgoT().TempDir()
+		writeRegistryEntry(dir, registryFile{
+			PID: os.Getpid(), SessionID: "s1", Status: "busy", Name: "Fleet Manager",
+		})
+
+		verdicts, err := LivenessVerdicts(ctx, NewSessionRegistry(dir), nil, nil)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(verdicts).To(gomega.HaveLen(1))
+		gomega.Expect(verdicts[0].Name).To(gomega.Equal("Fleet Manager"))
+	})
+
+	ginkgo.It("leaves the name empty on a child-table verdict", func() {
+		// The name exists only on a registry entry; a child-table verdict must not
+		// invent one, because a consumer treats a name as an identity match.
+		dir := ginkgo.GinkgoT().TempDir()
+
+		verdicts, err := LivenessVerdicts(ctx, NewSessionRegistry(dir), []Session{{ID: "s1"}}, nil)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(verdicts).To(gomega.HaveLen(1))
+		gomega.Expect(verdicts[0].Source).To(gomega.Equal("child-table"))
+		gomega.Expect(verdicts[0].Name).To(gomega.BeEmpty())
+	})
 })

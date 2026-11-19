@@ -38,6 +38,17 @@ type LivenessVerdict struct {
 	Source    string        `json:"source"`
 	PID       int           `json:"pid,omitempty"`
 	Heartbeat *bool         `json:"heartbeat_live,omitempty"`
+	// Name is the tab title the session registered under, when the registry lists
+	// it. It is reported so a consumer can match a verdict to a SUBJECT by name
+	// without a second read of the registry: `flagged-rows.py` decides "is this
+	// subject's manager live?" by name, and before this field it had to shell out
+	// to `session-liveness.py --list` for the identity map while taking the
+	// verdicts from here — two derivations of the same fact.
+	//
+	// Empty when the registry does not list the session (a child-table or
+	// heartbeat-only verdict), because the name exists only on a registry entry.
+	// A consumer must treat an empty name as "no name known", never as a name.
+	Name string `json:"name,omitempty"`
 }
 
 // LivenessVerdicts derives one verdict per session from the two primary sources,
@@ -119,6 +130,7 @@ func verdictFor(
 		verdict.Liveness = LivenessLive
 		verdict.Source = "registry"
 		verdict.PID = entry.PID
+		verdict.Name = entry.Name
 	} else {
 		child, ok := childrenByID[id]
 		verdict.Liveness, verdict.Source = childVerdict(child, ok)

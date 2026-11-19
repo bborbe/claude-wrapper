@@ -245,7 +245,7 @@ func main() {
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
 		*flagged.interval, *flagged.script,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
-		*fleetPusher.heartbeat, parkedGate,
+		*fleetPusher.heartbeat, parkedGate, *stateDir,
 		openPathsFromFlags(open),
 	)
 
@@ -616,16 +616,14 @@ func startFleetFaces(
 	fleetPusherWatchMaxAge time.Duration,
 	fleetPusherHeartbeat string,
 	parked pkg.ParkedHold,
+	stateDir string,
 	openPaths openScriptPaths,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
 	heartbeats := pkg.NewHeartbeatClient(attentionURL, nil)
-
 	startBoardDelivery(supervisor, decider, attentionURL)
-
 	a2aManager := newA2AManager(ctx)
-
 	// The fleet-facing MCP face: a Claude session reading and steering the roster,
 	// a third face beside /mcp and --mcp-stdio. The local-tab spawn path opens a
 	// tab under the vault's cc-* launcher; without it every `local` spawn is
@@ -643,7 +641,6 @@ func startFleetFaces(
 		// path omits the hook rather than naming one that does not exist.
 		"",
 	)
-
 	// The fleet-wide caps; shared with the flagged tick so both read one limit.
 	caps := pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil)
 
@@ -685,7 +682,12 @@ func startFleetFaces(
 	go startFlaggedTick(
 		ctx, flaggedTickInterval, flaggedRowsScript,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
-		caps, ledger, now, parked,
+		caps,
+		registry,
+		ledger,
+		now,
+		parked,
+		stateDir,
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
@@ -998,9 +1000,11 @@ func startFlaggedTick(
 	script string,
 	reopener pkg.FlaggedReopener,
 	caps pkg.SpawnCaps,
+	registry pkg.SessionRegistry,
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
 	parked pkg.ParkedHold,
+	stateDir string,
 ) {
 	if interval <= 0 {
 		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
@@ -1010,8 +1014,10 @@ func startFlaggedTick(
 		Source:   pkg.ExecFlaggedRowsSource{Script: expandHome(script)},
 		Reopener: reopener,
 		Caps:     caps,
+		Chain:    pkg.NewRegistryChainProbe(registry),
 		Ledger:   ledger,
 		Parked:   parked,
+		CacheDir: stateDir,
 		Now:      now,
 		Interval: interval,
 	}

@@ -110,6 +110,16 @@ var (
 	// refusal, never a silent conversion to headless — a caller that still asks
 	// for agent tabs must see the mistake rather than have it hidden.
 	ErrAgentTab = stderrors.New("agent tab refused")
+	// ErrManagerHeadless is returned when a headless spawn's role resolves to
+	// manager.
+	//
+	// Role-mode matrix Rule 2: a manager is interactive always. A headless manager
+	// has no tab, no pane and no jump link — the board renders it Live and offers
+	// nothing to click — and the pane wake cannot reach it, so its loop is never
+	// armed. Measured 2026-11-19: `census-manager-mode.py` found live headless
+	// managers carrying goal session ids. Refused rather than converted, so a
+	// caller that asks for one sees the mistake.
+	ErrManagerHeadless = stderrors.New("manager headless refused")
 	// ErrUnknownVault is returned when a spawn names a vault the vault-cli config
 	// does not list, or names neither a vault nor a cwd.
 	ErrUnknownVault = stderrors.New("unknown vault")
