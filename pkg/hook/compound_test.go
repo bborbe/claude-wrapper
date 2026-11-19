@@ -556,6 +556,7 @@ var _ = Describe("CompoundBashGuard rule fallbacks", func() {
 		Entry("gh pr close is a write even with a rule", "gh pr close 1 | cat", false),
 		Entry("a ~ literal prefix read back", "D=~/x; cat \"$D/y\"; echo done", true),
 		Entry("a ~ prefix not at the start of the value", "D=x~y; cat $D; echo done", true),
+		Entry("a ~ prefix read back in double quotes", "D=~/Documents/workspaces; cat \"$D/x\" | cat", true),
 		Entry("an unbalanced text split the parser reads", `echo "a \" b" && cat x`, true),
 	)
 })
@@ -649,6 +650,12 @@ var _ = Describe("GitWriteAllows", func() {
 		Entry("reset", func() []string { return []string{"-C", repo, "reset", "--hard"} }, false),
 		Entry("commit outside the roots", func() []string { return []string{"-C", outside, "commit", "-m", "x"} }, false),
 		Entry("commit without -C", func() []string { return []string{"commit", "-m", "x"} }, false),
+		Entry("fetch in a removed worktree under the roots", func() []string {
+			return []string{"-C", filepath.Join(root, "gone"), "fetch", "origin"}
+		}, true),
+		Entry("a removed worktree walking out with ..", func() []string {
+			return []string{"-C", filepath.Join(root, "gone", "..", ".."), "fetch"}
+		}, false),
 	)
 })
 

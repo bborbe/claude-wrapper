@@ -213,27 +213,12 @@ func UnderRoots(path string, roots []string) bool {
 			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
 		}
 	}
-	if !filepath.IsAbs(path) || hasDotDot(path) {
-		return false
-	}
-	// A path that does not resolve is refused, never matched raw. A `..` component
-	// is refused outright: a lexical Clean folds `<root>/link/..` back into the root
-	// while the kernel follows the link first and walks out of it.
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return false
-	}
-	real += string(os.PathSeparator)
-	for _, root := range roots {
-		resolved := root
-		if link, linkErr := filepath.EvalSymlinks(root); linkErr == nil {
-			resolved = link
-		}
-		if strings.HasPrefix(real, resolved+string(os.PathSeparator)) {
-			return true
-		}
-	}
-	return false
+	// A `..` component is refused outright: a lexical Clean folds `<root>/link/..`
+	// back into the root while the kernel follows the link first and walks out of
+	// it. A path that does not exist yet is judged by its longest existing prefix,
+	// resolved — never matched raw — so a removed worktree reads as the place it
+	// was, and a symlink anywhere in the existing part is followed.
+	return WriteTargetUnderRoots(path, roots)
 }
 
 // hasDotDot reports whether path carries a `..` component.

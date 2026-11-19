@@ -134,7 +134,7 @@ func (w *compoundWalker) wordParts(parts []syntax.WordPart, quoted bool) error {
 	for _, part := range parts {
 		switch node := part.(type) {
 		case *syntax.Lit:
-			if !quoted && strings.Contains(node.Value, "\\") {
+			if !quoted && strings.Contains(strings.ReplaceAll(node.Value, "\\ ", " "), "\\") {
 				return errCompoundUnmodelled
 			}
 		case *syntax.SglQuoted:
