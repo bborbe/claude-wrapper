@@ -44,6 +44,9 @@ const (
 	KeepaliveResultRestarted KeepaliveResult = "restarted"
 	// KeepaliveResultClosed means a finished session was reaped.
 	KeepaliveResultClosed KeepaliveResult = "closed"
+	// KeepaliveResultNudged means a watcher was sent a nudge message. It is not
+	// `resumed`: a nudge asks a session to act, and the session may not.
+	KeepaliveResultNudged KeepaliveResult = "nudged"
 	// KeepaliveResultKept means a candidate was examined and deliberately left
 	// alone — a live session, a held one, a `STOPPED` one.
 	KeepaliveResultKept KeepaliveResult = "kept"
@@ -66,6 +69,7 @@ var KeepaliveEffects = []KeepaliveResult{
 	KeepaliveResultResumed,
 	KeepaliveResultRestarted,
 	KeepaliveResultClosed,
+	KeepaliveResultNudged,
 	KeepaliveResultKept,
 	KeepaliveResultSkipped,
 	KeepaliveResultCapped,

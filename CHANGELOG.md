@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- feat: **the keep-alive tick's contract lands in the wrapper.** `KeepaliveJob` runs a list of `KeepaliveProcedure` acts as one tick and writes one `job=keepalive action=<procedure> result=<effect> id=<sid>` line per procedure. The effect is a closed set (`resumed`, `restarted`, `closed`, `kept`, `skipped`, `capped`, `none`, `error`), and an effect that names no session — or a word the job does not know — is logged as `result=error` rather than as work, because a `resumed` line with no id cannot be joined to the session that came back. A failing procedure does not stop the rest: the eight acts are independent, so one unreadable store must not hold the whole fleet down. The eight procedure implementations follow on this branch. Change set: `pkg/keepalive.go`, `pkg/keepalive_test.go`, `CHANGELOG.md`.
+- feat: **the keep-alive tick's contract lands in the wrapper.** `KeepaliveJob` runs a list of `KeepaliveProcedure` acts as one tick and writes one `job=keepalive action=<procedure> result=<effect> id=<sid>` line per procedure. The effect is a closed set (`resumed`, `restarted`, `closed`, `nudged`, `kept`, `skipped`, `capped`, `none`, `error`), and an effect that names no session — or a word the job does not know — is logged as `result=error` rather than as work, because a `resumed` line with no id cannot be joined to the session that came back. A failing procedure does not stop the rest: the eight acts are independent, so one unreadable store must not hold the whole fleet down. The eight procedure implementations follow on this branch. Change set: `pkg/keepalive.go`, `pkg/keepalive_test.go`, `CHANGELOG.md`.
 
 ## v0.44.1
 

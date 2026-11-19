@@ -99,13 +99,13 @@ var _ = ginkgo.Describe("KeepaliveJob", func() {
 		ginkgo.It("refuses a result word the job does not know", func() {
 			j, lines := job(stubProcedure{
 				name:   "park-nudge",
-				effect: KeepaliveEffect{Result: KeepaliveResult("nudged"), SessionID: "abc123"},
+				effect: KeepaliveEffect{Result: KeepaliveResult("teleported"), SessionID: "abc123"},
 			})
 
 			j.TickAndLog(ctx)
 
 			gomega.Expect((*lines)[0]).To(gomega.ContainSubstring("result=error"))
-			gomega.Expect((*lines)[0]).To(gomega.ContainSubstring("unknown result nudged"))
+			gomega.Expect((*lines)[0]).To(gomega.ContainSubstring("unknown result teleported"))
 		})
 
 		// ⚠️ The independence rule: one broken procedure must not stop the other
@@ -179,7 +179,7 @@ var _ = ginkgo.Describe("KeepaliveJob", func() {
 			for _, known := range KeepaliveEffects {
 				gomega.Expect(known.Known()).To(gomega.BeTrue(), string(known))
 			}
-			gomega.Expect(KeepaliveResult("nudged").Known()).To(gomega.BeFalse())
+			gomega.Expect(KeepaliveResult("teleported").Known()).To(gomega.BeFalse())
 		})
 	})
 })
