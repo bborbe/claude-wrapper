@@ -237,7 +237,8 @@ var _ = Describe("CompoundTreeAllows", func() {
 		Entry("an input redirect from a file", "ls < /etc/passwd", false),
 		Entry("a heredoc with a literal body", "ls <<'EOF'\nx\nEOF", true),
 		Entry("a quoted ? is not a glob", `gh api "repos/o/r/contents/x?ref=master" --jq .content | base64 -d`, true),
-		Entry("an unquoted ? is a glob", `gh api repos/o/r/contents/x?ref=master`, false),
+		Entry("an unquoted ? after a plain first character", `gh api repos/o/r/contents/x?ref=master`, true),
+		Entry("a glob that can expand to an option", `gh api repos/o/r | sed -n 1p -*`, false),
 		Entry("a gh api write in a pipe", `gh api -X PUT repos/o/r/rulesets/1 | ls`, false),
 		Entry("a heredoc body with a substitution", "ls <<EOF\n$(date)\nEOF", false),
 		Entry("a heredoc body with a parameter", "ls <<EOF\n$HOME\nEOF", false),
@@ -509,8 +510,33 @@ var _ = Describe("CompoundTreeAllows dynamic words", func() {
 		Entry("a dynamic program word", func() string { return `$x ls` }, false),
 		Entry("cd under a root, then a rule", func() string { return "cd " + root + " && make test 2>&1 | ls" }, true),
 		Entry("cd outside the roots", func() string { return "cd /etc && ls" }, false),
+		Entry("cd into /tmp stays refused", func() string { return "cd /tmp && ls" }, false),
+		Entry("a backslash inside double quotes", func() string { return `ls | echo "a\|b"` }, true),
+		Entry("an unquoted backslash hides a flag", func() string { return `echo x | ls \-R` }, false),
 		Entry("a relative sed operand before cd", func() string { return "sed -n 1p notes.txt" }, true),
 		Entry("a relative sed operand after cd", func() string { return "cd " + root + " && sed -n 1p notes.txt" }, false),
+	)
+})
+
+var _ = Describe("CompoundBashGuard rule fallbacks", func() {
+	rules := hook.CompoundRules{Allow: []string{
+		"cat:*", "echo:*", "gh repo view:*", "gh run view:*", "gh pr close:*",
+	}}
+	guard := hook.NewCompoundBashGuardWithRules(
+		func(string) (hook.CompoundRules, error) { return rules, nil },
+	)
+	DescribeTable("lets a rule approve a read-only gh verb and nothing that writes",
+		func(command string, allow bool) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			Expect(guard.Evaluate(input).Allow).To(Equal(allow))
+		},
+		Entry("gh repo view under its rule", "gh repo view o/r --json name | cat", true),
+		Entry("gh run view", "gh run view 1 --log | cat", true),
+		Entry("gh repo view --web opens a browser", "gh repo view o/r --web | cat", false),
+		Entry("gh pr close is a write even with a rule", "gh pr close 1 | cat", false),
+		Entry("a ~ literal prefix read back", "D=~/x; cat \"$D/y\"; echo done", true),
+		Entry("an unbalanced text split the parser reads", `echo "a \" b" && cat x`, true),
 	)
 })
 
@@ -537,6 +563,9 @@ var _ = Describe("GitWriteAllows", func() {
 		Entry("worktree add outside the roots", func() []string {
 			return []string{"-C", repo, "worktree", "add", filepath.Join(outside, "x"), "-b", "feat/x"}
 		}, false),
+		Entry("worktree add under /tmp", func() []string {
+			return []string{"-C", repo, "worktree", "add", "--detach", "/tmp/hook-wt-x", "HEAD"}
+		}, true),
 		Entry("worktree add walking out with ..", func() []string {
 			return []string{"-C", repo, "worktree", "add", "../../../x"}
 		}, false),

@@ -123,15 +123,18 @@ func (w *compoundWalker) assigns(assigns []*syntax.Assign, prefix bool) error {
 // substitution. The substitution's commands are walked like any other, so each must
 // be allowed on its own; an expansion may only read, never assign or re-evaluate.
 func (w *compoundWalker) dynamicWord(word *syntax.Word) error {
-	return w.wordParts(word.Parts)
+	return w.wordParts(word.Parts, false)
 }
 
-// wordParts checks the parts of a word or of a double-quoted span.
-func (w *compoundWalker) wordParts(parts []syntax.WordPart) error {
+// wordParts checks the parts of a word or of a double-quoted span. Inside double
+// quotes a backslash only escapes `$`, a backtick, `"`, `\` or a newline, so
+// `"a\|b"` stays the literal text a rule is matched against; unquoted, `\-o`
+// becomes `-o` and would hide a flag from a gated rule.
+func (w *compoundWalker) wordParts(parts []syntax.WordPart, quoted bool) error {
 	for _, part := range parts {
 		switch node := part.(type) {
 		case *syntax.Lit:
-			if strings.Contains(node.Value, "\\") {
+			if !quoted && strings.Contains(node.Value, "\\") {
 				return errCompoundUnmodelled
 			}
 		case *syntax.SglQuoted:
@@ -139,7 +142,7 @@ func (w *compoundWalker) wordParts(parts []syntax.WordPart) error {
 				return errCompoundUnmodelled
 			}
 		case *syntax.DblQuoted:
-			if err := w.wordParts(node.Parts); err != nil {
+			if err := w.wordParts(node.Parts, true); err != nil {
 				return err
 			}
 		case *syntax.ParamExp:

@@ -65,12 +65,17 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	original, _ := input.BashCommand()
 	command := original
 	substituted, rewritten := SubstituteLiterals(original)
+	literalFallback := false
 	if rewritten {
 		body, ok := dropLiteralPrefix(original, substituted)
-		if !ok {
-			return Decision{}
+		if ok {
+			command = body
+		} else {
+			// The tree arm models the assignment itself: a fresh local whose
+			// value is walked, read back through a read-only expansion.
+			literalFallback = true
+			rewritten = false
 		}
-		command = body
 	}
 	// The rewritten text carries the syntax check; the original only has to be
 	// free of a substitution, since its `${NAME}` words are what got rewritten.
@@ -79,8 +84,14 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	// refuses it.
 	treeOnly := UnsafeSyntax(command) || strings.Contains(original, "`") ||
 		strings.Contains(original, "$(")
+	treeOnly = treeOnly || literalFallback
 	segments, ok := SplitCompound(command)
-	if !ok || len(segments) < 1 {
+	if !ok {
+		// The text split does not model a backslash inside quotes; the parser does.
+		treeOnly = true
+		segments = []string{command}
+	}
+	if len(segments) < 1 {
 		return Decision{}
 	}
 	if len(segments) > maxCompoundSegments {

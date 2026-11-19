@@ -447,7 +447,8 @@ func worktreePathsInRoots(args []string, dir string, roots []string) bool {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(base, target)
 		}
-		return WriteTargetUnderRoots(filepath.Clean(target), roots)
+		target = filepath.Clean(target)
+		return WriteTargetUnderRoots(target, roots) || TmpTarget(target)
 	}
 	return false
 }

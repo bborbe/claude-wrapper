@@ -164,9 +164,10 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 			return w.cd(words)
 		}
 	}
-	if singleShapeHeads[program] {
+	if singleShapeHeads[program] && !(static && GhRuleReadable(words)) {
 		// git / sed / gh are approved by their shape guard or not at all: a broad
-		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`.
+		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`. A read-only gh
+		// verb is the one exception — its rule cannot reach a write.
 		return errCompoundUnmodelled
 	}
 	if wrapperProgram(program) || (static && shellStateBuiltin(words)) ||
@@ -445,7 +446,11 @@ func shapeAllows(words []string, cwd string, roots []string) bool {
 // `~/` is the one tilde form allowed: UnderRoots resolves it itself.
 func unexpandedWords(words []string) bool {
 	for _, word := range words {
-		if strings.ContainsAny(word, "*?[") {
+		// A glob expands only to names that start with the word's own first
+		// character, so a word that starts with a plain character other than `-`
+		// can never become an option. `[-]x` and `*` can.
+		if strings.ContainsAny(word, "*?[") &&
+			(word == "" || strings.ContainsAny(word[:1], "-*?[")) {
 			return false
 		}
 		if strings.Contains(word, "~") && !strings.HasPrefix(word, "~/") {

@@ -321,3 +321,43 @@ func GhAPIAllows(values []string) bool {
 	}
 	return endpoint != ""
 }
+
+// ghRuleReadVerbs are the gh subcommands that only read, so an allow rule naming
+// one cannot reach a write. Write verbs (`pr close`, `pr review`, `pr ready`, …)
+// are left to the shape guards and the permission prompt even when a rule names them.
+var ghRuleReadVerbs = map[string]map[string]bool{
+	"repo":     {"view": true, "list": true},
+	"run":      {"view": true, "list": true},
+	"release":  {"view": true, "list": true},
+	"issue":    {"view": true, "list": true},
+	"workflow": {"view": true, "list": true},
+	"pr":       {"view": true, "list": true, "checks": true, "diff": true, "status": true},
+}
+
+// GhRuleReadable reports whether a gh call is a read-only verb an allow rule may
+// approve: `gh [-R <owner>/<repo>] <group> <read verb> …` or `gh search …`, with no
+// `--web` (it opens a browser) and every repo value well-formed.
+func GhRuleReadable(words []string) bool {
+	if len(words) < 2 || words[0] != "gh" {
+		return false
+	}
+	rest := words[1:]
+	if len(rest) >= 2 && (rest[0] == "-R" || rest[0] == "--repo") {
+		if !ghRepoOK(rest[1]) {
+			return false
+		}
+		rest = rest[2:]
+	}
+	for i, word := range rest {
+		if word == "--web" || word == "-w" || strings.HasPrefix(word, "--web=") {
+			return false
+		}
+		if (word == "-R" || word == "--repo") && (i+1 >= len(rest) || !ghRepoOK(rest[i+1])) {
+			return false
+		}
+	}
+	if len(rest) >= 1 && rest[0] == "search" {
+		return true
+	}
+	return len(rest) >= 2 && ghRuleReadVerbs[rest[0]][rest[1]]
+}
