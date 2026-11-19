@@ -87,6 +87,21 @@ func (r KeepaliveResult) Known() bool {
 	return false
 }
 
+// requiresSessionID reports whether an effect word names a session it changed.
+//
+// The ACT words do: a `resumed`, `restarted`, `nudged` or `closed` line with no
+// id cannot be joined to the session that came back. The REPORT and REFUSAL words
+// do not: a wake miss may be a subject with no manager at all, and a `capped` or
+// `skipped` may name a subject rather than a session.
+func requiresSessionID(result KeepaliveResult) bool {
+	switch result {
+	case KeepaliveResultResumed, KeepaliveResultRestarted, KeepaliveResultNudged, KeepaliveResultClosed:
+		return true
+	default:
+		return false
+	}
+}
+
 // KeepaliveEffect is what one procedure did in one tick.
 //
 // SessionID is the session the act was about. It is required for every effect
@@ -168,9 +183,11 @@ func (j *KeepaliveJob) runOne(ctx context.Context, procedure KeepaliveProcedure)
 			"reason", "unknown result "+string(effect.Result),
 		)
 	}
-	if effect.Result != KeepaliveResultNone && effect.SessionID == "" {
-		// A `resumed` with no id cannot be joined to the session that came back,
-		// so it reads as work and proves nothing — the same defect as a stub.
+	if requiresSessionID(effect.Result) && effect.SessionID == "" {
+		// An ACT with no id cannot be joined to the session it changed, so it
+		// reads as work and proves nothing — the same defect as a stub. A report
+		// (`kept`) or a refusal (`skipped`, `capped`) legitimately has no session:
+		// a wake miss may be a subject with no manager at all.
 		return JobLine(KeepaliveJobName, procedure.Name(),
 			"result", string(KeepaliveResultError),
 			"reason", "result "+string(effect.Result)+" without a session id",
