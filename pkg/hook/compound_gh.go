@@ -257,3 +257,67 @@ func allDigits(text string) bool {
 	}
 	return true
 }
+
+// ghAPIMethods are the only methods the read shape accepts.
+var ghAPIMethods = map[string]bool{"GET": true, "HEAD": true}
+
+// ghAPIBool, ghAPIValue and ghAPIRefuse are the api read shape's flags. Every switch
+// in ghAPIRefuse writes (`-f`/`-F`/`--input` turn gh into a POST), re-targets
+// another host, or prints the request headers and with them the auth token.
+var (
+	ghAPIBool  = map[string]bool{"--paginate": true, "--slurp": true, "--silent": true, "-i": true, "--include": true}
+	ghAPIValue = map[string]bool{
+		"-q": true, "--jq": true, "-t": true, "--template": true, "--cache": true,
+		"-H": true, "--header": true,
+	}
+	ghAPIRefuse = map[string]bool{
+		"-f": true, "--raw-field": true, "-F": true, "--field": true, "--input": true,
+		"-v": true, "--verbose": true, "--debug": true, "--hostname": true, "--web": true,
+		"-p": true, "--preview": true,
+	}
+)
+
+// GhAPIAllows reports whether the invocation is a read of one REST path:
+// `gh api <endpoint>` with the default GET method or an explicit `-X GET|HEAD`.
+// The endpoint is a literal path: no `://` (a full URL is egress) and no `..`.
+func GhAPIAllows(values []string) bool {
+	if len(values) == 0 || values[0] != "api" {
+		return false
+	}
+	endpoint := ""
+	for i := 1; i < len(values); i++ {
+		value := values[i]
+		switch {
+		case ghAPIRefuse[value]:
+			return false
+		case value == "-X" || value == "--method":
+			if i+1 >= len(values) || !ghAPIMethods[values[i+1]] {
+				return false
+			}
+			i++
+		case ghAPIValue[value]:
+			if i+1 >= len(values) {
+				return false
+			}
+			i++
+		case ghAPIBool[value]:
+		case strings.HasPrefix(value, "--") && strings.Contains(value, "="):
+			name, flagValue, _ := strings.Cut(value, "=")
+			if name == "--method" {
+				if !ghAPIMethods[flagValue] {
+					return false
+				}
+				continue
+			}
+			if !ghAPIValue[name] {
+				return false
+			}
+		case endpoint == "" && !strings.HasPrefix(value, "-") &&
+			!strings.Contains(value, "://") && !strings.Contains(value, ".."):
+			endpoint = value
+		default:
+			return false
+		}
+	}
+	return endpoint != ""
+}

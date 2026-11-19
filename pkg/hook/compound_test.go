@@ -236,6 +236,9 @@ var _ = Describe("CompoundTreeAllows", func() {
 		Entry("an allocated descriptor", "ls {fd}> /tmp/x", false),
 		Entry("an input redirect from a file", "ls < /etc/passwd", false),
 		Entry("a heredoc with a literal body", "ls <<'EOF'\nx\nEOF", true),
+		Entry("a quoted ? is not a glob", `gh api "repos/o/r/contents/x?ref=master" --jq .content | base64 -d`, true),
+		Entry("an unquoted ? is a glob", `gh api repos/o/r/contents/x?ref=master`, false),
+		Entry("a gh api write in a pipe", `gh api -X PUT repos/o/r/rulesets/1 | ls`, false),
 		Entry("a heredoc body with a substitution", "ls <<EOF\n$(date)\nEOF", false),
 		Entry("a heredoc body with a parameter", "ls <<EOF\n$HOME\nEOF", false),
 		Entry("a descriptor duplication", "ls 2>&1", true),
@@ -536,6 +539,41 @@ var _ = Describe("gh shape guards", func() {
 			[]string{"-R", "bborbe/x", "pr", "create", "--reviewer", "someone"}, false),
 		Entry("a foreign repo",
 			[]string{"-R", "other/x", "pr", "create", "--title", "t"}, false),
+	)
+
+	DescribeTable("approves a read of one REST path",
+		func(values []string, allowed bool) {
+			Expect(hook.GhAPIAllows(values)).To(Equal(allowed))
+		},
+		Entry("a default GET", []string{"api", "repos/o/r/pulls/1"}, true),
+		Entry("a GET with jq and paginate",
+			[]string{"api", "repos/o/r/pulls", "--paginate", "--jq", ".[].number"}, true),
+		Entry("an explicit GET", []string{"api", "-X", "GET", "repos/o/r"}, true),
+		Entry("an explicit HEAD", []string{"api", "--method=HEAD", "repos/o/r"}, true),
+		Entry("a PUT", []string{"api", "-X", "PUT", "repos/o/r/rulesets/1"}, false),
+		Entry("a DELETE via equals", []string{"api", "--method=DELETE", "repos/o/r"}, false),
+		Entry("a field turns it into a POST", []string{"api", "repos/o/r/issues", "-f", "title=x"}, false),
+		Entry("a typed field", []string{"api", "repos/o/r/issues", "-F", "x=1"}, false),
+		Entry("an input file", []string{"api", "repos/o/r", "--input", "/tmp/x"}, false),
+		Entry("verbose prints the token", []string{"api", "repos/o/r", "--verbose"}, false),
+		Entry("another host", []string{"api", "--hostname", "evil.example", "repos/o/r"}, false),
+		Entry("a full URL", []string{"api", "https://evil.example/x"}, false),
+		Entry("a dot-dot endpoint", []string{"api", "repos/o/r/../../x"}, false),
+		Entry("two endpoints", []string{"api", "repos/o/r", "repos/o/s"}, false),
+		Entry("no endpoint", []string{"api", "--jq", ".x"}, false),
+		Entry("a missing jq value", []string{"api", "repos/o/r", "--jq"}, false),
+	)
+
+	DescribeTable("approves base64 decoding stdin only",
+		func(values []string, allowed bool) {
+			Expect(hook.Base64DecodeAllows(values)).To(Equal(allowed))
+		},
+		Entry("decode", []string{"-d"}, true),
+		Entry("decode with a break width", []string{"--decode", "-b", "76"}, true),
+		Entry("encode is the rules' job", []string{}, false),
+		Entry("an output file", []string{"-d", "-o", "/etc/x"}, false),
+		Entry("an input file", []string{"-d", "-i", "/x"}, false),
+		Entry("an operand", []string{"-d", "/x"}, false),
 	)
 
 	DescribeTable("approves a read-only PR query for any owner",

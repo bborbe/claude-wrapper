@@ -131,12 +131,17 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 		return errCompoundUnmodelled
 	}
 	words := make([]string, 0, len(call.Args))
+	bare := make([]string, 0, len(call.Args))
 	for _, arg := range call.Args {
 		value, ok := literalWord(arg)
 		if !ok {
 			return errCompoundUnmodelled
 		}
 		words = append(words, value)
+		if _, unquoted := arg.Parts[0].(*syntax.Lit); unquoted {
+			// Only an unquoted word is subject to glob and tilde expansion.
+			bare = append(bare, value)
+		}
 	}
 	if w.calls >= maxTreeCalls {
 		return errCompoundUnmodelled
@@ -145,7 +150,7 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 	if matchesAnyPattern(segment, w.rules.Gated) {
 		return errCompoundUnmodelled
 	}
-	if compoundShapeAllows(words, w.cwd, w.roots) {
+	if unexpandedWords(bare) && shapeAllows(words, w.cwd, w.roots) {
 		w.calls++
 		return nil
 	}
@@ -331,7 +336,13 @@ func isDupTarget(target string) bool {
 // compoundShapeAllows reports whether a shape guard approves this call without an
 // allow rule. The caller checks the gated rules first, so a deny or ask still wins.
 func compoundShapeAllows(words []string, cwd string, roots []string) bool {
-	if len(words) == 0 || !unexpandedWords(words) {
+	return unexpandedWords(words) && shapeAllows(words, cwd, roots)
+}
+
+// shapeAllows is compoundShapeAllows without the expansion check, for a caller that
+// knows which words the shell can still glob.
+func shapeAllows(words []string, cwd string, roots []string) bool {
+	if len(words) == 0 {
 		return false
 	}
 	switch words[0] {
@@ -340,9 +351,11 @@ func compoundShapeAllows(words []string, cwd string, roots []string) bool {
 			GitMergeAllows(words[1:], DefaultMergeRoots())
 	case "sed":
 		return SedFilterAllows(words[1:], cwd, roots)
+	case "base64":
+		return Base64DecodeAllows(words[1:])
 	case "gh":
 		return GhMergeAllows(words[1:]) || GhCreateAllows(words[1:]) ||
-			GhReadAllows(words[1:])
+			GhReadAllows(words[1:]) || GhAPIAllows(words[1:])
 	}
 	return false
 }
