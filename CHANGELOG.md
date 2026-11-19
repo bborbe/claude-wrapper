@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.43.2
 
 - fix: **a manager's answer records `latency_ms`, so the answer-speed reading has a producer again.** `answerPermission` passed a literal `nil` for the record's latency, and `PermissionRecord.LatencyMS` is `*int` with `omitempty`, so the key was omitted entirely rather than zeroed. Measured 2026-11-19 over the 7 days to that date: **0 of 2,024 `decided_by: manager` rows carried the field**, while **877 of 877 `timeout` rows did** — the last manager row carrying it is `2026-10-30T14:50:42Z`, the day this file took over the log from the node server, whose `logDecision` set it. The park's `Question.RequestedAt` is already stamped at registration and was already an argument at the call site, so the interval is now computed the same way the timeout path computes it. A test asserts the written row is non-nil **and greater than 0**, so a stub write cannot satisfy it. Change set: `pkg/roster_mcp.go`, `pkg/roster_manager_latency_test.go`, `CHANGELOG.md`.
 
