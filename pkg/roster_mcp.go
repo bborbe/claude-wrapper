@@ -109,6 +109,11 @@ type RosterToolServer struct {
 	// Decider records a manager answer. Nil is legal — the answer still lands,
 	// and only its audit row is skipped.
 	Decider *PermissionDecider
+	// Board closes the attention card a manager's answer settles, so the store
+	// stops showing a gate nobody can answer. Nil is legal — the answer still
+	// lands and only the card close is skipped, which is the correct degradation
+	// for a daemon started without an attention store.
+	Board BoardStore
 	// A2A owns the docker / k8s workers: the create and stop calls, the turn
 	// plane and the push channel. Nil means the A2A tools refuse, which is the
 	// correct answer for a daemon started without a controller configured.
@@ -661,6 +666,55 @@ func (s *RosterToolServer) recordSpawn(
 	}
 }
 
+// closeSettledCard closes the attention card that a manager's answer_permission
+// settled, so the store stops showing a gate nobody can answer.
+//
+// Best-effort by design: the answer has already landed, and a store failure must
+// not turn it into an error the manager reads as a denied permission.
+func (s *RosterToolServer) closeSettledCard(
+	ctx context.Context,
+	producerID string,
+	behavior string,
+	resolvedBy string,
+) {
+	if s.Board == nil || producerID == "" {
+		return
+	}
+	items, err := s.Board.Open(ctx)
+	if err != nil {
+		log.Printf("WARNING: attention card close skipped for %q: store unreadable: %v", producerID, err)
+		return
+	}
+	card, ok := soleOpenPermissionCard(items, producerID)
+	if !ok {
+		return
+	}
+	if err := s.Board.Answer(ctx, card.ItemID, "supervisor", resolvedBy, behavior); err != nil {
+		log.Printf("WARNING: attention card %q close failed: %v", card.ItemID, err)
+		return
+	}
+	log.Printf("attention card %q closed by answer_permission (%s)", card.ItemID, behavior)
+}
+
+// soleOpenPermissionCard returns the one open permission card a producer holds.
+//
+// The card carries no per-request field, so the join is by producer. It reports
+// false when the producer holds zero or more than one open permission card: with
+// more than one, which card this answer settles cannot be told, so closing either
+// would be a guess. Those are left for `attention-answer.py answer`.
+func soleOpenPermissionCard(items []BoardItem, producerID string) (BoardItem, bool) {
+	var matches []BoardItem
+	for _, item := range items {
+		if item.AnswerMechanism == "permission" && item.State == "open" && item.ProducerID == producerID {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) != 1 {
+		return BoardItem{}, false
+	}
+	return matches[0], true
+}
+
 // answerPermission settles a parked permission request.
 func (s *RosterToolServer) answerPermission(
 	ctx context.Context,
@@ -716,6 +770,10 @@ func (s *RosterToolServer) answerPermission(
 	}); err != nil {
 		return "", errors.Wrapf(ctx, err, "answer permission failed")
 	}
+	// The park is settled; close its attention card too, or the store keeps the
+	// gate open and every manager keeps waking on it. Best-effort: the answer has
+	// already landed, so a store failure must not become a denied permission.
+	s.closeSettledCard(ctx, session.ID, body.Behavior, sessionID)
 	if s.Decider != nil && session.Question != nil {
 		// The manager's answer carries the same `latency_ms` the timeout path writes.
 		// `Question.RequestedAt` is stamped when this process registered the park, so the

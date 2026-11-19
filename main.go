@@ -655,6 +655,7 @@ func startFleetFaces(
 		Supervisor: supervisor,
 		Ledger:     ledger,
 		Decider:    decider,
+		Board:      pkg.NewBoardStore(attentionURL, nil), // closes a settled answer's card
 		A2A:        a2aManager,
 		Spawner:    tabSpawner,
 		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in

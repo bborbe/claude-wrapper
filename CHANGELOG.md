@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **a manager's `answer_permission` now closes the attention card it settles, so a settled gate stops waking every manager.** `answerPermission` released the parked prompt via `s.Supervisor.Answer` but never posted to the store, so the permission card stayed `state: open` after the request was gone from `pending_permissions` — measured 2026-11-19 on card `254df981…`: open 969 s after `answer_permission` returned `allow`, cleared only when the operator clicked it on the board ~24 min later. It now resolves the producer's sole open `permission` card (`producer_id` → session; the card carries no per-request field) and POSTs `/api/1.0/attention/{item_id}/answer` with `answered_by: supervisor`, `resolved_by`, and the decision — best-effort, so a store failure never becomes a denied permission. With more than one parked prompt the join is ambiguous and it closes nothing, leaving the card for `attention-answer.py answer`. Change set: `pkg/board.go`, `pkg/board_test.go`, `pkg/roster_mcp.go`, `main.go`, `CHANGELOG.md`.
+
 ## v0.44.0
 
 - feat: **a liveness verdict now carries the session's tab title.** `LivenessVerdict` gains `name`, populated from the registry entry's `Name` when the registry lists the session and left empty on a child-table or heartbeat-only verdict (the name exists only on a registry entry). `flagged-rows.py` decides "is this subject's manager live?" by NAME, so before this field a consumer had to take the verdicts from `/api/1.0/liveness` and still shell out to `session-liveness.py --list` for the identity map — two derivations of one fact, which is what this task removes. Change set: `pkg/liveness_verdict.go`, `pkg/liveness_verdict_test.go`, `CHANGELOG.md`.

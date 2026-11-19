@@ -5,6 +5,7 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,6 +68,11 @@ type BoardStore interface {
 	Get(ctx context.Context, itemID string) (BoardItem, error)
 	// RecordAttempt records what this process observed about a delivery.
 	RecordAttempt(ctx context.Context, itemID string, carrier string, outcome string) error
+	// Answer posts an answer to an open item, closing it to a terminal state. It
+	// is how a manager's `answer_permission` closes the card that otherwise stays
+	// open for a gate already settled. `decision` is `allow`/`deny` for a
+	// permission card and empty for other kinds.
+	Answer(ctx context.Context, itemID string, answeredBy string, resolvedBy string, decision string) error
 }
 
 // NewBoardStore creates a store client.
@@ -121,6 +127,49 @@ func (s *boardStore) RecordAttempt(
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusMultipleChoices {
 		return errors.Errorf(ctx, "attempt record rejected with %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// Answer posts one answer, closing an open item to a terminal state.
+//
+// A 404 or 409 means the card is already terminal (pruned, or answered by someone
+// else), so the answer is a no-op rather than an error: the gate this call exists
+// to close is already closed.
+func (s *boardStore) Answer(
+	ctx context.Context,
+	itemID string,
+	answeredBy string,
+	resolvedBy string,
+	decision string,
+) error {
+	body := map[string]string{"answered_by": answeredBy}
+	if resolvedBy != "" {
+		body["resolved_by"] = resolvedBy
+	}
+	if decision != "" {
+		body["decision"] = decision
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "marshal answer failed")
+	}
+	url := s.baseURL + "/api/1.0/attention/" + itemID + "/answer"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(encoded))
+	if err != nil {
+		return errors.Wrapf(ctx, err, "build answer request failed")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "post answer failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusConflict {
+		return nil
+	}
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return errors.Errorf(ctx, "answer rejected with %d", resp.StatusCode)
 	}
 	return nil
 }
