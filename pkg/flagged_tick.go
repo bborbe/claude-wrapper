@@ -324,7 +324,11 @@ type FlaggedTick struct {
 	// so a spec cannot silently read the host's child table.
 	Home   string
 	Getenv func(string) string
-	Now    libtime.CurrentDateTimeGetter
+	// CacheDir is where the last good row set is persisted between restarts.
+	// Empty resolves it from the daemon's state directory, which `Home` and
+	// `Getenv` scope, exactly as the session store resolves its own.
+	CacheDir string
+	Now      libtime.CurrentDateTimeGetter
 	// Interval defaults to DefaultFlaggedTickInterval.
 	Interval time.Duration
 	// ReadTimeout bounds one predicate read, defaulting to predicateTimeout.
@@ -510,6 +514,12 @@ type flaggedRowCache struct {
 	// which is the number the read-cost measurement is about.
 	readFor time.Duration
 	set     bool
+	// persistedAt is the read time of a row set loaded from disk, and fromDisk
+	// marks that no read has landed yet in this process. Together they let the
+	// first tick after a start say what it is serving instead of pretending the
+	// set is fresh — and stop saying it the moment a real read replaces it.
+	persistedAt time.Time
+	fromDisk    bool
 }
 
 // store records one read.
@@ -534,6 +544,31 @@ func (c *flaggedRowCache) store(rows []FlaggedRow, err error, took time.Duration
 		return
 	}
 	c.rows, c.lastErr, c.set = rows, nil, true
+	c.fromDisk = false
+}
+
+// seedFromDisk primes the cache with the row set a previous process persisted.
+//
+// It never overwrites a row set a read has already landed: the tick may load the
+// file while the first read is in flight, and a fresh read is always the better
+// answer. An empty set is accepted deliberately — a predicate that legitimately
+// found no eligible rows is a real answer, and skipping the first tick for it
+// would cost exactly the dead tick this exists to remove.
+func (c *flaggedRowCache) seedFromDisk(rows []FlaggedRow, readAt time.Time) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.set {
+		return
+	}
+	c.rows, c.persistedAt, c.fromDisk, c.set = rows, readAt, true, true
+}
+
+// persistedAge reports when the row set on disk was read, and whether the cache
+// is still serving it. It is false as soon as a real read lands.
+func (c *flaggedRowCache) persistedAge() (time.Time, bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.persistedAt, c.fromDisk
 }
 
 // snapshot returns the row set the tick should serve, how long the read behind it
@@ -559,7 +594,9 @@ func (t *FlaggedTick) Run(ctx context.Context) error {
 		interval = DefaultFlaggedTickInterval
 	}
 	cache := &flaggedRowCache{}
-	go t.refreshLoop(ctx, cache, interval)
+	stateDir := t.flaggedCacheDir(ctx)
+	t.seedCacheFromDisk(cache, stateDir, interval)
+	go t.refreshLoop(ctx, cache, interval, stateDir)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -572,9 +609,69 @@ func (t *FlaggedTick) Run(ctx context.Context) error {
 	}
 }
 
+// flaggedCacheDir resolves the directory the row set is persisted in.
+//
+// Empty means "not persisted": a daemon whose state directory cannot be resolved
+// keeps the pre-existing behaviour (one skipped tick per start) rather than
+// inventing a location. It is logged once, at start, so a silent loss of the
+// optimisation is visible.
+func (t *FlaggedTick) flaggedCacheDir(ctx context.Context) string {
+	if t.CacheDir != "" {
+		return t.CacheDir
+	}
+	sessions, err := SessionRoot(ctx, "", t.Home, t.Getenv)
+	if err != nil {
+		t.logf("flagged-tick: state dir unavailable, row cache is not persisted: %v", err)
+		return ""
+	}
+	// The sessions root, deliberately: it is the one directory the daemon already
+	// owns and resolves identically in both flag and default form. A file there
+	// cannot be mistaken for a session — the store lists directories only.
+	return sessions
+}
+
+// cacheMaxAge bounds how old a persisted row set may be and still be served.
+//
+// It is the same envelope the tick's own decision age already assumes: a read
+// that started just before a spawn, then a full read and an interval after it —
+// 2 × predicateTimeout + one interval, which is what `recentlySpawnedWindow`
+// (90 minutes) is sized against. A set older than that is refused, so a daemon
+// that was down for hours cannot decide the fleet's state on a stale reading.
+func (t *FlaggedTick) cacheMaxAge(interval time.Duration) time.Duration {
+	timeout := t.ReadTimeout
+	if timeout <= 0 {
+		timeout = predicateTimeout
+	}
+	return 2*timeout + interval
+}
+
+// seedCacheFromDisk primes the cache with the previous process's last good read.
+//
+// A refused set is logged with its age and the bound, so "the cache existed but
+// was too old" is distinguishable from "there was no cache" in the same log.
+func (t *FlaggedTick) seedCacheFromDisk(
+	cache *flaggedRowCache, stateDir string, interval time.Duration,
+) {
+	if stateDir == "" {
+		return
+	}
+	rows, readAt, ok := loadFlaggedCache(stateDir)
+	if !ok {
+		return
+	}
+	age := t.now().Sub(readAt)
+	if age < 0 || age > t.cacheMaxAge(interval) {
+		t.logf("flagged-tick cache refused: %d rows read %s ago, older than the %s bound",
+			len(rows), age.Truncate(time.Second), t.cacheMaxAge(interval))
+		return
+	}
+	cache.seedFromDisk(rows, readAt)
+	t.logf("flagged-tick cache restored: %d rows read %s ago", len(rows), age.Truncate(time.Second))
+}
+
 // refreshLoop keeps the row set warm, off the tick's critical path.
 func (t *FlaggedTick) refreshLoop(
-	ctx context.Context, cache *flaggedRowCache, interval time.Duration,
+	ctx context.Context, cache *flaggedRowCache, interval time.Duration, stateDir string,
 ) {
 	for {
 		started := t.now()
@@ -583,6 +680,14 @@ func (t *FlaggedTick) refreshLoop(
 		// the cost measurement exists to catch, so dropping it would bias the p95
 		// down exactly on the slow reads.
 		cache.store(rows, err, t.now().Sub(started))
+		if err == nil {
+			// Persist only a successful read, and treat a failed write as a lost
+			// optimisation rather than a tick failure: the in-process cache still
+			// serves this process, and only the next start pays for it.
+			if saveErr := saveFlaggedCache(ctx, stateDir, rows, started); saveErr != nil {
+				t.logf("flagged-tick cache save failed: %v", saveErr)
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -604,6 +709,14 @@ func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
 		}
 		t.logf("flagged-tick skipped: predicate has not returned yet")
 		return
+	}
+	if at, fromDisk := cache.persistedAge(); fromDisk {
+		// The first tick after a start. Naming the set and its age is what makes
+		// the restart cheap AND visible: the tick opens on the last good rows
+		// instead of dying, and a set old enough to be wrong is a number the
+		// operator can read rather than a silent assumption.
+		t.logf("flagged-tick served persisted rows: %d rows read %s ago (no read since start)",
+			len(rows), t.now().Sub(at).Truncate(time.Second))
 	}
 	if stale != nil {
 		// The read failed; the tick still runs on the last good row set. The

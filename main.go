@@ -245,7 +245,7 @@ func main() {
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
 		*flagged.interval, *flagged.script,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
-		*fleetPusher.heartbeat, parkedGate,
+		*fleetPusher.heartbeat, parkedGate, *stateDir,
 		openPathsFromFlags(open),
 	)
 
@@ -616,6 +616,7 @@ func startFleetFaces(
 	fleetPusherWatchMaxAge time.Duration,
 	fleetPusherHeartbeat string,
 	parked pkg.ParkedHold,
+	stateDir string,
 	openPaths openScriptPaths,
 ) {
 	now := libtime.NewCurrentDateTime()
@@ -688,6 +689,7 @@ func startFleetFaces(
 		ledger,
 		now,
 		parked,
+		stateDir,
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
@@ -1004,6 +1006,7 @@ func startFlaggedTick(
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
 	parked pkg.ParkedHold,
+	stateDir string,
 ) {
 	if interval <= 0 {
 		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
@@ -1016,6 +1019,7 @@ func startFlaggedTick(
 		Chain:    pkg.NewRegistryChainProbe(registry),
 		Ledger:   ledger,
 		Parked:   parked,
+		CacheDir: stateDir,
 		Now:      now,
 		Interval: interval,
 	}
