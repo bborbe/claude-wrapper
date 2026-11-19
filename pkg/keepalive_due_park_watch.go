@@ -24,10 +24,14 @@ import (
 // `--claim-resume` — the script's claim covers the topic tier's recorded session
 // ids, and a park watch is not one of those.
 type DueParkWatchProcedure struct {
-	// Due reports the session whose watch has come due. `false` is a quiet tick,
-	// not an error.
-	Due func(ctx context.Context) (sessionID string, due bool, err error)
-	// Resume brings the session back.
+	// DueTask reports the TASK whose watch has come due.
+	//
+	// ⚠️ A task NAME, not a session id. `park-event.py due` prints one line per
+	// watch naming the task — several sessions parked on one watch are still ONE
+	// line — and the act is `/supervisor:open --task "<name>"`, which takes a name.
+	// Naming a session here would make the act open the wrong thing.
+	DueTask func(ctx context.Context) (task string, due bool, err error)
+	// Resume brings the task's parked session back.
 	Resume KeepaliveResume
 }
 
@@ -39,27 +43,27 @@ func (p *DueParkWatchProcedure) Name() string { return "due-park-watch" }
 // One per tick for the same reason the dead-worker procedure resumes one: a
 // backlog of due watches after a long outage must not fire at once.
 func (p *DueParkWatchProcedure) Run(ctx context.Context) (KeepaliveEffect, error) {
-	if p.Due == nil {
+	if p.DueTask == nil {
 		return KeepaliveEffect{}, errors.New(ctx, "due-park-watch has no watch source")
 	}
 	if p.Resume == nil {
 		return KeepaliveEffect{}, errors.New(ctx, "due-park-watch has no resume action")
 	}
-	sessionID, due, err := p.Due(ctx)
+	task, due, err := p.DueTask(ctx)
 	if err != nil {
 		return KeepaliveEffect{}, errors.Wrap(ctx, err, "read park watches failed")
 	}
 	if !due {
 		return KeepaliveEffect{Result: KeepaliveResultNone}, nil
 	}
-	if sessionID == "" {
-		return KeepaliveEffect{}, errors.New(ctx, "due park watch names no session")
+	if task == "" {
+		return KeepaliveEffect{}, errors.New(ctx, "due park watch names no task")
 	}
-	if resumeErr := p.Resume(ctx, sessionID); resumeErr != nil {
-		return KeepaliveEffect{}, errors.Wrapf(ctx, resumeErr, "resume %s failed", sessionID)
+	if resumeErr := p.Resume(ctx, task); resumeErr != nil {
+		return KeepaliveEffect{}, errors.Wrapf(ctx, resumeErr, "resume %s failed", task)
 	}
 	return KeepaliveEffect{
 		Result:    KeepaliveResultResumed,
-		SessionID: sessionID,
+		SessionID: task,
 	}, nil
 }

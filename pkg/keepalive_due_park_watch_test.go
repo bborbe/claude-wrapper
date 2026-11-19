@@ -15,10 +15,10 @@ import (
 var _ = ginkgo.Describe("DueParkWatchProcedure", func() {
 	ctx := context.Background()
 
-	fixture := func(sessionID string, due bool) (*DueParkWatchProcedure, *[]string) {
+	fixture := func(task string, due bool) (*DueParkWatchProcedure, *[]string) {
 		resumed := &[]string{}
 		return &DueParkWatchProcedure{
-			Due: func(context.Context) (string, bool, error) { return sessionID, due, nil },
+			DueTask: func(context.Context) (string, bool, error) { return task, due, nil },
 			Resume: func(_ context.Context, id string) error {
 				*resumed = append(*resumed, id)
 				return nil
@@ -60,7 +60,7 @@ var _ = ginkgo.Describe("DueParkWatchProcedure", func() {
 
 	ginkgo.It("surfaces a watch read failure rather than reporting a quiet tick", func() {
 		procedure := &DueParkWatchProcedure{
-			Due: func(context.Context) (string, bool, error) {
+			DueTask: func(context.Context) (string, bool, error) {
 				return "", false, errors.New(ctx, "watch store unreadable")
 			},
 			Resume: func(context.Context, string) error { return nil },
@@ -73,7 +73,7 @@ var _ = ginkgo.Describe("DueParkWatchProcedure", func() {
 
 	ginkgo.It("surfaces a resume failure rather than reporting a resume", func() {
 		procedure := &DueParkWatchProcedure{
-			Due: func(context.Context) (string, bool, error) { return "p1", true, nil },
+			DueTask: func(context.Context) (string, bool, error) { return "p1", true, nil },
 			Resume: func(context.Context, string) error {
 				return errors.New(ctx, "spawn refused")
 			},
@@ -93,7 +93,7 @@ var _ = ginkgo.Describe("DueParkWatchProcedure", func() {
 			Resume: func(context.Context, string) error { return nil },
 		}),
 		ginkgo.Entry("no resume action", &DueParkWatchProcedure{
-			Due: func(context.Context) (string, bool, error) { return "", false, nil },
+			DueTask: func(context.Context) (string, bool, error) { return "", false, nil },
 		}),
 	)
 })
