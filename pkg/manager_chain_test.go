@@ -113,9 +113,20 @@ var _ = ginkgo.Describe("registry chain probe", func() {
 	ctx := context.Background()
 	row := FlaggedRow{Kind: "goal", Name: "Some Goal"}
 
-	ginkgo.It("reports live when a live registry entry carries the row name", func() {
+	ginkgo.It("reports live when a live entry carries the row's tab title", func() {
 		probe := NewRegistryChainProbe(&fakeFleetRegistry{
-			entries: []RegistryEntry{{Name: "Some Goal", SessionID: "s1"}},
+			entries: []RegistryEntry{{Name: TabNameFor("Some Goal"), SessionID: "s1"}},
+		})
+
+		live, err := probe.ChainLive(ctx, row)
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(live).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("reports live when the tab title carries a collision suffix", func() {
+		probe := NewRegistryChainProbe(&fakeFleetRegistry{
+			entries: []RegistryEntry{{Name: TabNameFor("Some Goal") + " (2)", SessionID: "s1"}},
 		})
 
 		live, err := probe.ChainLive(ctx, row)
@@ -126,7 +137,7 @@ var _ = ginkgo.Describe("registry chain probe", func() {
 
 	ginkgo.It("reports not-live when no live entry matches", func() {
 		probe := NewRegistryChainProbe(&fakeFleetRegistry{
-			entries: []RegistryEntry{{Name: "Another Row", SessionID: "s2"}},
+			entries: []RegistryEntry{{Name: TabNameFor("Another Row"), SessionID: "s2"}},
 		})
 
 		live, err := probe.ChainLive(ctx, row)

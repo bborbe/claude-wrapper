@@ -432,15 +432,20 @@ func (t *FlaggedTick) spawnNotLandedDue(ctx context.Context, row FlaggedRow) boo
 	if err != nil {
 		return false
 	}
+	matched := false
 	for _, record := range records {
 		if record.Options.Label != row.Name {
 			continue
 		}
-		// A child still alive is a slow start, not a failed spawn; the normal
-		// recently-spawned guard covers it.
-		return !pidAlive(record.ChildPID)
+		matched = true
+		// Any live child is a slow start, not a failed spawn; the normal
+		// recently-spawned guard covers it. Checking every matching record, not
+		// the first in directory order, stops a retry beside a live child.
+		if pidAlive(record.ChildPID) {
+			return false
+		}
 	}
-	return false
+	return matched
 }
 
 // rememberSpawnNotLanded records that the row's single retry has been issued.
@@ -1190,6 +1195,13 @@ func decision(
 	}
 	if !retryNotLanded {
 		if at, ok := recent[key]; ok && now.Sub(at) < recentlySpawnedWindow {
+			return reasonRecentlySpawned, false, true
+		}
+		// A row RE-CREATED for a missing transcript still carries its old session
+		// id, so `key` misses it; the fresh spawn filed its ledger row under the
+		// label. Check the label too, or such a row whose worker never re-stamps
+		// the page is re-created again on every tick.
+		if at, ok := recent[labelKey(row.Name)]; ok && now.Sub(at) < recentlySpawnedWindow {
 			return reasonRecentlySpawned, false, true
 		}
 	}

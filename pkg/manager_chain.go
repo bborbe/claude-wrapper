@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"strings"
 
 	"github.com/bborbe/errors"
 )
@@ -54,10 +55,41 @@ func (p *registryChainProbe) ChainLive(ctx context.Context, row FlaggedRow) (boo
 	if err != nil {
 		return false, err
 	}
+	// The registry records the TAB TITLE, not the row name: `TabNameFor` prefixes
+	// `⚙ ` and `UniqueTabName` appends ` (n)` on a collision. Joining on the raw
+	// row name would never match a live tab-spawned manager, so the tick would
+	// open a duplicate — the exact hazard this probe exists to prevent.
+	base := TabNameFor(row.Name)
 	for _, entry := range live {
-		if entry.Name == row.Name {
+		if matchesTabName(entry.Name, base) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// matchesTabName reports whether a registry name is the base tab name, or the
+// base with a ` (n)` collision suffix.
+func matchesTabName(entryName, base string) bool {
+	if entryName == base {
+		return true
+	}
+	prefix := base + " ("
+	if !strings.HasPrefix(entryName, prefix) || !strings.HasSuffix(entryName, ")") {
+		return false
+	}
+	return allDigits(entryName[len(prefix) : len(entryName)-1])
+}
+
+// allDigits reports whether s is a non-empty run of ASCII digits.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

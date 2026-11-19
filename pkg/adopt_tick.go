@@ -91,13 +91,14 @@ func (t *AdoptTick) liveSet(ctx context.Context) (map[string]bool, error) {
 	return live, nil
 }
 
-// subjectOf resolves one session's subject, or "" when none is recorded.
-func (t *AdoptTick) subjectOf(ctx context.Context, sessionID string) string {
+// subjectOfErr resolves one session's subject, returning the read error so the
+// stood-down guard can fail CLOSED: a discarded error reads as "not stopped" and
+// would write a claim beside the operator's own stand-down.
+func (t *AdoptTick) subjectOfErr(ctx context.Context, sessionID string) (string, error) {
 	if t.Subjects == nil {
-		return ""
+		return "", nil
 	}
-	subject, _ := t.Subjects.Subject(ctx, sessionID)
-	return subject
+	return t.Subjects.Subject(ctx, sessionID)
 }
 
 // adoptManager applies the stood-down guard, then adopts every worker the exited
@@ -109,14 +110,31 @@ func (t *AdoptTick) adoptManager(
 	live map[string]bool,
 	result *AdoptResult,
 ) error {
-	subjectOf := func(id string) string { return t.subjectOf(ctx, id) }
-	if subject := subjectOf(exited); subject != "" {
-		if marker, stopped, _ := t.Subjects.Stopped(ctx, subject); stopped {
+	subject, err := t.subjectOfErr(ctx, exited)
+	if err != nil {
+		result.Skipped = append(result.Skipped, exited+": subject read failed: "+err.Error())
+		return nil
+	}
+	if subject != "" {
+		marker, stopped, err := t.Subjects.Stopped(ctx, subject)
+		if err != nil {
+			result.Skipped = append(
+				result.Skipped, exited+": stand-down read failed: "+err.Error(),
+			)
+			return nil
+		}
+		if stopped {
 			result.Skipped = append(
 				result.Skipped, exited+": subject stood down ("+marker+")",
 			)
 			return nil
 		}
+	}
+	// The successor join is lenient: a failed subject read falls back to self,
+	// which is live, so it never writes beside a dead holder.
+	subjectOf := func(id string) string {
+		s, _ := t.subjectOfErr(ctx, id)
+		return s
 	}
 	adopter, how := resolveAdopter(exited, live, t.Self, subjectOf)
 	for _, worker := range workers {
