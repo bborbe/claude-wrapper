@@ -6,7 +6,10 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
+	"net/http"
+	"net/http/httptest"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -48,13 +51,27 @@ func (b *boardSupervisor) Answer(
 type fakeBoardStore struct {
 	items     []BoardItem
 	getErr    error
+	openErr   error
 	attempts  []string
 	openCalls int
+	answers   []string
+	answerErr error
 }
 
 func (s *fakeBoardStore) Open(ctx context.Context) ([]BoardItem, error) {
 	s.openCalls++
-	return s.items, nil
+	return s.items, s.openErr
+}
+
+func (s *fakeBoardStore) Answer(
+	ctx context.Context,
+	itemID string,
+	answeredBy string,
+	resolvedBy string,
+	decision string,
+) error {
+	s.answers = append(s.answers, itemID+"="+answeredBy+":"+decision)
+	return s.answerErr
 }
 
 func (s *fakeBoardStore) Get(ctx context.Context, itemID string) (BoardItem, error) {
@@ -285,5 +302,129 @@ var _ = ginkgo.Describe("board delivery", func() {
 			gomega.Expect(supervisor.answered).To(gomega.BeEmpty())
 			gomega.Expect(watching).To(gomega.BeEmpty())
 		})
+	})
+})
+
+var _ = ginkgo.Describe("answer close", func() {
+	ginkgo.Describe("openPermissionCards", func() {
+		ginkgo.It("returns the one open permission card for a producer", func() {
+			cards := openPermissionCards([]BoardItem{
+				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+				{ItemID: "b", State: "answered", AnswerMechanism: "permission", ProducerID: "s1"},
+			}, "s1")
+			gomega.Expect(cards).To(gomega.HaveLen(1))
+			gomega.Expect(cards[0].ItemID).To(gomega.Equal("a"))
+		})
+
+		ginkgo.It("returns both when the producer holds two open permission cards", func() {
+			cards := openPermissionCards([]BoardItem{
+				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+				{ItemID: "b", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+			}, "s1")
+			gomega.Expect(cards).To(gomega.HaveLen(2))
+		})
+
+		ginkgo.It("ignores another producer's card", func() {
+			cards := openPermissionCards([]BoardItem{
+				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s2"},
+			}, "s1")
+			gomega.Expect(cards).To(gomega.BeEmpty())
+		})
+	})
+
+	ginkgo.Describe("boardStore.Answer", func() {
+		ginkgo.It("posts answered_by, resolved_by and decision", func() {
+			var got map[string]string
+			var path string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path = r.URL.Path
+				_ = json.NewDecoder(r.Body).Decode(&got)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
+
+			store := NewBoardStore(server.URL, nil)
+			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow")).To(gomega.Succeed())
+			gomega.Expect(path).To(gomega.Equal("/api/1.0/attention/item-1/answer"))
+			gomega.Expect(got).To(gomega.Equal(map[string]string{
+				"answered_by": "supervisor",
+				"resolved_by": "mgr-1",
+				"decision":    "allow",
+			}))
+		})
+
+		ginkgo.It("treats 409 as already closed", func() {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+			}))
+			defer server.Close()
+
+			store := NewBoardStore(server.URL, nil)
+			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow")).To(gomega.Succeed())
+		})
+
+		ginkgo.It("fails on a server error", func() {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			store := NewBoardStore(server.URL, nil)
+			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow")).ToNot(gomega.Succeed())
+		})
+	})
+})
+
+var _ = ginkgo.Describe("closeSettledCard", func() {
+	ginkgo.It("closes the producer's sole open permission card", func() {
+		store := &fakeBoardStore{items: []BoardItem{
+			{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+		}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.Equal([]string{"a=supervisor:allow"}))
+	})
+
+	ginkgo.It("closes nothing when the producer holds two open permission cards", func() {
+		store := &fakeBoardStore{items: []BoardItem{
+			{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+			{ItemID: "b", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+		}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("does nothing when the board is not wired", func() {
+		server := &RosterToolServer{}
+		gomega.Expect(func() {
+			server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+		}).ToNot(gomega.Panic())
+	})
+
+	ginkgo.It("does nothing when the store cannot be read", func() {
+		store := &fakeBoardStore{openErr: stderrors.New("store down")}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("swallows an answer error without panicking", func() {
+		store := &fakeBoardStore{
+			items:     []BoardItem{{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"}},
+			answerErr: stderrors.New("store rejected"),
+		}
+		server := &RosterToolServer{Board: store}
+
+		gomega.Expect(func() {
+			server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+		}).ToNot(gomega.Panic())
 	})
 })
