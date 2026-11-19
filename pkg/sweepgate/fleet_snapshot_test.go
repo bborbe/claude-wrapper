@@ -53,6 +53,35 @@ var _ = ginkgo.Describe("FleetSnapshot", func() {
 		gomega.Expect(snap.Sessions).To(gomega.HaveLen(1))
 		gomega.Expect(snap.Sessions).To(gomega.HaveKey("s1"))
 	})
+
+	ginkgo.It("resets a carried entry's counter once its session is no longer busy", func() {
+		// The tick is the only writer and never drops a row, so without this a
+		// finished session keeps its last stall_count forever and reads as stalled
+		// indefinitely.
+		prev := fleetsnapshot.Snapshot{Sessions: map[string]fleetsnapshot.Entry{
+			"dead": {Name: "Old Task", Status: "busy", StallCount: 5},
+		}}
+		// The session is gone from the registry entirely.
+		prepared := Prepared{Registry: map[string]RegistryRecord{}}
+
+		snap := FleetSnapshot(prepared, "x", prev)
+
+		gomega.Expect(snap.Sessions).To(gomega.HaveKey("dead"), "the row is carried, not dropped")
+		gomega.Expect(snap.Sessions["dead"].StallCount).To(gomega.Equal(0))
+	})
+
+	ginkgo.It("does NOT advance a carried entry that is still busy", func() {
+		// Its own subject's tick advances it; incrementing here would count the
+		// same round twice.
+		prev := fleetsnapshot.Snapshot{Sessions: map[string]fleetsnapshot.Entry{
+			"live": {Name: "Other Task", Status: "busy", StallCount: 4, TaskMtime: "t"},
+		}}
+		prepared := Prepared{Registry: map[string]RegistryRecord{"live": {Status: "busy"}}}
+
+		snap := FleetSnapshot(prepared, "x", prev)
+
+		gomega.Expect(snap.Sessions["live"].StallCount).To(gomega.Equal(4))
+	})
 })
 
 var _ = ginkgo.Describe("nextStallCount", func() {

@@ -115,7 +115,6 @@ func Tick(
 	}
 
 	persistFleetSnapshot(ctx, cfg, prepared, stderr)
-
 	if changed {
 		return ExitChange
 	}
@@ -133,8 +132,9 @@ func Tick(
 // and make every session read first-seen. A failed WRITE is named on stderr and
 // never fails the tick — the frame is the primary artifact.
 func persistFleetSnapshot(ctx context.Context, cfg Config, prepared Prepared, stderr io.Writer) {
-	snapPath := FleetSnapshotPath()
-	if snapPath == "" {
+	snapPath, err := FleetSnapshotPath()
+	if err != nil {
+		fmt.Fprintf(stderr, "sweep-gate: fleet snapshot skipped (%v)\n", err)
 		return
 	}
 	prev, loadErr := fleetsnapshot.Load(ctx, snapPath)

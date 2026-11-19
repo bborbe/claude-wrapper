@@ -5,9 +5,12 @@
 package sweepgate
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/bborbe/errors"
 
 	"github.com/bborbe/claude-wrapper/pkg/fleetsnapshot"
 )
@@ -18,15 +21,20 @@ import (
 // The env override is the same one the Python honours, and it is load-bearing
 // for testing: without it a replay would have to write the LIVE snapshot to seed
 // a previous round.
-func FleetSnapshotPath() string {
+//
+// An empty path means the home directory could not be resolved. The caller names
+// that on stderr rather than skipping silently — a store that quietly stops being
+// written reads exactly like a fleet with nothing to persist.
+func FleetSnapshotPath() (string, error) {
 	if path := os.Getenv("FLEET_SNAPSHOT_PATH"); path != "" {
-		return path
+		return path, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", errors.Wrapf(context.Background(), err,
+			"resolve home dir for the fleet snapshot path failed")
 	}
-	return filepath.Join(home, ".claude", "state", "fleet-snapshot.json")
+	return filepath.Join(home, ".claude", "state", "fleet-snapshot.json"), nil
 }
 
 // FleetSnapshot projects the prepared tracked set onto the SESSION-keyed fleet
@@ -61,8 +69,20 @@ func FleetSnapshot(
 	// Every other subject's sessions survive this tick untouched. Their counters
 	// are advanced only by their own subject's tick, which is what keeps one
 	// increment per round.
+	//
+	// ⚠️ **A carried entry whose session is no longer busy has its counter RESET.**
+	// The tick is now the only writer and never drops a row, so without this a
+	// finished session keeps its last `stall_count` forever and reads as stalled
+	// indefinitely — the count is a fact about a session that is no longer doing
+	// anything. A still-busy entry is left alone: its own subject's tick is what
+	// advances it, and incrementing here would count the same round twice.
 	for id, entry := range prev.Sessions {
-		out.Sessions[id] = entry
+		carried := entry
+		if status := prepared.Registry[id].Status; status != "busy" && status != "shell" {
+			carried.Status = status
+			carried.StallCount = 0
+		}
+		out.Sessions[id] = carried
 	}
 	for _, task := range prepared.Tasks {
 		for _, sid := range task.SessionIDs {
@@ -70,8 +90,8 @@ func FleetSnapshot(
 				continue
 			}
 			next := fleetsnapshot.Entry{
-				Name:   task.Name,
-				Status: prepared.Registry[sid].Status,
+				Name:     task.Name,
+				Status:   prepared.Registry[sid].Status,
 				TaskFile: task.Name,
 				// RFC3339Nano, not RFC3339: a task file rewritten twice inside one
 				// second must still read as ADVANCED, or the counter increments on
