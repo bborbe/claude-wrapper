@@ -92,6 +92,49 @@ var _ = ginkgo.Describe("keepalive output parsers", func() {
 		})
 	})
 
+	ginkgo.Describe("ParseDecisionParkRows", func() {
+		ginkgo.It("reads a resume row's kind and session id", func() {
+			output := "resume kind=a task-one abc123 — attempt 1 of 3\n" +
+				"decision-candidates=1 · decision-resumed-a=0 · decision-resumed-d=0 · decision-unread=0\n"
+
+			decisions, err := ParseDecisionParkRows(ctx, output)
+
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(decisions).To(gomega.Equal([]LapsedManagerDecision{{
+				Verdict:   "resume",
+				SessionID: "abc123",
+			}}))
+		})
+
+		// ⚠️ The script prints no sid for a crash-loop row: the cap is about the
+		// TASK's retry budget, not one session. The decision carries an empty id,
+		// which is why `capped` does not require one.
+		ginkgo.It("reads a crash-loop row with no session id", func() {
+			output := "⚠️ WORKER CRASH-LOOP: task-one — 3 resumes in 30 min; stop resuming\n"
+
+			decisions, err := ParseDecisionParkRows(ctx, output)
+
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(decisions).To(gomega.Equal([]LapsedManagerDecision{{Verdict: "crash-loop"}}))
+			gomega.Expect(decisions[0].SessionID).To(gomega.BeEmpty())
+		})
+
+		ginkgo.It("ignores unread lines and the summary", func() {
+			output := "unread task-one — session abc → UNKNOWN\n" +
+				"decision-candidates=0 · decision-resumed-a=0 · decision-resumed-d=0 · decision-unread=1\n"
+
+			decisions, err := ParseDecisionParkRows(ctx, output)
+
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(decisions).To(gomega.BeEmpty())
+		})
+
+		ginkgo.It("refuses a resume row with too few fields", func() {
+			_, err := ParseDecisionParkRows(ctx, "resume kind=a task-one\n")
+			gomega.Expect(err).To(gomega.HaveOccurred())
+		})
+	})
+
 	ginkgo.Describe("ParseWakeMisses", func() {
 		ginkgo.It("reads the subject, result, session and live column", func() {
 			output := "MISS private-personal goal-a 2026-11-19T20:00:00Z NO-PANE abc123 live=yes\n" +

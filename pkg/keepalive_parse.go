@@ -80,6 +80,40 @@ func nudgeName(header string) string {
 	return strings.TrimSpace(header[open+1 : closeIdx])
 }
 
+// ParseDecisionParkRows reads `decision-park-resume.py`'s per-row lines.
+//
+// Two shapes, from the script's own print statements:
+//
+//	resume kind=<a|d> <task> <sid> — <detail>
+//	⚠️ WORKER CRASH-LOOP: <task> — <detail>
+//
+// ⚠️ **A crash-loop row carries NO session id.** The script prints only the task
+// and the detail for it, because the cap is about the TASK's retry budget rather
+// than about one session. The decision is therefore returned with an empty
+// SessionID, which is why `capped` is one of the effect words that does not
+// require one.
+func ParseDecisionParkRows(ctx context.Context, output string) ([]LapsedManagerDecision, error) {
+	decisions := []LapsedManagerDecision{}
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "resume kind="):
+			fields := strings.Fields(trimmed)
+			if len(fields) < 4 {
+				return nil, errors.Errorf(ctx, "decision-park resume row has %d fields, want 4: %q", len(fields), trimmed)
+			}
+			decisions = append(decisions, LapsedManagerDecision{
+				Verdict:   "resume",
+				SessionID: fields[3],
+			})
+		case strings.Contains(trimmed, "WORKER CRASH-LOOP:"):
+			// The sid is absent by the script's own design — the cap is per TASK.
+			decisions = append(decisions, LapsedManagerDecision{Verdict: "crash-loop"})
+		}
+	}
+	return decisions, nil
+}
+
 // ParseWakeMisses reads `wake-misses.py`'s `MISS` lines.
 //
 // Shape, from `commands/steps/wake-misses.md`:
