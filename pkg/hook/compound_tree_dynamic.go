@@ -165,7 +165,10 @@ func (w *compoundWalker) wordParts(parts []syntax.WordPart, quoted bool) error {
 // and an index or slice carries arithmetic; each is refused, as is an operand word
 // that is not a plain literal.
 func safeParamExp(exp *syntax.ParamExp) bool {
-	if exp.Excl || exp.Index != nil || exp.Slice != nil || exp.Repl != nil ||
+	if exp.Index != nil && !literalIndex(exp.Index) {
+		return false
+	}
+	if exp.Excl || exp.Slice != nil || exp.Repl != nil ||
 		exp.Names != 0 || exp.Width {
 		return false
 	}
@@ -196,4 +199,15 @@ func (w *compoundWalker) sourceText(args []*syntax.Word) string {
 		texts = append(texts, w.src[start:end])
 	}
 	return strings.Join(texts, " ")
+}
+
+// literalIndex reports whether an array index is a plain number (`${PIPESTATUS[0]}`);
+// any other index is arithmetic that can carry a substitution.
+func literalIndex(index syntax.ArithmExpr) bool {
+	word, ok := index.(*syntax.Word)
+	if !ok {
+		return false
+	}
+	value, ok := literalWord(word)
+	return ok && allDigits(value)
 }

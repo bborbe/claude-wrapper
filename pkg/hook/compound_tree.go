@@ -370,34 +370,53 @@ type compoundRefusalError struct{}
 // Error implements error.
 func (*compoundRefusalError) Error() string { return "compound tree shape refused" }
 
-// literalWord renders a word only when it carries no expansion.
+// literalWord renders a word only when it carries no expansion. A word may be
+// built from several literal parts (`--format="%h %s"`); a quoted part may not
+// open the word with `~`, which the shell leaves unexpanded while UnderRoots would
+// expand it.
 func literalWord(word *syntax.Word) (string, bool) {
-	if word == nil || len(word.Parts) != 1 {
+	if word == nil || len(word.Parts) == 0 {
 		return "", false
 	}
-	switch part := word.Parts[0].(type) {
-	case *syntax.Lit:
-		// The parser keeps an escape in Value (`\-o`) while the shell strips it, so
-		// a word carrying one is not the literal the shape guards would judge.
-		if strings.Contains(part.Value, "\\") {
+	var out strings.Builder
+	for i, part := range word.Parts {
+		value, ok := literalPart(part, i == 0)
+		if !ok {
 			return "", false
 		}
-		return part.Value, true
+		out.WriteString(value)
+	}
+	return out.String(), true
+}
+
+// literalPart renders one part of a literal word.
+func literalPart(part syntax.WordPart, first bool) (string, bool) {
+	switch part := part.(type) {
+	case *syntax.Lit:
+		// The parser keeps an escape in Value (`\-o`) while the shell strips it, so
+		// a word carrying one is not the literal the shape guards would judge. An
+		// escaped space (`65\ Runbooks`) is the one escape rendered as the shell does.
+		value := strings.ReplaceAll(part.Value, "\\ ", " ")
+		if strings.Contains(value, "\\") {
+			return "", false
+		}
+		return value, true
 	case *syntax.DblQuoted:
-		// `"/x/y"` with no expansion inside is the same single word as `/x/y`.
+		// `"/x/y"` with no expansion inside is the same text as `/x/y`.
+		if len(part.Parts) == 0 {
+			return "", true
+		}
 		if len(part.Parts) != 1 {
 			return "", false
 		}
 		lit, ok := part.Parts[0].(*syntax.Lit)
-		if !ok || strings.ContainsAny(lit.Value, "\\$`") || strings.HasPrefix(lit.Value, "~") {
+		if !ok || strings.ContainsAny(lit.Value, "\\$`") || (first && strings.HasPrefix(lit.Value, "~")) {
 			return "", false
 		}
 		return lit.Value, true
 	case *syntax.SglQuoted:
-		// `'150,158p'` never expands: the shell passes the inside verbatim, and the
-		// shape guards still judge that value exactly as they judge a bare word.
-		// A quoted `~` is not expanded by the shell, while UnderRoots would expand it.
-		if part.Dollar || strings.HasPrefix(part.Value, "~") {
+		// `'150,158p'` never expands: the shell passes the inside verbatim.
+		if part.Dollar || (first && strings.HasPrefix(part.Value, "~")) {
 			return "", false
 		}
 		return part.Value, true

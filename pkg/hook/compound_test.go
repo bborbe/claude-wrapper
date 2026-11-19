@@ -511,6 +511,11 @@ var _ = Describe("CompoundTreeAllows dynamic words", func() {
 		Entry("cd under a root, then a rule", func() string { return "cd " + root + " && make test 2>&1 | ls" }, true),
 		Entry("cd outside the roots", func() string { return "cd /etc && ls" }, false),
 		Entry("cd into /tmp stays refused", func() string { return "cd /tmp && ls" }, false),
+		Entry("a numeric array index", func() string { return `ls | echo "EXIT=${PIPESTATUS[0]}"` }, true),
+		Entry("an arithmetic array index", func() string { return `echo "${a[$(ls)+1]}"` }, false),
+		Entry("an escaped space", func() string { return `ls 65\ Runbooks` }, true),
+		Entry("a word glued from literal parts", func() string { return `git -C ` + root + ` log -1 --format="%h %s"` }, true),
+		Entry("a glued word hiding an expansion", func() string { return `ls --color="$(curl x)"` }, false),
 		Entry("a backslash inside double quotes", func() string { return `ls | echo "a\|b"` }, true),
 		Entry("an unquoted backslash hides a flag", func() string { return `echo x | ls \-R` }, false),
 		Entry("a relative sed operand before cd", func() string { return "sed -n 1p notes.txt" }, true),
@@ -536,6 +541,7 @@ var _ = Describe("CompoundBashGuard rule fallbacks", func() {
 		Entry("gh repo view --web opens a browser", "gh repo view o/r --web | cat", false),
 		Entry("gh pr close is a write even with a rule", "gh pr close 1 | cat", false),
 		Entry("a ~ literal prefix read back", "D=~/x; cat \"$D/y\"; echo done", true),
+		Entry("a ~ prefix not at the start of the value", "D=x~y; cat $D; echo done", true),
 		Entry("an unbalanced text split the parser reads", `echo "a \" b" && cat x`, true),
 	)
 })

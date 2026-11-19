@@ -169,7 +169,9 @@ func dropLiteralPrefix(original string, substituted string) (string, bool) {
 		return "", false
 	}
 	for _, pair := range compoundAssignPair.FindAllStringSubmatch(prefix, -1) {
-		if shellReadName(pair[1]) || strings.ContainsAny(pair[2], "*?[]~!#") {
+		// A leading `~/` expands at assignment exactly as it does in the word the
+		// rewrite carries it into; a `~` anywhere else does not.
+		if shellReadName(pair[1]) || strings.ContainsAny(strings.TrimPrefix(pair[2], "~/"), "*?[]~!#") {
 			return "", false
 		}
 	}
