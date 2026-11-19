@@ -109,6 +109,11 @@ type RosterToolServer struct {
 	// Decider records a manager answer. Nil is legal — the answer still lands,
 	// and only its audit row is skipped.
 	Decider *PermissionDecider
+	// Board closes the attention card a manager's answer settles, so the store
+	// stops showing a gate nobody can answer. Nil is legal — the answer still
+	// lands and only the card close is skipped, which is the correct degradation
+	// for a daemon started without an attention store.
+	Board BoardStore
 	// A2A owns the docker / k8s workers: the create and stop calls, the turn
 	// plane and the push channel. Nil means the A2A tools refuse, which is the
 	// correct answer for a daemon started without a controller configured.
@@ -715,6 +720,19 @@ func (s *RosterToolServer) answerPermission(
 		Behavior: body.Behavior,
 	}); err != nil {
 		return "", errors.Wrapf(ctx, err, "answer permission failed")
+	}
+	// The park is settled; close its attention card too, or the store keeps the
+	// gate open and every manager keeps waking on it. Best-effort and off the
+	// critical path: the answer has landed, so a slow or down store must never
+	// delay or fail the reply. Only a permission park has a permission card, and
+	// the close is detached from the request context so a returned call does not
+	// cancel it mid-flight.
+	if kind == AnswerKindPermission {
+		go func() {
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			s.closeSettledCard(closeCtx, session.ID, body.Behavior, sessionID)
+		}()
 	}
 	if s.Decider != nil && session.Question != nil {
 		// The manager's answer carries the same `latency_ms` the timeout path writes.
