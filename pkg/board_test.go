@@ -260,29 +260,29 @@ var _ = ginkgo.Describe("board delivery", func() {
 })
 
 var _ = ginkgo.Describe("answer close", func() {
-	ginkgo.Describe("soleOpenPermissionCard", func() {
+	ginkgo.Describe("openPermissionCards", func() {
 		ginkgo.It("returns the one open permission card for a producer", func() {
-			card, ok := soleOpenPermissionCard([]BoardItem{
+			cards := openPermissionCards([]BoardItem{
 				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
 				{ItemID: "b", State: "answered", AnswerMechanism: "permission", ProducerID: "s1"},
 			}, "s1")
-			gomega.Expect(ok).To(gomega.BeTrue())
-			gomega.Expect(card.ItemID).To(gomega.Equal("a"))
+			gomega.Expect(cards).To(gomega.HaveLen(1))
+			gomega.Expect(cards[0].ItemID).To(gomega.Equal("a"))
 		})
 
-		ginkgo.It("refuses when the producer holds two open permission cards", func() {
-			_, ok := soleOpenPermissionCard([]BoardItem{
+		ginkgo.It("returns both when the producer holds two open permission cards", func() {
+			cards := openPermissionCards([]BoardItem{
 				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
 				{ItemID: "b", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
 			}, "s1")
-			gomega.Expect(ok).To(gomega.BeFalse())
+			gomega.Expect(cards).To(gomega.HaveLen(2))
 		})
 
 		ginkgo.It("ignores another producer's card", func() {
-			_, ok := soleOpenPermissionCard([]BoardItem{
+			cards := openPermissionCards([]BoardItem{
 				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s2"},
 			}, "s1")
-			gomega.Expect(ok).To(gomega.BeFalse())
+			gomega.Expect(cards).To(gomega.BeEmpty())
 		})
 	})
 
@@ -327,5 +327,37 @@ var _ = ginkgo.Describe("answer close", func() {
 			store := NewBoardStore(server.URL, nil)
 			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow")).ToNot(gomega.Succeed())
 		})
+	})
+})
+
+var _ = ginkgo.Describe("closeSettledCard", func() {
+	ginkgo.It("closes the producer's sole open permission card", func() {
+		store := &fakeBoardStore{items: []BoardItem{
+			{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+		}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.Equal([]string{"a=supervisor:allow"}))
+	})
+
+	ginkgo.It("closes nothing when the producer holds two open permission cards", func() {
+		store := &fakeBoardStore{items: []BoardItem{
+			{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+			{ItemID: "b", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+		}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("does nothing when the board is not wired", func() {
+		server := &RosterToolServer{}
+		gomega.Expect(func() {
+			server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+		}).ToNot(gomega.Panic())
 	})
 })

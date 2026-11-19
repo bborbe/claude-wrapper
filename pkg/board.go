@@ -68,7 +68,7 @@ type BoardStore interface {
 	Get(ctx context.Context, itemID string) (BoardItem, error)
 	// RecordAttempt records what this process observed about a delivery.
 	RecordAttempt(ctx context.Context, itemID string, carrier string, outcome string) error
-	// Answer posts an answer to an open item, closing it to a terminal state. It
+	// Answer posts an answer to an open item, closing it out of the open queue. It
 	// is how a manager's `answer_permission` closes the card that otherwise stays
 	// open for a gate already settled. `decision` is `allow`/`deny` for a
 	// permission card and empty for other kinds.
@@ -131,7 +131,7 @@ func (s *boardStore) RecordAttempt(
 	return nil
 }
 
-// Answer posts one answer, closing an open item to a terminal state.
+// Answer posts one answer, closing an open item out of the open queue.
 //
 // A 404 or 409 means the card is already terminal (pruned, or answered by someone
 // else), so the answer is a no-op rather than an error: the gate this call exists

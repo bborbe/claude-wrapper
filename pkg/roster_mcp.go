@@ -666,55 +666,6 @@ func (s *RosterToolServer) recordSpawn(
 	}
 }
 
-// closeSettledCard closes the attention card that a manager's answer_permission
-// settled, so the store stops showing a gate nobody can answer.
-//
-// Best-effort by design: the answer has already landed, and a store failure must
-// not turn it into an error the manager reads as a denied permission.
-func (s *RosterToolServer) closeSettledCard(
-	ctx context.Context,
-	producerID string,
-	behavior string,
-	resolvedBy string,
-) {
-	if s.Board == nil || producerID == "" {
-		return
-	}
-	items, err := s.Board.Open(ctx)
-	if err != nil {
-		log.Printf("WARNING: attention card close skipped for %q: store unreadable: %v", producerID, err)
-		return
-	}
-	card, ok := soleOpenPermissionCard(items, producerID)
-	if !ok {
-		return
-	}
-	if err := s.Board.Answer(ctx, card.ItemID, "supervisor", resolvedBy, behavior); err != nil {
-		log.Printf("WARNING: attention card %q close failed: %v", card.ItemID, err)
-		return
-	}
-	log.Printf("attention card %q closed by answer_permission (%s)", card.ItemID, behavior)
-}
-
-// soleOpenPermissionCard returns the one open permission card a producer holds.
-//
-// The card carries no per-request field, so the join is by producer. It reports
-// false when the producer holds zero or more than one open permission card: with
-// more than one, which card this answer settles cannot be told, so closing either
-// would be a guess. Those are left for `attention-answer.py answer`.
-func soleOpenPermissionCard(items []BoardItem, producerID string) (BoardItem, bool) {
-	var matches []BoardItem
-	for _, item := range items {
-		if item.AnswerMechanism == "permission" && item.State == "open" && item.ProducerID == producerID {
-			matches = append(matches, item)
-		}
-	}
-	if len(matches) != 1 {
-		return BoardItem{}, false
-	}
-	return matches[0], true
-}
-
 // answerPermission settles a parked permission request.
 func (s *RosterToolServer) answerPermission(
 	ctx context.Context,

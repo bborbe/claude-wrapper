@@ -342,6 +342,17 @@ func openCardsFromURL(attentionURL string) pkg.OpenCardReader {
 	return pkg.NewBoardOpenCards(pkg.NewBoardStore(attentionURL, nil))
 }
 
+// boardStoreFromURL builds the attention-store writer a manager's answer uses to
+// close the card it settled. An empty URL returns nil, which the answer path
+// treats as "no store" rather than an unreadable one — the same distinction
+// openCardsFromURL makes, so an empty -attention-url emits no per-answer warning.
+func boardStoreFromURL(attentionURL string) pkg.BoardStore {
+	if strings.TrimSpace(attentionURL) == "" {
+		return nil
+	}
+	return pkg.NewBoardStore(attentionURL, nil)
+}
+
 // newParkedGate builds the flagged tick's park gate, or nil when the state
 // directories cannot be resolved — a nil gate is an inactive gate.
 func newParkedGate(
@@ -655,7 +666,7 @@ func startFleetFaces(
 		Supervisor: supervisor,
 		Ledger:     ledger,
 		Decider:    decider,
-		Board:      pkg.NewBoardStore(attentionURL, nil), // closes a settled answer's card
+		Board:      boardStoreFromURL(attentionURL), // closes a settled answer's card
 		A2A:        a2aManager,
 		Spawner:    tabSpawner,
 		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in
