@@ -59,7 +59,7 @@ check allow "$(bash_payload 'echo a | sed -n 1p')"
 # 3 pass: shapes no guard approves and none refuses.
 check pass "$(bash_payload 'openssl rand -hex 4')"
 check pass "$(bash_payload 'rsync -a /tmp/a /tmp/b')"
-check pass "$(bash_payload 'curl -s https://example.com/x')"
+check pass "$(bash_payload 'dig +short example.com')"
 
 # 2 deny: a prod cluster mutation and a branch upload. The verbs are assembled so a
 # hook scanning this file for them does not refuse the file.
