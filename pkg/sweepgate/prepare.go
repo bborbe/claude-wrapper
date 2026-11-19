@@ -13,10 +13,14 @@ import (
 
 // Prepared is one subject, fully enriched, ready to digest, render or inspect.
 type Prepared struct {
-	Snapshot    Snapshot
-	Tasks       []Task
-	Holds       map[string]Hold
-	Busy        map[string]BusyStamp
+	Snapshot Snapshot
+	Tasks    []Task
+	Holds    map[string]Hold
+	Busy     map[string]BusyStamp
+	// Registry is the session registry this prepare already read. It is carried
+	// so the fleet snapshot's `status` comes from the SAME read the classification
+	// used — a second read could disagree with the rows the same tick rendered.
+	Registry    map[string]RegistryRecord
 	Digest      string
 	ParkBasis   string
 	ParkSeconds int
@@ -76,6 +80,7 @@ func Prepare(ctx context.Context, cfg Config) (Prepared, error) {
 		Tasks:       tasks,
 		Holds:       holds,
 		Busy:        busy,
+		Registry:    registry,
 		Digest:      Digest(tasks),
 		ParkBasis:   parkBasis,
 		ParkSeconds: parkSeconds,
