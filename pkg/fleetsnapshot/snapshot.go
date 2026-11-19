@@ -12,9 +12,17 @@
 //
 // ⚠️ The load guard is the reason this package exists as a type rather than a
 // pair of functions: `stall_count` is computed from the PREVIOUS snapshot, so a
-// round that persists without having loaded one resets every counter and makes
-// every session read first-seen. The loss is silent — the file it writes is
+// round that persists after a FAILED load resets every counter and makes every
+// session read first-seen. The loss is silent — the file it writes is
 // well-formed — so the refusal is enforced here rather than left to a caller.
+//
+// ⚠️ **The guard is about a failed load, never about an absent file.** A fresh
+// install's first round has no previous snapshot and MUST still be able to
+// create one; refusing there is a deadlock, not a safety property. That is why
+// `Persist` takes the load's `error` rather than a boolean: a boolean named
+// "loaded" reads the same at both call sites while meaning two different things
+// (a file existed / the read succeeded), and the first wiring that used it that
+// way made every fresh install persist nothing forever.
 package fleetsnapshot
 
 import (
@@ -41,50 +49,54 @@ type Snapshot struct {
 	Sessions map[string]Entry `json:"sessions"`
 }
 
-// Load reads the snapshot at path.
+// Load reads the previous snapshot at path.
 //
-// A missing file is not an error: a fresh install's first round has no previous
-// snapshot, and the caller must be able to tell that apart from a read that
-// failed. So the second return is "a previous snapshot was loaded" — it is false
-// for a missing file AND for any failure, while the error distinguishes the two
-// for the caller's own logging.
-func Load(ctx context.Context, path string) (Snapshot, bool, error) {
+// ⚠️ **A missing file is not an error, and the empty snapshot it returns is a
+// legitimate value to diff against.** The first round of a fresh install has no
+// previous snapshot; every session correctly reads first-seen and every counter
+// starts at zero. Only a file that EXISTS and cannot be read or parsed returns
+// an error — that is the case where the round cannot know what it is overwriting.
+func Load(ctx context.Context, path string) (Snapshot, error) {
 	empty := Snapshot{Sessions: map[string]Entry{}}
 	raw, err := os.ReadFile(path) //nolint:gosec // path is the caller's own state file
 	if err != nil {
 		if os.IsNotExist(err) {
-			return empty, false, nil
+			return empty, nil
 		}
-		return empty, false, errors.Wrapf(ctx, err, "read fleet snapshot %q failed", path)
+		return empty, errors.Wrapf(ctx, err, "read fleet snapshot %q failed", path)
 	}
 	var snap Snapshot
 	if err := json.Unmarshal(raw, &snap); err != nil {
-		return empty, false, errors.Wrapf(ctx, err, "parse fleet snapshot %q failed", path)
+		return empty, errors.Wrapf(ctx, err, "parse fleet snapshot %q failed", path)
 	}
 	if snap.Sessions == nil {
 		snap.Sessions = map[string]Entry{}
 	}
-	return snap, true, nil
+	return snap, nil
 }
 
-// Persist writes snap atomically, refusing when the previous snapshot was not loaded.
+// Persist writes snap atomically, refusing when the caller's Load FAILED.
 //
-// `loaded` is the guard made explicit: a caller that skipped Load passes false
-// and is refused, so persist-without-load cannot happen by omission. The refusal
-// leaves the existing file byte-identical — the same discipline as refusing an
-// empty write, reached through the ORDER of the round rather than its payload.
+// `loadErr` is the error Load returned — pass it through unchanged. It is nil
+// for a successful load AND for an absent file, so a fresh install persists
+// normally; it is non-nil only when a previous snapshot existed and could not be
+// read, which is exactly the case where writing would destroy a baseline the
+// round never saw.
 //
-// The write is tmp + rename so a crash mid-write leaves the previous snapshot
-// intact; a truncated file would read as an empty fleet and reset every counter.
-func Persist(ctx context.Context, path string, snap Snapshot, loaded bool) error {
-	if !loaded {
-		return errors.Errorf(ctx,
-			"refusing to persist the fleet snapshot: the previous one was not loaded")
+// The refusal leaves the existing file byte-identical — the same discipline as
+// refusing an empty write, reached through the ORDER of the round rather than
+// its payload. The write is tmp + rename so a crash mid-write cannot truncate
+// the previous snapshot; a truncated file would read as an empty fleet and reset
+// every counter.
+func Persist(ctx context.Context, path string, snap Snapshot, loadErr error) error {
+	if loadErr != nil {
+		return errors.Wrapf(ctx, loadErr,
+			"refusing to persist the fleet snapshot: the previous one could not be loaded")
 	}
 	if len(snap.Sessions) == 0 {
-		// A failed read and an empty fleet must not look alike. This is the same
-		// refusal the Python makes, and it is separate from the load guard: a
-		// round CAN load correctly and still hold no sessions.
+		// A failed read and an empty fleet must not look alike. This is separate
+		// from the load guard: a round CAN load correctly and still hold no
+		// sessions.
 		return errors.Errorf(ctx,
 			"refusing to persist an empty fleet snapshot: a failed read and an empty fleet must not look alike")
 	}
