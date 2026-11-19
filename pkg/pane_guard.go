@@ -64,6 +64,14 @@ var (
 	optionRow = regexp.MustCompile(`^` + promptGlyph + `\s*1\.`)
 )
 
+// captureHeader prefixes the provenance line
+// `pkg/testdata/fleetpusher/capture.sh` writes above a screen:
+// `# captured <ISO8601> pane=<pane-id>`. `wezterm cli get-text` emits screen
+// text only, so the wrapper that performs the capture writes the line. The
+// guard skips it here rather than in the test helper, so a fixture reaches the
+// verdict function byte-for-byte as a live pane does.
+const captureHeader = "# captured "
+
 // Guard marker strings, named so a spec asserts on the same literal the
 // implementation reads.
 const (
@@ -76,6 +84,12 @@ const (
 )
 
 // PaneGuardVerdict returns the verdict for one captured screen.
+//
+// A leading `# captured …` provenance line is dropped first (see
+// captureHeader). No live pane produces one, so this costs the live path
+// nothing; the trade-off is that a pane whose first visible line genuinely
+// began with that marker would lose it, which is accepted so a captured
+// fixture replays through this function unmodified.
 //
 // `text` is nil when the pane could not be read; that is the error branch and
 // never a guess. `subjectState` is `manager-liveness.py --state`'s first field,
@@ -96,17 +110,18 @@ func PaneGuardVerdict(
 	if text == nil {
 		return VerdictErrorUnreadable
 	}
-	if strings.TrimSpace(*text) == "" {
+	screen := withoutCaptureHeader(*text)
+	if strings.TrimSpace(screen) == "" {
 		return VerdictSkipUnclassified
 	}
-	lines := strippedLines(*text)
+	lines := strippedLines(screen)
 	if spinnerPresent(lines) {
 		return VerdictSkipSpinner
 	}
 	if verdict := modalVerdict(lines); verdict != "" {
 		return verdict
 	}
-	verdict, suggestion := composerVerdict(*text)
+	verdict, suggestion := composerVerdict(screen)
 	if verdict != "" {
 		return verdict
 	}
@@ -195,6 +210,21 @@ func asksOperator(lines []string) bool {
 	}
 	verb := strings.ToLower(strings.TrimSpace(asks[len(asks)-1]))
 	return !strings.HasPrefix(verb, "nothing")
+}
+
+// withoutCaptureHeader drops the leading provenance line a capture wrapper
+// writes above the screen, so the guard reads screen content only. A screen
+// without the line is returned unchanged; a header-only screen becomes empty,
+// which the guard classifies as an empty read.
+func withoutCaptureHeader(text string) string {
+	if !strings.HasPrefix(text, captureHeader) {
+		return text
+	}
+	index := strings.IndexByte(text, '\n')
+	if index < 0 {
+		return ""
+	}
+	return text[index+1:]
 }
 
 // strippedLines is the screen with escapes removed and trailing whitespace

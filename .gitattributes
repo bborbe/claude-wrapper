@@ -1,4 +1,6 @@
 # Screen captures replayed through the wake guard. They must stay byte-exact:
 # a real `wezterm cli get-text --escapes` capture carries CRLF line endings and
-# the escape bytes the guard parses. `-text` stops git from normalising them.
+# the escape bytes the guard parses, and line 1 is the `# captured <ISO8601>
+# pane=<id>` provenance line `capture.sh` writes. `-text` stops git from
+# normalising them.
 pkg/testdata/fleetpusher/*.txt -text
