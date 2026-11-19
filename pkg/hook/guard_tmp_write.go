@@ -4,9 +4,6 @@
 
 package hook
 
-// tmpWriteAllowReason is the allow reason for a scratch-file write.
-const tmpWriteAllowReason = "tmp-write: the file resolves inside /tmp"
-
 // tmpWriteTools are the file-writing tools this guard may approve.
 var tmpWriteTools = map[string]bool{"Write": true, "Edit": true, "MultiEdit": true}
 
@@ -39,5 +36,5 @@ func (g *TmpWriteGuard) Evaluate(input Input) Decision {
 	if !ok || !TmpPath(path) {
 		return Decision{}
 	}
-	return AllowDecision(tmpWriteAllowReason)
+	return AllowDecision("tmp-write: the file resolves inside /tmp")
 }

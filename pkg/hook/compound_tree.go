@@ -99,18 +99,12 @@ func (w *compoundWalker) command(cmd syntax.Command) error {
 		return nil
 	case *syntax.ForClause:
 		// A word-list `for` is bounded; a C-style loop is not.
-		if _, ok := node.Loop.(*syntax.WordIter); !ok {
+		iter, ok := node.Loop.(*syntax.WordIter)
+		if !ok {
 			return errCompoundUnmodelled
 		}
-		if iter := node.Loop.(*syntax.WordIter); !localName(iter.Name.Value) {
-			// `for PATH in …` assigns the loop variable.
-			return errCompoundUnmodelled
-		} else {
-			for _, item := range iter.Items {
-				if err := w.dynamicWord(item); err != nil {
-					return err
-				}
-			}
+		if err := w.loopWords(iter); err != nil {
+			return err
 		}
 		return w.stmts(node.Do)
 	case *syntax.WhileClause:
@@ -153,43 +147,91 @@ func (w *compoundWalker) call(call *syntax.CallExpr) error {
 	}
 	words, bare, static := staticCallWords(call.Args)
 	if static {
-		if matchesAnyPattern(strings.Join(words, " "), w.rules.Gated) {
-			return errCompoundUnmodelled
-		}
-		if unexpandedWords(bare) && shapeAllows(words, w.cwd, w.roots) {
-			w.calls++
-			return nil
-		}
-		if program == "cd" {
-			return w.cd(words)
+		done, err := w.staticShape(program, words, bare)
+		if done || err != nil {
+			return err
 		}
 	}
-	if singleShapeHeads[program] && !(static && GhRuleReadable(words)) {
-		// git / sed / gh are approved by their shape guard or not at all: a broad
-		// rule like `Bash(sed -n:*)` would otherwise pass `sed -n -i`. A read-only gh
-		// verb is the one exception — its rule cannot reach a write.
-		return errCompoundUnmodelled
-	}
-	if wrapperProgram(program) || (static && shellStateBuiltin(words)) ||
-		(!static && shellStateBuiltins[program]) || printSetsVariable(call.Args) {
+	if w.refusedProgram(program, words, static, call.Args) {
 		return errCompoundUnmodelled
 	}
 	segment := strings.Join(words, " ")
 	if !static {
-		for _, arg := range call.Args[1:] {
-			if err := w.dynamicWord(arg); err != nil {
-				return err
-			}
+		dynamic, err := w.dynamicSegment(call.Args)
+		if err != nil {
+			return err
 		}
-		segment = w.sourceText(call.Args)
-		if segment == "" || matchesAnyPattern(segment, w.rules.Gated) {
-			return errCompoundUnmodelled
-		}
+		segment = dynamic
 	}
 	if !matchesAnyPattern(segment, w.rules.Allow) {
 		return errCompoundUnmodelled
 	}
 	w.calls++
+	return nil
+}
+
+// staticShape decides a fully literal call a gated rule, a shape guard or `cd`
+// settles; done is false when the allow rules must decide.
+func (w *compoundWalker) staticShape(program string, words []string, bare []string) (bool, error) {
+	if matchesAnyPattern(strings.Join(words, " "), w.rules.Gated) {
+		return true, errCompoundUnmodelled
+	}
+	if unexpandedWords(bare) && shapeAllows(words, w.cwd, w.roots) {
+		w.calls++
+		return true, nil
+	}
+	if program == "cd" {
+		return true, w.cd(words)
+	}
+	return false, nil
+}
+
+// refusedProgram reports whether no allow rule may approve this program: git, sed
+// and gh are approved by their shape guard or not at all — a broad rule like
+// `Bash(sed -n:*)` would otherwise pass `sed -n -i` — except a read-only gh verb,
+// whose rule cannot reach a write; wrappers, shell-state builtins and `printf -v`
+// run or change more than the rule names.
+func (w *compoundWalker) refusedProgram(
+	program string, words []string, static bool, args []*syntax.Word,
+) bool {
+	if singleShapeHeads[program] && (!static || !GhRuleReadable(words)) {
+		return true
+	}
+	if wrapperProgram(program) || printSetsVariable(args) {
+		return true
+	}
+	if static {
+		return shellStateBuiltin(words)
+	}
+	return shellStateBuiltins[program]
+}
+
+// dynamicSegment walks the expansions of a call that is not fully literal and
+// returns its source text, the form an allow rule is matched against.
+func (w *compoundWalker) dynamicSegment(args []*syntax.Word) (string, error) {
+	for _, arg := range args[1:] {
+		if err := w.dynamicWord(arg); err != nil {
+			return "", err
+		}
+	}
+	segment := w.sourceText(args)
+	if segment == "" || matchesAnyPattern(segment, w.rules.Gated) {
+		return "", errCompoundUnmodelled
+	}
+	return segment, nil
+}
+
+// loopWords checks a word-list loop: `for PATH in …` assigns the loop variable, so
+// the name must be a fresh local, and every listed word is walked.
+func (w *compoundWalker) loopWords(iter *syntax.WordIter) error {
+	if !localName(iter.Name.Value) {
+		return errCompoundUnmodelled
+	}
+	for _, item := range iter.Items {
+		if err := w.dynamicWord(item); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

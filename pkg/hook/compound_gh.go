@@ -292,40 +292,40 @@ func GhAPIAllows(values []string) bool {
 	}
 	endpoint := ""
 	for i := 1; i < len(values); i++ {
-		value := values[i]
-		switch {
-		case ghAPIRefuse[value]:
-			return false
-		case value == "-X" || value == "--method":
-			if i+1 >= len(values) || !ghAPIMethods[values[i+1]] {
-				return false
-			}
-			i++
-		case ghAPIValue[value]:
-			if i+1 >= len(values) {
-				return false
-			}
-			i++
-		case ghAPIBool[value]:
-		case strings.HasPrefix(value, "--") && strings.Contains(value, "="):
-			name, flagValue, _ := strings.Cut(value, "=")
-			if name == "--method" {
-				if !ghAPIMethods[flagValue] {
-					return false
-				}
-				continue
-			}
-			if !ghAPIValue[name] {
-				return false
-			}
-		case endpoint == "" && !strings.HasPrefix(value, "-") &&
-			!strings.Contains(value, "://") && !strings.Contains(value, ".."):
-			endpoint = value
-		default:
+		next, ok := ghAPIStep(values, i, &endpoint)
+		if !ok {
 			return false
 		}
+		i = next
 	}
 	return endpoint != ""
+}
+
+// ghAPIStep validates the argument at i and returns the index of the last one it
+// consumed. The first plain operand becomes the endpoint.
+func ghAPIStep(values []string, i int, endpoint *string) (int, bool) {
+	value := values[i]
+	switch {
+	case ghAPIRefuse[value]:
+		return i, false
+	case value == "-X" || value == "--method":
+		return i + 1, i+1 < len(values) && ghAPIMethods[values[i+1]]
+	case ghAPIValue[value]:
+		return i + 1, i+1 < len(values)
+	case ghAPIBool[value]:
+		return i, true
+	case strings.HasPrefix(value, "--") && strings.Contains(value, "="):
+		name, flagValue, _ := strings.Cut(value, "=")
+		if name == "--method" {
+			return i, ghAPIMethods[flagValue]
+		}
+		return i, ghAPIValue[name]
+	case *endpoint == "" && !strings.HasPrefix(value, "-") &&
+		!strings.Contains(value, "://") && !strings.Contains(value, ".."):
+		*endpoint = value
+		return i, true
+	}
+	return i, false
 }
 
 // ghRuleReadVerbs are the gh subcommands that only read, so an allow rule naming

@@ -83,75 +83,81 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 		// program: the value would land in the transcript.
 		return Decision{}
 	}
-	command := original
-	substituted, rewritten := SubstituteLiterals(original)
-	literalFallback := false
-	if rewritten {
-		body, ok := dropLiteralPrefix(original, substituted)
-		if ok {
-			command = body
-		} else {
-			// The tree arm models the assignment itself: a fresh local whose
-			// value is walked, read back through a read-only expansion.
-			literalFallback = true
-			rewritten = false
-		}
-	}
-	// The rewritten text carries the syntax check; the original only has to be
-	// free of a substitution, since its `${NAME}` words are what got rewritten.
-	// Text the split cannot account for — a redirect, a heredoc, a substitution,
-	// a long chain — goes to the syntax tree alone, which models each node or
-	// refuses it.
-	treeOnly := UnsafeSyntax(command) || strings.Contains(original, "`") ||
-		strings.Contains(original, "$(")
-	treeOnly = treeOnly || literalFallback
-	segments, ok := SplitCompound(command)
+	plan, ok := planCompound(original)
 	if !ok {
-		// The text split does not model a backslash inside quotes; the parser does.
-		treeOnly = true
-		segments = []string{command}
-	}
-	if len(segments) < 1 {
 		return Decision{}
-	}
-	if len(segments) > maxCompoundSegments {
-		treeOnly = true
-	}
-	if len(segments) == 1 && !treeOnly && !singleShapeHeads[firstWord(segments[0])] {
-		// A single command matching a `permissions.allow` rule. Under
-		// `defaultMode: auto` Claude Code grants nothing from that list, so a headless
-		// worker parked on every routine `ls` / `grep` / `vault-cli task get`. The
-		// tree arm applies the rule with the same gates as a compound: deny and ask
-		// rules win, wrappers and shell-state builtins are refused.
-		treeOnly = true
 	}
 	rules, err := g.loadRules(input.Cwd)
 	if err != nil {
 		return Decision{}
 	}
-	if rewritten && originalGated(original, rules) {
+	if plan.rewritten && originalGated(original, rules) {
 		return Decision{}
 	}
-	roots := DefaultGitRoots()
-	if treeOnly {
-		if CompoundTreeAllows(command, rules, input.Cwd, roots) {
-			return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
-		}
-		return Decision{}
-	}
-	if len(segments) == 1 {
-		if compoundSingleAllows(segments[0], command, rules, input.Cwd, roots) {
-			return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
-		}
-		return Decision{}
-	}
-	if compoundTextAllows(segments, rules, input.Cwd, roots) {
-		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
-	}
-	if CompoundTreeAllows(command, rules, input.Cwd, roots) {
-		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
+	if plan.allows(rules, input.Cwd, DefaultGitRoots()) {
+		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(plan.segments)))
 	}
 	return Decision{}
+}
+
+// compoundPlan is the text a compound is judged on and the arm that judges it.
+type compoundPlan struct {
+	command   string
+	segments  []string
+	rewritten bool
+	treeOnly  bool
+}
+
+// planCompound rewrites a leading literal prefix and decides which arm judges the
+// rest. Text the split cannot account for — a redirect, a heredoc, a substitution,
+// a long chain, a prefix the rewrite cannot carry, a single command — goes to the
+// syntax tree alone, which models each node or refuses it.
+func planCompound(original string) (compoundPlan, bool) {
+	plan := compoundPlan{command: original}
+	if substituted, rewritten := SubstituteLiterals(original); rewritten {
+		if body, ok := dropLiteralPrefix(original, substituted); ok {
+			plan.command, plan.rewritten = body, true
+		} else {
+			// The tree arm models the assignment itself: a fresh local whose
+			// value is walked, read back through a read-only expansion.
+			plan.treeOnly = true
+		}
+	}
+	// The rewritten text carries the syntax check; the original only has to be
+	// free of a substitution, since its `${NAME}` words are what got rewritten.
+	plan.treeOnly = plan.treeOnly || UnsafeSyntax(plan.command) ||
+		strings.Contains(original, "`") || strings.Contains(original, "$(")
+	segments, ok := SplitCompound(plan.command)
+	if !ok {
+		// The text split does not model a backslash inside quotes; the parser does.
+		plan.treeOnly = true
+		segments = []string{plan.command}
+	}
+	if len(segments) < 1 {
+		return compoundPlan{}, false
+	}
+	plan.segments = segments
+	// A single command matching a `permissions.allow` rule goes to the tree arm too:
+	// under `defaultMode: auto` Claude Code grants nothing from that list, so a
+	// headless worker parked on every routine `ls` / `grep` / `vault-cli task get`.
+	// The tree arm applies the rule with the same gates as a compound.
+	if len(segments) > maxCompoundSegments ||
+		(len(segments) == 1 && !singleShapeHeads[firstWord(segments[0])]) {
+		plan.treeOnly = true
+	}
+	return plan, true
+}
+
+// allows runs the arm the plan chose.
+func (p compoundPlan) allows(rules CompoundRules, cwd string, roots []string) bool {
+	if p.treeOnly {
+		return CompoundTreeAllows(p.command, rules, cwd, roots)
+	}
+	if len(p.segments) == 1 {
+		return compoundSingleAllows(p.segments[0], p.command, rules, cwd, roots)
+	}
+	return compoundTextAllows(p.segments, rules, cwd, roots) ||
+		CompoundTreeAllows(p.command, rules, cwd, roots)
 }
 
 // compoundSingleAllows reports whether a single command is approved by a shape guard.
