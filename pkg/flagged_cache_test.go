@@ -43,6 +43,18 @@ var _ = ginkgo.Describe("flagged row cache persistence", func() {
 			gomega.Expect(got).To(gomega.BeEmpty())
 		})
 
+		ginkgo.It("round-trips a nil row set, which is what an empty read marshals to", func() {
+			dir := ginkgo.GinkgoT().TempDir()
+			readAt := time.Date(2026, 11, 19, 13, 18, 17, 0, time.UTC)
+
+			gomega.Expect(saveFlaggedCache(context.Background(), dir, nil, readAt)).
+				To(gomega.Succeed())
+
+			got, _, ok := loadFlaggedCache(dir)
+			gomega.Expect(ok).To(gomega.BeTrue())
+			gomega.Expect(got).To(gomega.BeEmpty())
+		})
+
 		ginkgo.It("treats a missing file as no cache", func() {
 			_, _, ok := loadFlaggedCache(ginkgo.GinkgoT().TempDir())
 			gomega.Expect(ok).To(gomega.BeFalse())

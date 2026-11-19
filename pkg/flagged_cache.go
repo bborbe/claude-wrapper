@@ -55,7 +55,10 @@ func loadFlaggedCache(stateDir string) (rows []FlaggedRow, readAt time.Time, ok 
 	if err := json.Unmarshal(body, &file); err != nil {
 		return nil, time.Time{}, false
 	}
-	if file.ReadAt.IsZero() || file.Rows == nil {
+	// ReadAt alone decides whether a cache exists. An absent or empty Rows is a
+	// real answer — a predicate that found nothing eligible — so rejecting it here
+	// would cost exactly the dead tick this file exists to remove.
+	if file.ReadAt.IsZero() {
 		return nil, time.Time{}, false
 	}
 	return file.Rows, file.ReadAt, true
