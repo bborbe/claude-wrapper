@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the keep-alive tick's contract lands in the wrapper.** `KeepaliveJob` runs a list of `KeepaliveProcedure` acts as one tick and writes one `job=keepalive action=<procedure> result=<effect> id=<sid>` line per procedure. The effect is a closed set (`resumed`, `restarted`, `closed`, `kept`, `skipped`, `capped`, `none`, `error`), and an effect that names no session — or a word the job does not know — is logged as `result=error` rather than as work, because a `resumed` line with no id cannot be joined to the session that came back. A failing procedure does not stop the rest: the eight acts are independent, so one unreadable store must not hold the whole fleet down. The eight procedure implementations follow on this branch. Change set: `pkg/keepalive.go`, `pkg/keepalive_test.go`, `CHANGELOG.md`.
+
 ## v0.44.1
 
 - fix: **a manager's board answer is delivered in the manager's voice.** `BoardAnswer` reads the store's new `answer.answerer`; `messageAnswer` now prefixes a `manager` answer with `Manager answer, via supervisor:` (once — the supervisor gate answerer's value already carries it) instead of `Operator answer, via supervisor:`, so a headless worker never reads a manager's decision as an operator release. Operator answers, and answers with no answerer, are unchanged. Tests cover both answerers.
