@@ -15,6 +15,10 @@ HOOK_DIR="${HOOK_DIR:-$HOME/.claude/hooks}"
 TARGET="$HOOK_DIR/hook"
 NEW="$HOOK_DIR/hook.new"
 
+# Run against this repo whatever directory the caller came from: `git status` below
+# and the build both resolve from the cwd.
+cd "$(dirname "$0")/.."
+
 if [ -n "$(git status --porcelain -- cmd pkg scripts)" ]; then
 	echo "install-hook: uncommitted changes under cmd/, pkg/ or scripts/ — commit first" >&2
 	exit 1
@@ -81,6 +85,10 @@ echo "install-hook: smoke passed (3 allow, 3 pass, 2 deny, 1 malformed)"
 
 [ -n "${DRY_RUN:-}" ] && { rm -f "$NEW"; echo "install-hook: DRY_RUN, nothing installed"; exit 0; }
 
-cp -p "$TARGET" "$TARGET.prev" 2>/dev/null || true
+# The previous binary is the only rollback path, so a failed copy stops the install
+# rather than leaving the swap with nothing to roll back to.
+if [ -e "$TARGET" ]; then
+	cp -p "$TARGET" "$TARGET.prev" || { echo "install-hook: cannot back up $TARGET" >&2; rm -f "$NEW"; exit 1; }
+fi
 mv -f "$NEW" "$TARGET"
 echo "install-hook: installed $COMMIT -> $TARGET (previous: $TARGET.prev)"
