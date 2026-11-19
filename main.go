@@ -58,6 +58,45 @@ func registerFlaggedTickFlags() flaggedTickFlags {
 	}
 }
 
+// openFlags are the open endpoint's three script paths, registered together
+// so main stays inside its length budget.
+type openFlags struct {
+	answerPathCheckScript *string
+	managerLauncherScript *string
+	topicSpawnScript      *string
+}
+
+func registerOpenFlags() openFlags {
+	return openFlags{
+		answerPathCheckScript: flag.String("answer-path-check-script",
+			pkg.DefaultAnswerPathCheckScript,
+			"path to claude-supervisor's answer-path-check.py, run before every headless spawn the open endpoint makes for a caller"),
+		managerLauncherScript: flag.String("manager-launcher-script",
+			pkg.DefaultManagerLauncherScript,
+			"path to claude-supervisor's manager-launcher.py, which resolves a goal or topic manager's launcher"),
+		topicSpawnScript: flag.String("topic-spawn-script",
+			pkg.DefaultTopicSpawnScript,
+			"path to claude-supervisor's topic-spawn.py, the topic manager ceiling the open endpoint checks before a topic create"),
+	}
+}
+
+// openScriptPaths are the open endpoint's three script paths, expanded.
+type openScriptPaths struct {
+	answerPath      string
+	managerLauncher string
+	topicSpawn      string
+}
+
+// openPathsFromFlags expands the flag values, since neither exec nor the shell
+// expands a leading `~/` in a pre-quoted flag value.
+func openPathsFromFlags(flags openFlags) openScriptPaths {
+	return openScriptPaths{
+		answerPath:      expandHome(*flags.answerPathCheckScript),
+		managerLauncher: expandHome(*flags.managerLauncherScript),
+		topicSpawn:      expandHome(*flags.topicSpawnScript),
+	}
+}
+
 // fleetPusherFlags are the wake tick's and watchdog's flags, registered together
 // so main stays inside its length budget.
 type fleetPusherFlags struct {
@@ -137,6 +176,7 @@ func main() {
 	heartbeatInterval := flag.Duration("heartbeat-interval", pkg.DefaultHeartbeatInterval,
 		"how often to stamp a heartbeat for every live session")
 	flagged := registerFlaggedTickFlags()
+	open := registerOpenFlags()
 	fleetPusher := registerFleetPusherFlags()
 	sweepGate := registerSweepGateFlags()
 	stateDir := flag.String("state-dir", "",
@@ -206,6 +246,7 @@ func main() {
 		*flagged.interval, *flagged.script,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
 		*fleetPusher.heartbeat, parkedGate,
+		openPathsFromFlags(open),
 	)
 
 	startDaemonJobs(ctx, supervisor, sweepGate)
@@ -575,6 +616,7 @@ func startFleetFaces(
 	fleetPusherWatchMaxAge time.Duration,
 	fleetPusherHeartbeat string,
 	parked pkg.ParkedHold,
+	openPaths openScriptPaths,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
@@ -584,12 +626,10 @@ func startFleetFaces(
 
 	a2aManager := newA2AManager(ctx)
 
-	// The fleet-facing MCP face: a Claude session reading and steering the
-	// roster. A third face beside /mcp and --mcp-stdio, and separate from both on
-	// purpose — /mcp is Codex driving one child, --mcp-stdio is a child asking
-	// for a verdict, and this one answers across sessions.
-	// The local-tab spawn path: a tab under the vault's cc-* launcher. Without
-	// these the daemon refuses every `local` spawn by name.
+	// The fleet-facing MCP face: a Claude session reading and steering the roster,
+	// a third face beside /mcp and --mcp-stdio. The local-tab spawn path opens a
+	// tab under the vault's cc-* launcher; without it every `local` spawn is
+	// refused by name.
 	tabs := pkg.NewTabClient("")
 	vaults := pkg.NewVaultCLILister()
 	tabSpawner := pkg.NewTabSpawner(
@@ -607,7 +647,7 @@ func startFleetFaces(
 	// The fleet-wide caps; shared with the flagged tick so both read one limit.
 	caps := pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil)
 
-	mux.Handle("/supervisor/mcp", &pkg.RosterToolServer{
+	rosterServer := &pkg.RosterToolServer{
 		Roster: pkg.NewRoster(
 			supervisor,
 			ledger,
@@ -629,26 +669,23 @@ func startFleetFaces(
 		Now:       now,
 		// The fleet-wide caps; shared with the flagged tick so both read one limit.
 		Caps: caps,
-		// The id → name join send_agent_message needs for a headless worker: it holds
-		// the session id, the caller's `SendMessage` takes the registry name, and this
-		// is the only place that maps one to the other.
+		// The id → name join send_agent_message needs: it holds the session id,
+		// the caller's `SendMessage` takes the registry name, and this maps one to the other.
 		Registry: registry,
 		// The same lock set the REST and /mcp faces take, so a mode change refuses
 		// with `running a sequence` instead of queuing on this face only.
 		Locks: locks,
 		// The append-only switch history; without it every reply says `recorded: false`.
 		PermissionModeLog: pkg.NewPermissionModeLog("", now),
-	})
+	}
+	// Mounted before the MCP face so open_rows is wired when it starts serving.
+	mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
+	mux.Handle("/supervisor/mcp", rosterServer)
 
 	go startFlaggedTick(
-		ctx,
-		flaggedTickInterval,
-		flaggedRowsScript,
+		ctx, flaggedTickInterval, flaggedRowsScript,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
-		caps,
-		ledger,
-		now,
-		parked,
+		caps, ledger, now, parked,
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
@@ -661,6 +698,47 @@ func startFleetFaces(
 		ctx, registry, attentionURL, fleetPusherHeartbeat,
 		fleetPusherInterval, fleetPusherWatchInterval, fleetPusherWatchMaxAge, now,
 	)
+}
+
+// mountOpenSurface wires the one open operation onto both its surfaces.
+//
+// POST /api/1.0/open and the open_rows MCP tool share the same pkg.OpenSurface,
+// so they decode, validate, open and marshal through the same code and cannot
+// drift (AC4). The contract is docs/open-endpoint.md.
+func mountOpenSurface(
+	mux *http.ServeMux,
+	rosterServer *pkg.RosterToolServer,
+	tabs pkg.TabClient,
+	registry pkg.SessionRegistry,
+	vaults pkg.VaultLister,
+	caps pkg.SpawnCaps,
+	ledger pkg.LedgerReader,
+	now libtime.CurrentDateTimeGetter,
+	paths openScriptPaths,
+) {
+	opener := pkg.NewOpenTabOpener(
+		tabs, registry, vaults, caps, ledger, pkg.ExecScriptRunner{}, now,
+		paths.managerLauncher, paths.topicSpawn,
+		// No exit recorder: the daemon ships no copy of the script, and an empty
+		// path omits the hook rather than naming one that does not exist.
+		"",
+	)
+	executor := pkg.NewOpenExecutor(pkg.OpenExecutorDeps{
+		Vaults:           vaults,
+		Registry:         registry,
+		Panes:            pkg.NewWeztermPaneJoiner(""),
+		RoleMap:          pkg.NewRoleMapReader(""),
+		Tabs:             tabs,
+		TabOpener:        opener,
+		Headless:         rosterServer,
+		Runner:           pkg.ExecCommandRunner{},
+		Scripts:          pkg.ExecScriptRunner{},
+		AnswerPathScript: paths.answerPath,
+	})
+	surface := &pkg.OpenSurface{Executor: executor, Vaults: vaults}
+	rosterServer.Open = surface
+	// The REST half of the one open operation; contract: docs/open-endpoint.md.
+	mux.Handle("/api/1.0/open", handler.Open(surface))
 }
 
 // newA2AManager builds the A2A spawn targets: docker and k8s workers, created on

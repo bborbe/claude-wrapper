@@ -102,7 +102,7 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 		gomega.Expect(body.Result.Content[0].Text).To(gomega.ContainSubstring("missing_session_header"))
 	})
 
-	ginkgo.It("lists exactly the eleven roster tools", func() {
+	ginkgo.It("lists exactly the twelve roster tools", func() {
 		recorder := postRPC(
 			rosterForServer(),
 			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
@@ -126,8 +126,50 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 			"list_agents", "agent_status", "stop_agent",
 			"spawn_agent", "send_agent_message", "set_agent_permission_mode",
 			"answer_permission", "await_permission", "pending_permissions",
-			"read_push_config", "run_slash_command",
+			"read_push_config", "run_slash_command", "open_rows",
 		))
+	})
+
+	ginkgo.It("requires rows in the open_rows schema", func() {
+		recorder := postRPC(
+			rosterForServer(),
+			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+			"caller-session",
+		)
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
+
+		var body struct {
+			Result struct {
+				Tools []struct {
+					Name        string `json:"name"`
+					InputSchema struct {
+						Required []string `json:"required"`
+					} `json:"inputSchema"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		gomega.Expect(json.Unmarshal(recorder.Body.Bytes(), &body)).To(gomega.Succeed())
+		found := false
+		for _, tool := range body.Result.Tools {
+			if tool.Name != "open_rows" {
+				continue
+			}
+			found = true
+			gomega.Expect(tool.InputSchema.Required).To(gomega.ContainElement("rows"))
+		}
+		gomega.Expect(found).To(gomega.BeTrue(), "tools/list carries no open_rows definition")
+	})
+
+	ginkgo.It("refuses open_rows by name when no surface is wired", func() {
+		recorder := postRPC(
+			rosterForServer(),
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+
+				`{"name":"open_rows","arguments":{"rows":[]}}}`,
+			"caller-session",
+		)
+		gomega.Expect(recorder.Code).To(gomega.Equal(http.StatusOK))
+		gomega.Expect(recorder.Body.String()).To(gomega.ContainSubstring(`"isError":true`))
+		gomega.Expect(recorder.Body.String()).To(gomega.ContainSubstring("not wired"))
 	})
 
 	ginkgo.It("refuses read_push_config by name when no A2A controller is wired", func() {

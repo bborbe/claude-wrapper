@@ -47,6 +47,7 @@ const (
 	ToolAwaitPermission        ToolName = "await_permission"
 	ToolPendingPermissions     ToolName = "pending_permissions"
 	ToolReadPushConfig         ToolName = "read_push_config"
+	ToolOpenRows               ToolName = "open_rows"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
@@ -69,6 +70,7 @@ func RosterToolNames() []ToolName {
 		ToolAwaitPermission,
 		ToolPendingPermissions,
 		ToolReadPushConfig,
+		ToolOpenRows,
 	}
 }
 
@@ -78,7 +80,8 @@ func RosterToolNames() []ToolName {
 // Everything else on this face serves a session-less client: the protocol methods
 // (`initialize`, `notifications/initialized`, `ping`, `tools/list`) and the
 // read-only tools (`list_agents`, `agent_status`, `pending_permissions`,
-// `await_permission`, `read_push_config`, `send_agent_message`).
+// `await_permission`, `read_push_config`, `send_agent_message`) and `open_rows`,
+// which answers a session-less call per row rather than refusing it whole.
 func sessionRequiredTools() map[ToolName]struct{} {
 	return map[ToolName]struct{}{
 		ToolSpawnAgent:             {},
@@ -146,6 +149,10 @@ type RosterToolServer struct {
 	// lands in the child, and only its audit line is skipped, which the reply
 	// reports as `recorded: false`.
 	PermissionModeLog PermissionModeLog
+	// Open is the open operation this face serves as open_rows. It is the same
+	// pkg.OpenSurface POST /api/1.0/open calls, so the two surfaces cannot
+	// drift. Nil means open_rows refuses with "open_rows is not wired".
+	Open *OpenSurface
 }
 
 // currentDateTime returns the clock the pane polls run on.
@@ -317,6 +324,8 @@ func (s *RosterToolServer) invoke(
 		return s.pendingPermissions(ctx)
 	case ToolReadPushConfig:
 		return s.readPushConfig(ctx, args)
+	case ToolOpenRows:
+		return s.openRows(ctx, args, sessionID)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -368,49 +377,10 @@ func (s *RosterToolServer) spawnLocalAgent(
 			"interactive spawn is not this slice's surface — a tab worker is spawned and steered by the tab-spawn slice",
 		)
 	}
-	if s.Supervisor == nil {
-		return "", errors.Errorf(ctx, "spawn_agent is not wired")
-	}
-	cwd, err := s.headlessCwd(ctx, body)
+	session, mode, modeSource, err := s.startHeadless(ctx, body, sessionID, resolution)
 	if err != nil {
 		return "", err
 	}
-	// Terminal first: a resume of a finished task must say so, not send the caller
-	// away to add a prompt and then refuse them for the task state on the retry.
-	// The vault scan this costs is paid only on a refusal path.
-	if err := s.refuseTerminalResume(ctx, body, cwd); err != nil {
-		return "", err
-	}
-	if err := refusePromptlessResume(ctx, body); err != nil {
-		return "", err
-	}
-	if err := s.enforceCaps(ctx, body, SpawnModeHeadless); err != nil {
-		return "", err
-	}
-	mode, modeSource := headlessPermissionMode(body.Shipping)
-	session, err := s.Supervisor.Spawn(ctx, SpawnOptions{
-		Cwd:            cwd,
-		Model:          s.headlessModel(ctx, body, cwd),
-		PermissionMode: mode,
-		Label:          body.Label,
-		Role:           body.Role,
-		Policy:         body.Policy,
-		Resume:         body.Resume,
-		MCPConfigs:     s.headlessMCPConfigs(ctx, body, cwd),
-	})
-	if err != nil {
-		return "", errors.Wrapf(ctx, err, "spawn agent failed")
-	}
-	if body.Prompt != "" {
-		if err := s.Supervisor.Send(ctx, session.ID, body.Prompt); err != nil {
-			// The child is live by now and holds stdin. A spawn that throws here
-			// leaves an idle process behind that looks exactly like a thinking
-			// worker, so it is stopped rather than orphaned.
-			_ = s.Supervisor.Stop(context.Background(), session.ID)
-			return "", errors.Wrapf(ctx, err, "deliver opening turn failed")
-		}
-	}
-	s.recordSpawn(ctx, session, sessionID, body, resolution.Source)
 	return marshalJSON(ctx, map[string]string{
 		"agent_id":    session.ID,
 		"session_id":  session.ID,
@@ -512,20 +482,7 @@ func (s *RosterToolServer) refuseTerminalResume(
 		)
 		return nil
 	}
-	if !terminalTaskStatus(ref.Status) {
-		return nil
-	}
-	return errors.Wrapf(
-		ctx,
-		ErrTaskTerminal,
-		"resume of session %s refused: its task %q in vault %q is %s, and a finished "+
-			"task must not be handed a live worker again — closing is the fleet's only "+
-			"way to reclaim a spawn slot",
-		session,
-		ref.Title,
-		ref.Vault,
-		ref.Status,
-	)
+	return refuseTerminalTask(ctx, session, ref)
 }
 
 // taskForResume resolves the task a resumed session belongs to, or nil.
@@ -1487,33 +1444,16 @@ func (s *RosterToolServer) enforceCaps(
 	body spawnAgentArgs,
 	mode string,
 ) error {
-	if s.Caps == nil {
-		return nil
-	}
-	// A manager answers to the manager axes, never to a WORKER mode sub-cap: the
-	// headless/interactive pair bounds the worker population, and a manager counted
-	// against it would be refused by a cap over a population it is not in. The
-	// worker total and the session backstop still apply to it.
-	workerMode := mode
+	var manager func(ctx context.Context) (kind string, roots []string)
 	if strings.TrimSpace(body.Role) == RoleManager {
-		workerMode = ""
-	}
-	if err := s.Caps.CheckWorker(ctx, workerMode, body.OperatorNamed); err != nil {
-		return err
-	}
-	if strings.TrimSpace(body.Role) == RoleManager {
-		// One vault read for both halves: `vaultRoots` shells `vault-cli config list`,
-		// and asking it twice for one spawn would pay that subprocess twice.
-		roots := s.vaultRoots(ctx)
-		if err := s.Caps.CheckManager(
-			ctx, ManagerKindForLabel(body.Label, roots, FileExists), roots, body.OperatorNamed,
-		); err != nil {
-			return err
+		manager = func(ctx context.Context) (string, []string) {
+			// One vault read for both halves: `vaultRoots` shells `vault-cli config
+			// list`, and asking it twice for one spawn would pay that subprocess twice.
+			roots := s.vaultRoots(ctx)
+			return ManagerKindForLabel(body.Label, roots, FileExists), roots
 		}
 	}
-	// Last, as the node has it: a spawn refused by a cap above must not spend a
-	// start slot the next legitimate spawn then waits for.
-	return s.Caps.ReserveStart(ctx)
+	return enforceSpawnCaps(ctx, s.Caps, mode, manager, body.OperatorNamed)
 }
 
 // enforceWorkerCaps runs the worker cap and reserves a start slot.
@@ -1792,7 +1732,8 @@ func (s *RosterToolServer) recordStop(ctx context.Context, row *AgentRow, caller
 func rosterToolDefinitions() []any {
 	definitions := append(spawnToolDefinitions(), parkToolDefinitions()...)
 	definitions = append(definitions, runSlashCommandToolDefinition())
-	return append(definitions, modeToolDefinitions()...)
+	definitions = append(definitions, modeToolDefinitions()...)
+	return append(definitions, openToolDefinitions()...)
 }
 
 // modeToolDefinitions describes the live permission-mode switch.
