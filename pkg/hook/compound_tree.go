@@ -348,7 +348,8 @@ func shapeAllows(words []string, cwd string, roots []string) bool {
 	switch words[0] {
 	case "git":
 		return GitShapeAllows(words[1:], cwd, roots) ||
-			GitMergeAllows(words[1:], DefaultMergeRoots())
+			GitMergeAllows(words[1:], DefaultMergeRoots()) ||
+			GitWriteAllows(words[1:], DefaultMergeRoots())
 	case "sed":
 		return SedFilterAllows(words[1:], cwd, roots)
 	case "base64":

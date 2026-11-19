@@ -356,3 +356,98 @@ func mergeSourceOK(source string) bool {
 	}
 	return true
 }
+
+// GitWriteAllows reports whether the invocation is a local, additive git write
+// under the write roots (~/Documents/workspaces and ~/.claude): `commit`, `fetch`,
+// `add` or `worktree add`, always with an explicit `-C <dir>`.
+//
+// None of these leaves the machine or discards work: `fetch` moves only
+// remote-tracking refs, `add` only stages, `worktree add` only creates a checkout,
+// and `commit` records staged work (`--amend` rewrites history and is refused). The
+// Obsidian vaults are outside the roots because obsidian-git owns their commits.
+// `push`, `reset`, `worktree remove` and the rest stay with the permission prompt.
+func GitWriteAllows(values []string, roots []string) bool {
+	if len(values) < 3 || values[0] != "-C" || values[1] == "" {
+		return false
+	}
+	dir := values[1]
+	if !UnderRoots(dir, roots) {
+		return false
+	}
+	switch values[2] {
+	case "commit":
+		return gitWriteArgs(values[3:], func(value string) bool {
+			return strings.HasPrefix(value, "--amend")
+		})
+	case "fetch", "add":
+		return gitWriteArgs(values[3:], nil)
+	case "worktree":
+		if len(values) < 4 || values[3] != "add" {
+			return false
+		}
+		return gitWriteArgs(values[4:], nil) && worktreePathsInRoots(values[4:], dir, roots)
+	}
+	return false
+}
+
+// gitWriteArgs refuses an option that reads or executes something unbounded, and
+// any option the caller names as extra.
+func gitWriteArgs(args []string, extra func(string) bool) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return true
+		}
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if gitBadArg.MatchString(arg) || (extra != nil && extra(arg)) {
+			return false
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+			if gitBadLongPrefix(name) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// worktreePathsInRoots reports whether the path operand of `worktree add` (its
+// first positional) resolves, against the real `-C` directory, under the roots — so a
+// checkout cannot be created outside the trees the session already writes. The `-C`
+// directory is resolved before joining, so `..` walks out of its real location the
+// way the kernel would, not out of a symlink's name.
+func worktreePathsInRoots(args []string, dir string, roots []string) bool {
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		dir = filepath.Join(home, strings.TrimPrefix(dir, "~/"))
+	}
+	base, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	valueFlags := map[string]bool{"-b": true, "-B": true, "--reason": true}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if valueFlags[arg] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		target := arg
+		if strings.HasPrefix(target, "~") {
+			return false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(base, target)
+		}
+		return WriteTargetUnderRoots(filepath.Clean(target), roots)
+	}
+	return false
+}

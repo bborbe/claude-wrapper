@@ -483,6 +483,40 @@ func (alwaysAllow) Evaluate(hook.Input) hook.Decision {
 	return hook.AllowDecision("allowed")
 }
 
+var _ = Describe("GitWriteAllows", func() {
+	root := tempRepo(map[string]string{})
+	repo := filepath.Join(root, "repo")
+	Expect(os.MkdirAll(repo, 0o755)).To(Succeed())
+	outside := tempRepo(map[string]string{})
+	roots := []string{root}
+
+	DescribeTable("approves only a local additive write under the roots",
+		func(values func() []string, allowed bool) {
+			Expect(hook.GitWriteAllows(values(), roots)).To(Equal(allowed))
+		},
+		Entry("commit", func() []string { return []string{"-C", repo, "commit", "-m", "x"} }, true),
+		Entry("commit amend", func() []string { return []string{"-C", repo, "commit", "--amend", "-m", "x"} }, false),
+		Entry("fetch", func() []string { return []string{"-C", repo, "fetch", "origin"} }, true),
+		Entry("add", func() []string { return []string{"-C", repo, "add", "a.go", "b.go"} }, true),
+		Entry("add with config flag", func() []string { return []string{"-C", repo, "-c", "x=y", "add"} }, false),
+		Entry("fetch with upload-pack", func() []string { return []string{"-C", repo, "fetch", "--upload-pack=x"} }, false),
+		Entry("worktree add beside the repo", func() []string {
+			return []string{"-C", repo, "worktree", "add", "--no-track", "../repo-x", "-b", "feat/x", "origin/master"}
+		}, true),
+		Entry("worktree add outside the roots", func() []string {
+			return []string{"-C", repo, "worktree", "add", filepath.Join(outside, "x"), "-b", "feat/x"}
+		}, false),
+		Entry("worktree add walking out with ..", func() []string {
+			return []string{"-C", repo, "worktree", "add", "../../../x"}
+		}, false),
+		Entry("worktree remove", func() []string { return []string{"-C", repo, "worktree", "remove", "../repo-x"} }, false),
+		Entry("push", func() []string { return []string{"-C", repo, "push", "origin", "x"} }, false),
+		Entry("reset", func() []string { return []string{"-C", repo, "reset", "--hard"} }, false),
+		Entry("commit outside the roots", func() []string { return []string{"-C", outside, "commit", "-m", "x"} }, false),
+		Entry("commit without -C", func() []string { return []string{"commit", "-m", "x"} }, false),
+	)
+})
+
 var _ = Describe("SedFilterAllows", func() {
 	root := tempRepo(map[string]string{"a.txt": "x\n"})
 	roots := []string{root}
