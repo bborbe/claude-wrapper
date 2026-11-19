@@ -643,7 +643,6 @@ func startFleetFaces(
 	)
 	// The fleet-wide caps; shared with the flagged tick so both read one limit.
 	caps := pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil)
-
 	rosterServer := &pkg.RosterToolServer{
 		Roster: pkg.NewRoster(
 			supervisor,
@@ -675,12 +674,14 @@ func startFleetFaces(
 		// The append-only switch history; without it every reply says `recorded: false`.
 		PermissionModeLog: pkg.NewPermissionModeLog("", now),
 	}
-	// Mounted before the MCP face so open_rows is wired when it starts serving.
-	mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
+	// Mounted before the MCP face so open_rows is wired when it starts serving;
+	// the executor is shared with the flagged tick so both route one way.
+	openExecutor := mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
 	mux.Handle("/supervisor/mcp", rosterServer)
 
 	go startFlaggedTick(
 		ctx, flaggedTickInterval, flaggedRowsScript,
+		openExecutor,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
 		caps,
 		registry,
@@ -717,7 +718,7 @@ func mountOpenSurface(
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
 	paths openScriptPaths,
-) {
+) pkg.OpenExecutor {
 	opener := pkg.NewOpenTabOpener(
 		tabs, registry, vaults, caps, ledger, pkg.ExecScriptRunner{}, now,
 		paths.managerLauncher, paths.topicSpawn,
@@ -741,6 +742,7 @@ func mountOpenSurface(
 	rosterServer.Open = surface
 	// The REST half of the one open operation; contract: docs/open-endpoint.md.
 	mux.Handle("/api/1.0/open", handler.Open(surface))
+	return executor
 }
 
 // newA2AManager builds the A2A spawn targets: docker and k8s workers, created on
@@ -998,6 +1000,7 @@ func startFlaggedTick(
 	ctx context.Context,
 	interval time.Duration,
 	script string,
+	open pkg.OpenExecutor,
 	reopener pkg.FlaggedReopener,
 	caps pkg.SpawnCaps,
 	registry pkg.SessionRegistry,
@@ -1012,6 +1015,7 @@ func startFlaggedTick(
 	}
 	tick := &pkg.FlaggedTick{
 		Source:   pkg.ExecFlaggedRowsSource{Script: expandHome(script)},
+		Open:     open,
 		Reopener: reopener,
 		Caps:     caps,
 		Chain:    pkg.NewRegistryChainProbe(registry),

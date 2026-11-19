@@ -50,6 +50,7 @@ func procStartTime(pid int) (time.Time, bool) {
 	const userHZ = 100 // USER_HZ for /proc on Linux
 	secs := btime + ticks/userHZ
 	nsecs := (ticks % userHZ) * (uint64(time.Second) / userHZ)
+	//nolint:gosec // /proc start times are Unix seconds and fit int64
 	return time.Unix(int64(secs), int64(nsecs)).UTC(), true
 }
 

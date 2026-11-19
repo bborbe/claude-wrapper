@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [006-open-tick-reroute]
+summary: Routed every row the flagged reopen tick opens through one batched OpenExecutor.OpenTick call (shared with the HTTP/MCP surface), preserving all tick gates, log-line shapes, already-live skips, refusal reason tokens and the task readiness first step, deleting the goal/topic /supervisor:open worker prompt; added role-based tick tests and replaced the mode-based routing tests in flagged_reopen_test.go (goal/topic prompt and interactive-row cases), plus a nolint on an unrelated pre-existing gosec G115 finding so precommit passes under the container toolchain.
+execution_id: 9fe6d449-2b0e-5c03-817b-0efb1c221a9c-exec-013-spec-006-open-tick-reroute
+dark-factory-version: dev
 created: "2026-11-19T19:45:04Z"
 queued: "2026-11-19T19:45:04Z"
+started: "2026-11-19T19:46:31Z"
+completed: "2026-11-19T20:01:46Z"
 ---
 
 # Route the flagged reopen tick through the open decision

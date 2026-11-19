@@ -19,7 +19,7 @@ import (
 // modeSourceFlaggedTick is the spawn-resolution step a reopen is attributed to.
 const modeSourceFlaggedTick = "flagged-tick"
 
-// FlaggedReopener opens one flagged row through the spawn path its mode names.
+// FlaggedReopener opens one flagged row through the open decision.
 //
 // An interface rather than a direct call for two reasons: the tick's decision
 // pass can be tested without a supervisor, a tab client or a vault list, and the
@@ -58,15 +58,18 @@ type FlaggedIdleNudger interface {
 	Nudge(ctx context.Context, row FlaggedRow) error
 }
 
-// flaggedReopener routes a row to the spawn path its own mode names.
+// flaggedReopener opens a flagged row through the open decision, and nudges an
+// idle child this process still holds.
 //
-// ⚠️ The two paths are NOT interchangeable. `spawnTabAgent` refuses `resume`
-// outright (`pkg/roster_mcp.go`): a tab launches the vault's `cc-*` script, which
-// is never handed `--resume`, so a tab spawn of a row that already has a
-// `claude_session_id` would open a fresh conversation while the tick believed it
-// continued one. A headless row therefore goes through the Supervisor, and only a
-// `mode: interactive` row goes to the tab spawner.
+// ⚠️ When Executor is set, Reopen is the same call the tick's batch path makes:
+// one OpenRow through OpenExecutor.OpenTick. Routing follows the row's resolved
+// role (docs/open-endpoint.md § Decision order), never the stored mode. The
+// legacy mode-based spawn path below survives only for callers that wire no
+// executor (the pre-006 unit fixtures); the daemon always wires one.
 type flaggedReopener struct {
+	// Executor is the open decision and executor. When set, Reopen routes
+	// through it instead of choosing a spawn path itself.
+	Executor   OpenExecutor
 	Supervisor FlaggedReopenSupervisor
 	Spawner    TabSpawner
 	Vaults     VaultLister
@@ -102,6 +105,9 @@ func NewFlaggedReopener(
 
 // Reopen opens one flagged row and gives it its first turn.
 func (r *flaggedReopener) Reopen(ctx context.Context, row FlaggedRow) error {
+	if r.Executor != nil {
+		return r.reopenThroughDecision(ctx, row)
+	}
 	vaults, err := r.Vaults.List(ctx)
 	if err != nil {
 		return errors.Wrap(ctx, err, "list vaults")
@@ -126,6 +132,41 @@ func (r *flaggedReopener) Reopen(ctx context.Context, row FlaggedRow) error {
 		return nil
 	}
 	return r.reopenHeadless(ctx, row, target, prompt)
+}
+
+// reopenThroughDecision hands the row to the open decision's tick entry point.
+//
+// The executor derives role, stored mode and the recorded session id from the
+// row's page, exactly as it does for POST /api/1.0/open; the tick supplies the
+// page identity and the task row's readiness first step. A refused verdict is
+// returned as its reason token and message so the caller can record the token.
+func (r *flaggedReopener) reopenThroughDecision(ctx context.Context, row FlaggedRow) error {
+	verdicts := r.Executor.OpenTick(ctx, []OpenRow{openRowFor(row)})
+	if len(verdicts) == 0 {
+		return errors.Errorf(ctx, "open executor returned no verdict for %s", row.Key())
+	}
+	verdict := verdicts[0]
+	switch verdict.Branch {
+	case OpenBranchResume, OpenBranchCreate, OpenBranchJump, OpenBranchLive, OpenBranchYours:
+		return nil
+	case OpenBranchRefused:
+		return errors.Errorf(ctx, "%s: %s", verdict.Reason, verdict.Message)
+	}
+	return errors.Errorf(ctx, "open executor returned unknown branch %q", verdict.Branch)
+}
+
+// openRowFor is the open request the tick builds for a flagged row.
+//
+// Role, mode and the recorded session id are not copied here: the executor
+// reads them from the page, and the predicate that produced the FlaggedRow read
+// the same page. The one fact the tick adds is the task row's readiness first
+// step, which the open contract does not know about.
+func openRowFor(row FlaggedRow) OpenRow {
+	openRow := OpenRow{Kind: row.Kind, Vault: row.Vault, Name: row.Name}
+	if row.Kind == OpenKindTask {
+		openRow.FirstStep = readinessFirstStep
+	}
+	return openRow
 }
 
 // reopenHeadless resumes the row's own conversation, or starts one when it has no
@@ -240,7 +281,11 @@ func (r *flaggedReopener) Nudge(ctx context.Context, row FlaggedRow) error {
 	if r.Supervisor == nil {
 		return errors.Errorf(ctx, "no supervisor is wired, so an idle child cannot be nudged")
 	}
-	if err := r.Supervisor.Send(ctx, row.SessionID, reopenPrompt(row)); err != nil {
+	prompt := reopenPrompt(row)
+	if prompt == "" {
+		return errors.Errorf(ctx, "row %s has no reopen prompt", row.Key())
+	}
+	if err := r.Supervisor.Send(ctx, row.SessionID, prompt); err != nil {
 		return errors.Wrap(ctx, err, "deliver nudge turn")
 	}
 	return nil
@@ -329,29 +374,24 @@ const readinessFirstStep = "FIRST STEP — readiness gate, before any other tool
 	"  python3 ~/.claude/plugins/marketplaces/claude-supervisor/scripts/attention-ask.py " +
 	"post --dedup-key readiness-<row-slug> --payload '<score>/10 — <gaps>'\n\n"
 
-// reopenPrompt is the first turn a reopened worker receives.
+// reopenPrompt is the first turn a reopened headless task receives.
 //
 // ⚠️ A resume that sends NO turn is a row that dies again inside one tick: the
 // idle reaper closes an `sdk-cli` session that has been idle for 15 minutes, and a
-// child resumed with nothing to do is idle from its first second. The reopen
-// therefore sends the same work command `/supervisor:open` sends on its create
-// branch.
+// child resumed with nothing to do is idle from its first second.
 //
 // A task row puts `readinessFirstStep` FIRST, then the command, because
 // `/vault-cli:work-on-task` plans but never applies the readiness ladder and its
 // chained plan-task consumes the turn before a trailing instruction can be acted on.
-// The `/supervisor:open` branch reaches Gate 2 and would run the audit twice.
+//
+// Only a task row has a headless worker turn. A goal or topic opens its manager
+// tab through the open decision (docs/open-endpoint.md § Manager rows), so there
+// is no worker prompt — and deliberately no `/supervisor:open` worker path here.
 func reopenPrompt(row FlaggedRow) string {
-	switch row.Kind {
-	case "task":
-		return readinessFirstStep + `/vault-cli:work-on-task "` + row.Name + `"`
-	case "goal", "topic":
-		// The repo opens BOTH a goal and a topic through `/supervisor:goal-loop`
-		// (open_tab.go's OpenKindTopic case); there is no `topic-loop` command.
-		return `/supervisor:goal-loop "` + row.Name + `"`
-	default:
-		return `/supervisor:open "` + row.Name + `"`
+	if row.Kind != "task" {
+		return ""
 	}
+	return readinessFirstStep + `/vault-cli:work-on-task "` + row.Name + `"`
 }
 
 // isHeadlessRow reports whether the row's own mode is headless.

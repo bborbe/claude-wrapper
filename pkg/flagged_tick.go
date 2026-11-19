@@ -296,9 +296,13 @@ func reasonClass(entry string) string {
 // row stays dark whenever the model leg does not run.
 type FlaggedTick struct {
 	Source FlaggedRowSource
-	// Reopener opens one row through the spawn path the row's mode names. It is a
-	// separate collaborator rather than a TabSpawner because a headless row must be
-	// RESUMED, and the tab path refuses `resume` by construction.
+	// Open is the open decision and executor. When set, every row that passes the
+	// tick's gates is handed to OpenTick as one batch, so the tick and
+	// POST /api/1.0/open cannot route the same row two ways. The daemon always
+	// sets it.
+	Open OpenExecutor
+	// Reopener is the per-row fallback for callers that wire no Open executor
+	// (the pre-006 unit fixtures). It never runs in the daemon, where Open is set.
 	Reopener FlaggedReopener
 	Caps     SpawnCaps
 	// Chain answers whether a never-opened goal or topic already has a live
@@ -936,12 +940,18 @@ func (t *FlaggedTick) tickFromRows(
 	// is a reason string, not a bool, because the rows it leaves behind are still
 	// recorded — as unconsidered — so the buckets add up to Considered.
 	halted := ""
+	// pending is the batch the tick has decided to open. Every gate above has
+	// already run; nothing is added after a cap or rate refusal. The batch is
+	// opened in one OpenTick call so the tick cannot route a row differently from
+	// POST /api/1.0/open.
+	var pending []FlaggedRow
+	var pendingRetry []bool
 	for _, row := range ordered {
 		if halted != "" {
 			result.Refused = append(result.Refused, row.Key()+": "+halted)
 			continue
 		}
-		if len(result.Opened)+len(result.Nudged) >= maxRowsPerTick {
+		if len(pending)+len(result.Nudged) >= maxRowsPerTick {
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
@@ -988,15 +998,94 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRateRefused+": "+err.Error())
 			continue
 		}
+		pending = append(pending, row)
+		pendingRetry = append(pendingRetry, retryNotLanded)
+	}
+	t.openPending(ctx, pending, pendingRetry, ended, now, &result)
+	return result
+}
+
+// openPending opens the batch the tick admitted, once through OpenTick when an
+// executor is wired.
+func (t *FlaggedTick) openPending(
+	ctx context.Context,
+	pending []FlaggedRow,
+	retry []bool,
+	ended map[string]time.Time,
+	now time.Time,
+	result *FlaggedTickResult,
+) {
+	if len(pending) == 0 {
+		return
+	}
+	if t.Open == nil {
+		t.reopenPending(ctx, pending, retry, ended, now, result)
+		return
+	}
+	rows := make([]OpenRow, len(pending))
+	for i, row := range pending {
+		rows[i] = openRowFor(row)
+	}
+	verdicts := t.Open.OpenTick(ctx, rows)
+	for i, row := range pending {
+		if i >= len(verdicts) {
+			// The executor stopped early (a cancelled context). The row was
+			// admitted but never opened, so it is accounted for, not dropped.
+			result.Refused = append(result.Refused, row.Key()+": "+reasonUnconsidered)
+			continue
+		}
+		t.recordOpenVerdict(ctx, row, retry[i], verdicts[i], ended, now, result)
+	}
+}
+
+// recordOpenVerdict folds one open verdict into the tick's three buckets.
+//
+// A jump or live verdict is the decision's "already reachable" answer; on the
+// tick path the executor never activates a pane, so it is a skip under the
+// existing already-live reason. A refusal keeps its reason token so the summary
+// line's refused_by_reason= counts it under the same token the open log names.
+func (t *FlaggedTick) recordOpenVerdict(
+	ctx context.Context,
+	row FlaggedRow,
+	retryNotLanded bool,
+	verdict OpenVerdict,
+	ended map[string]time.Time,
+	now time.Time,
+	result *FlaggedTickResult,
+) {
+	switch verdict.Branch {
+	case OpenBranchResume, OpenBranchCreate:
+		t.commitOpened(ctx, row, retryNotLanded, now)
+		result.Opened = append(result.Opened, row.Key())
+		t.recordResumeDelay(result, row, ended, now)
+	case OpenBranchJump, OpenBranchLive, OpenBranchYours:
+		result.Skipped = append(result.Skipped, row.Key()+": "+reasonAlreadyLive)
+		t.rememberSkipped(row, now)
+	case OpenBranchRefused:
+		result.Refused = append(result.Refused, row.Key()+": "+verdict.Reason+": "+verdict.Message)
+	default:
+		result.Refused = append(result.Refused, row.Key()+": spawn failed: open returned branch "+verdict.Branch)
+	}
+}
+
+// reopenPending is the per-row fallback for a tick with no Open executor.
+func (t *FlaggedTick) reopenPending(
+	ctx context.Context,
+	pending []FlaggedRow,
+	retry []bool,
+	ended map[string]time.Time,
+	now time.Time,
+	result *FlaggedTickResult,
+) {
+	for i, row := range pending {
 		if err := t.Reopener.Reopen(ctx, row); err != nil {
 			result.Refused = append(result.Refused, row.Key()+": spawn failed: "+err.Error())
 			continue
 		}
-		t.commitOpened(ctx, row, retryNotLanded, now)
+		t.commitOpened(ctx, row, retry[i], now)
 		result.Opened = append(result.Opened, row.Key())
-		t.recordResumeDelay(&result, row, ended, now)
+		t.recordResumeDelay(result, row, ended, now)
 	}
-	return result
 }
 
 // commitOpened records a successful open: the retry (only now that the spawn
