@@ -717,9 +717,16 @@ func (s *RosterToolServer) answerPermission(
 		return "", errors.Wrapf(ctx, err, "answer permission failed")
 	}
 	if s.Decider != nil && session.Question != nil {
+		// The manager's answer carries the same `latency_ms` the timeout path writes.
+		// `Question.RequestedAt` is stamped when this process registered the park, so the
+		// park-to-answer interval is already in hand here; passing nil recorded the verdict
+		// but dropped the only number the answer-speed reading is built from.
+		// Measured 2026-11-19: 0 of 2,024 manager rows carried the field over 7 days while
+		// 877 of 877 timeout rows did, so the goal's p90 clause had no producer at all.
+		latency := int(s.currentDateTime().Now().Time().Sub(session.Question.RequestedAt).Milliseconds())
 		s.Decider.RecordSettled(
 			ctx, body.AgentID, PolicyContext{Cwd: session.Cwd}, *session.Question,
-			body.Behavior, DecidedByManager, "", nil,
+			body.Behavior, DecidedByManager, "", &latency,
 		)
 	}
 	// Deliberately no per-argument log line: the caller-supplied strings are
