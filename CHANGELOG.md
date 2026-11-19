@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.41.0
 
 - feat: **the open endpoint's decision core** turns one row's facts into one verdict with no side effects — role and mode per the role-mode matrix, branch from the session registry, and every named refusal before any write, plus tab window resolution against the role map (`Direct` for humans, `Managers` for managers, never `Hold`) and the one log-line formatter.
 - feat: **the open endpoint's tab opener** opens a human row in its Direct window and a goal or topic manager in Managers, `create` or `resume`, with the manager recipe from `docs/open-endpoint.md`: the matrix Rule 4 launcher chain, `manager-launcher.py` and the topic ceiling invoked as argv, ready-gated start commands (60 s, then 300 s for the goal loop), pane hygiene that unsets the spawner's session identity, and every existing guard (caps, start rate, terminal-task resume, spawn ledger) applied once. A refused script or cap spawns nothing; an unsent start command is a verdict note, not a failure. `TabSpawnOptions` gains `Resume` and `ResetSessionEnv`, and `SendWhenReadyWithin` takes the composer wait.
