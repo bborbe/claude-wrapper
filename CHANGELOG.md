@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.54.2
 
 - test: **the no-kill guard gets the two limbs its single tripwire never had.** The `KeepaliveStopper` seam only proves the tripwire was not called, so a `Supervisor.Stop` added anywhere else in the restart path passed it — a guard no code path reaches, which the ruling efc771fb wanted proven by ABSENCE, not by a tripwire. Limb 1 asserts the restart's exact call set: the pane sender is called once with the caller's command and the opener is never touched. Limb 2 is a source scan over `pkg/keepalive_act.go`, `pkg/keepalive_lapsed_manager.go` and `main_keepalive.go` (the wiring file is included because a `Stop` added where the act is CONSTRUCTED bypasses limb 1) rejecting `.Stop(`, `.Kill(` and `exec.Command("kill"`. Inverse proof run: appending a `func mutationStop(ctx, sup Supervisor, id string) error { return sup.Stop(ctx, id) }` to `keepalive_act.go` turns limb 2 red with `keepalive_act.go contains ".Stop(" — the keepalive tick kills nothing`. Change set: `pkg/keepalive_nokill_test.go` (new), `CHANGELOG.md`.
 
