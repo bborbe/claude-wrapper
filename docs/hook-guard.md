@@ -72,12 +72,18 @@ Rules a shape guard must hold, all of them load-bearing:
 - **Resolve every path** — `ResolvePath` / `WriteTargetUnderRoots` / `UnderRoots`,
   never a raw prefix test. `..` is refused outright, and a path that does not exist
   yet is judged by its longest existing prefix.
-- **Refuse the options you did not model** — `gitWriteArgs` is the pattern: an
-  explicit `--` ends the options, an unknown `-`-prefixed word refuses the call, and
-  an option with a dangerous long-form must be refused by **prefix** (`--am` covers
-  `--am`, `--ame` and `--amend`, which git abbreviates).
-- **Never approve a write verb** — `push`, `reset`, `worktree remove`,
-  `gh pr create|close|review|ready`, `gh api -X PUT` stay with the prompt.
+- **Refuse the options that reach outside the call** — `gitWriteArgs` is the
+  pattern: an explicit `--` ends the options, a non-flag operand is allowed, and a
+  flag is refused when it matches `gitBadArg` (`-c`, `--output*`, `--exec*`,
+  `--upload-pack*`, `--git-dir*`, …) or a `gitBadLongPrefixes` entry. A dangerous
+  option must be refused by **prefix**, because git abbreviates: `--am` covers
+  `--am`, `--ame` and `--amend`. Anything the lists do not name is allowed, so a
+  new option with outside effects belongs in one of those lists — not in a comment.
+- **Know which write verbs are already approved** — `push`, `reset`,
+  `worktree remove`, `gh pr close|review|ready` and `gh api -X PUT` stay with the
+  prompt, but `gh pr create` **is** shape-approved by `GhCreateAllows`, for the
+  own-repo form only (`gh -R bborbe/<repo> pr create`, a gated flag set). Check
+  before documenting a verb as gated.
 - **Refuse a credential path**, even one this guard would otherwise allow.
 
 ### 3. A read-only verb under an existing rule
