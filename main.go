@@ -181,6 +181,7 @@ func main() {
 	sweepGate := registerSweepGateFlags()
 	stateDir := flag.String("state-dir", "",
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
+	keepalive := flag.Bool("keepalive", false, "run the keepalive tick; only :18090 sets this")
 	drainBound := flag.Duration("drain-bound", 4*time.Second,
 		"overall budget a SIGTERM waits for children to reach a turn boundary before recording each as interrupted; must stay under launchd's ExitTimeOut (5 s) or launchd SIGKILLs the drain before it can report")
 	closeOnTerminalTaskDirs := flag.String("close-on-terminal-task-dirs", "", closeOnTerminalTaskDirsUsage)
@@ -245,7 +246,7 @@ func main() {
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
 		*flagged.interval, *flagged.script,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
-		*fleetPusher.heartbeat, parkedGate, *stateDir,
+		*fleetPusher.heartbeat, parkedGate, *stateDir, *keepalive,
 		openPathsFromFlags(open),
 	)
 
@@ -455,8 +456,11 @@ func startLifecycleJobs(
 	ctx context.Context,
 	supervisor pkg.Supervisor,
 	now libtime.CurrentDateTimeGetter,
+	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatReader,
+	vaults pkg.VaultLister,
 ) {
-	jobs := lifecycleJobs(supervisor, now)
+	jobs := lifecycleJobs(ctx, supervisor, now, registry, heartbeats, vaults)
 	for _, job := range jobs {
 		go func(j interface {
 			Run(context.Context) error
@@ -471,11 +475,14 @@ func startLifecycleJobs(
 // lifecycleJobs is the list itself, kept out of the start loop so adding a port
 // does not push the caller past its funlen ceiling.
 func lifecycleJobs(
+	ctx context.Context,
 	supervisor pkg.Supervisor,
 	now libtime.CurrentDateTimeGetter,
+	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatReader,
+	vaults pkg.VaultLister,
 ) []interface{ Run(context.Context) error } {
-	return []interface{ Run(context.Context) error }{
-		&pkg.IdleReaperJob{Supervisor: supervisor},
+	jobs := []interface{ Run(context.Context) error }{
 		&pkg.StateLedgerJob{Supervisor: supervisor, Now: now},
 		&pkg.ManagerLivenessJob{
 			Check:         pkg.NewLapseCheck(pkg.ManagerLivenessCheckScript),
@@ -491,6 +498,14 @@ func lifecycleJobs(
 		// over a store this process owns.
 		&pkg.SessionExitDailyJob{Now: now},
 	}
+	// The one ReaperJob replaces IdleReaperJob and the round's four reap rows.
+	reaperJob, err := newReaperJob(ctx, supervisor, registry, heartbeats, vaults, now)
+	if err != nil {
+		log.Printf("WARNING: reaper job assembly failed: %v", err)
+	} else {
+		jobs = append(jobs, reaperJob)
+	}
+	return jobs
 }
 
 // warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised
@@ -636,6 +651,7 @@ func startFleetFaces(
 	fleetPusherHeartbeat string,
 	parked pkg.ParkedHold,
 	stateDir string,
+	keepalive bool,
 	openPaths openScriptPaths,
 ) {
 	now := libtime.NewCurrentDateTime()
@@ -713,10 +729,7 @@ func startFleetFaces(
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
-
-	// The jobs that used to run as launchd ticks. They read state this process
-	// already holds, so they live here rather than outside it.
-	startLifecycleJobs(ctx, supervisor, now)
+	startTickJobs(ctx, supervisor, keepalive, registry, heartbeats, vaults, tabs, rosterServer.Open, stateDir, now)
 
 	startFleetPusherJobs(
 		ctx, registry, attentionURL, fleetPusherHeartbeat,
