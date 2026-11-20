@@ -582,6 +582,28 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			gomega.Expect(modes).To(gomega.ConsistOf("headless", "interactive"))
 			gomega.Expect(modes).NotTo(gomega.ContainElement(""))
 		})
+
+		// The cap is charged against the mode the row will OPEN in, not the stale
+		// one on the record. An agent row stored `interactive` opens headless
+		// (matrix Rule 2), so charging it to the interactive sub-cap refused it —
+		// and halted the batch — whenever that cap sat at its limit.
+		ginkgo.It("charges an agent row stored interactive to the headless cap", func() {
+			rows := []FlaggedRow{rowWith("agent", "interactive", "stale")}
+			caps := &recordingCaps{}
+			_, err := newTick(staticSource{rows: rows}, &recordingReopener{}, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(caps.modes()).To(gomega.ConsistOf("headless"))
+		})
+
+		ginkgo.It("keeps a human row's stored mode", func() {
+			rows := []FlaggedRow{rowWith("human", "interactive", "h")}
+			caps := &recordingCaps{}
+			_, err := newTick(staticSource{rows: rows}, &recordingReopener{}, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(caps.modes()).To(gomega.ConsistOf("interactive"))
+		})
 	})
 
 	// A row that reaches the cap check has already passed the provenance gate, so
@@ -1654,5 +1676,178 @@ var _ = ginkgo.Describe("endedSessions", func() {
 		gomega.Expect(got).To(gomega.HaveKey("s2"))
 		gomega.Expect(got).NotTo(gomega.HaveKey("s1"), "resumed session keeps its id; last row wins")
 		gomega.Expect(got).NotTo(gomega.HaveKey("s3"))
+	})
+})
+
+// The tick hands every row it has decided to open to OpenTick, so the tick and
+// POST /api/1.0/open cannot route the same row two ways. These cases drive the
+// real executor over the open fixtures: routing follows the page's role, never
+// the FlaggedRow's stored mode.
+var _ = ginkgo.Describe("flagged tick opens through the open decision", func() {
+	var (
+		ctx context.Context
+		f   *openExecutorFixture
+	)
+
+	newOpenTick := func(rows []FlaggedRow) *FlaggedTick {
+		tick := newTick(staticSource{rows: rows}, &recordingReopener{}, &recordingCaps{})
+		tick.Open = f.executor
+		tick.Chain = &fakeChainProbe{live: false}
+		return tick
+	}
+
+	ginkgo.BeforeEach(func() {
+		ctx = context.Background()
+		f = newOpenExecutorFixture()
+	})
+
+	ginkgo.It("resumes an agent row headless by its recorded id, never as a tab", func() {
+		id := openExecTestUUID(1)
+		writeOpenPage(f.dir, openTaskTestFolder, "Agent Resume",
+			"role: agent", "mode: interactive", "claude_session_id: "+id)
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Agent Resume",
+			Role: RoleAgent, Mode: SpawnModeInteractive,
+			SessionID: id, Liveness: "ABSENT", Branch: "resume",
+		}
+
+		result, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("line=%s headless=%d tabs=%d\n",
+			result.Line(), len(f.headless.requests), len(f.tabOpener.requests))
+		gomega.Expect(result.Opened).To(gomega.ConsistOf(row.Key()))
+		gomega.Expect(f.headless.requests).To(gomega.HaveLen(1))
+		gomega.Expect(f.headless.requests[0].Resume).To(gomega.Equal(id))
+		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
+		gomega.Expect(f.tabs.spawned).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("creates an agent row headless when it has no session id", func() {
+		writeOpenPage(f.dir, openTaskTestFolder, "Agent Create", "role: agent")
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Agent Create",
+			Role: RoleAgent, Mode: SpawnModeHeadless,
+			Liveness: "none", Branch: "create",
+		}
+
+		result, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Opened).To(gomega.ConsistOf(row.Key()))
+		gomega.Expect(f.headless.requests).To(gomega.HaveLen(1))
+		gomega.Expect(f.headless.requests[0].Resume).To(gomega.BeEmpty())
+		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("carries the readiness first step on a task row", func() {
+		writeOpenPage(f.dir, openTaskTestFolder, "Ready", "role: agent")
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Ready",
+			Role: RoleAgent, Mode: SpawnModeHeadless,
+			Liveness: "none", Branch: "create",
+		}
+
+		_, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(f.headless.requests).To(gomega.HaveLen(1))
+		gomega.Expect(f.headless.requests[0].Prompt).
+			To(gomega.HavePrefix("FIRST STEP — readiness gate"))
+		gomega.Expect(f.headless.requests[0].Prompt).
+			To(gomega.ContainSubstring(`/vault-cli:work-on-task "Ready"`))
+	})
+
+	ginkgo.It("opens a human row as a Direct tab", func() {
+		writeOpenPage(f.dir, openTaskTestFolder, "Human Row", "role: human")
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Human Row",
+			Role: RoleHuman, Mode: SpawnModeInteractive,
+			Liveness: "none", Branch: "direct",
+		}
+
+		result, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Opened).To(gomega.ConsistOf(row.Key()))
+		gomega.Expect(f.tabOpener.requests).To(gomega.HaveLen(1))
+		gomega.Expect(f.tabOpener.requests[0].Role).To(gomega.Equal(RoleHuman))
+		gomega.Expect(f.tabOpener.requests[0].WindowID).To(gomega.Equal(12))
+		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("opens a goal as a manager tab in Managers and spawns no worker", func() {
+		tabs := &fakeTabClient{}
+		opener := newOpenTabTestOpener(
+			steppingClock(), tabs, f.registry, nil, &fakeLedger{}, openScripts(),
+		)
+		deps := f.deps()
+		deps.TabOpener = opener
+		f.executor = NewOpenExecutor(deps)
+		writeOpenPage(f.dir, openGoalTestFolder, "Goal Row", "phase: todo")
+		row := FlaggedRow{
+			Kind: "goal", Vault: "v1", Name: "Goal Row",
+			Role: RoleManager, Mode: SpawnModeInteractive,
+			Liveness: "none", Branch: "create",
+		}
+
+		result, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Opened).To(gomega.ConsistOf(row.Key()))
+		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
+		gomega.Expect(tabs.spawned[0].TabName).To(gomega.Equal("Goal Row Manager"))
+		gomega.Expect(tabs.spawned[0].WindowID).NotTo(gomega.BeNil())
+		gomega.Expect(*tabs.spawned[0].WindowID).To(gomega.Equal(14))
+		// No `/supervisor:open` worker: the manager tab is the only spawn.
+		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses a human row when the Direct key is absent", func() {
+		f.roleMap.entries = map[string]RoleMapEntry{
+			"Managers": {Chip: new("orange"), WindowID: new(14)},
+			"Hold":     {WindowID: new(2)},
+		}
+		writeOpenPage(f.dir, openTaskTestFolder, "No Direct", "role: human")
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "No Direct",
+			Role: RoleHuman, Mode: SpawnModeInteractive,
+			Liveness: "none", Branch: "direct",
+		}
+
+		result, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Opened).To(gomega.BeEmpty())
+		gomega.Expect(result.Refused).To(gomega.HaveLen(1))
+		gomega.Expect(result.Refused[0]).To(gomega.ContainSubstring(OpenReasonRoleMapKeyMissing))
+		gomega.Expect(result.Line()).
+			To(gomega.ContainSubstring("refused_by_reason=role-map-key-missing:1"))
+		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
+		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("counts a jump row skipped and activates no pane", func() {
+		id := openExecTestUUID(2)
+		writeOpenPage(f.dir, openTaskTestFolder, "Live Human",
+			"role: human", "claude_session_id: "+id)
+		f.registry.live = []RegistryEntry{{PID: 9, SessionID: id, Name: "Live Human"}}
+		f.joiner.panes = map[int]string{9: "p9"}
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Live Human",
+			Role: RoleHuman, Mode: SpawnModeInteractive,
+			SessionID: id, Liveness: "ABSENT", Branch: "resume",
+		}
+
+		result, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Opened).To(gomega.BeEmpty())
+		gomega.Expect(result.Skipped).To(gomega.ConsistOf(row.Key() + ": " + reasonAlreadyLive))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("skipped_by_reason=already-live:1"))
+		gomega.Expect(f.tabs.activated).To(gomega.BeEmpty())
+		gomega.Expect(probeCalls(f.scripts)).To(gomega.Equal(0))
+		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
+		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
 	})
 })

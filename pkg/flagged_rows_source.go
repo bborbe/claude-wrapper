@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"strings"
 
 	"github.com/bborbe/errors"
 )
@@ -67,6 +68,20 @@ func (r FlaggedRow) Key() string {
 // `Refused` documents.
 func (r FlaggedRow) OperatorNamed() bool {
 	return len(r.Refused) == 0
+}
+
+// CapMode is the worker mode the row will actually open in, for the cap axes.
+//
+// It follows the role, not the stored `mode:`: an agent row opens headless
+// whatever the record says (role × mode matrix Rule 2), so charging its stored
+// `interactive` to the interactive sub-cap refused a row that never uses that
+// population. A non-agent row keeps its stored mode, including an empty one —
+// the caps never default it (AC8).
+func (r FlaggedRow) CapMode() string {
+	if strings.TrimSpace(r.Role) == RoleAgent {
+		return SpawnModeHeadless
+	}
+	return strings.TrimSpace(r.Mode)
 }
 
 // FlaggedRowSource answers the eligible flagged rows.
