@@ -6,6 +6,9 @@ package pkg
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -113,3 +116,39 @@ var _ = ginkgo.Describe("ParseStalledTabRows", func() {
 		gomega.Expect(rows).To(gomega.BeEmpty())
 	})
 })
+
+// ⚠️ The two safety properties of this leg, asserted against its own wiring source.
+// `--allow-busy-lapse` is the operator's own judgement (ruled 2026-11-12) and the
+// tick must never carry it; `--dry-run` is mandatory because without it the script
+// acts on any row reading `idle` at call time.
+var _ = ginkgo.Describe("the stalled-tabs wiring", func() {
+	ginkgo.It("never passes --allow-busy-lapse and always passes --dry-run", func() {
+		source, err := os.ReadFile(filepath.Join("..", "main_keepalive.go"))
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		// ⚠️ Comments are stripped first: this file's own comments NAME the
+		// forbidden flag while explaining why it must never be passed, so a raw
+		// scan fails on the documentation rather than on a call.
+		text := codeOnly(string(source))
+
+		gomega.Expect(strings.Contains(text, "--allow-busy-lapse")).To(
+			gomega.BeFalse(),
+			"the tick must never pass --allow-busy-lapse: that flag is the operator's own judgement",
+		)
+		gomega.Expect(strings.Contains(text, `"--dry-run"`)).To(
+			gomega.BeTrue(),
+			"the tick must always pass --dry-run, or the unattended restart becomes reachable",
+		)
+	})
+})
+
+// codeOnly drops whole-line and trailing `//` comments so a source scan reads the
+// code rather than the prose that describes it.
+func codeOnly(source string) string {
+	lines := strings.Split(source, "\n")
+	for i, line := range lines {
+		if idx := strings.Index(line, "//"); idx >= 0 {
+			lines[i] = line[:idx]
+		}
+	}
+	return strings.Join(lines, "\n")
+}

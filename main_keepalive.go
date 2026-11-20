@@ -236,7 +236,7 @@ func newKeepaliveProcedures(
 			Marker: newStoodDownMarker(registry, filtered),
 		},
 		&pkg.StalledTabsProcedure{
-			Rows: newStalledTabRows(keepaliveScript("stalled-tab-restart.py")),
+			Rows: newStalledTabRows(keepaliveScript("stalled-tab-restart.py"), filtered),
 		},
 	}
 }
@@ -495,6 +495,7 @@ func newStoodDownMarker(registry pkg.SessionRegistry, filtered []pkg.Vault) func
 // the script's answered path is the only call site that carries it.
 func newStalledTabRows(
 	run pkg.KeepaliveScriptRunner,
+	vaults []pkg.Vault,
 ) func(context.Context) ([]pkg.StalledTab, error) {
 	return func(ctx context.Context) ([]pkg.StalledTab, error) {
 		sessions, err := readFleetSnapshot(ctx, fleetSnapshotPath())
@@ -503,7 +504,7 @@ func newStalledTabRows(
 		}
 		rows := make([]pkg.StalledTab, 0, len(sessions))
 		for _, sessionID := range sortedKeys(sessions) {
-			rows = append(rows, stalledRowsForSession(ctx, run, sessionID, sessions[sessionID])...)
+			rows = append(rows, stalledRowsForSession(ctx, run, vaults, sessionID, sessions[sessionID])...)
 		}
 		return rows, nil
 	}
@@ -596,16 +597,26 @@ func pageTypeOf(path string) string {
 func stalledRowsForSession(
 	ctx context.Context,
 	run pkg.KeepaliveScriptRunner,
+	vaults []pkg.Vault,
 	sessionID string,
 	row fleetSnapshotRow,
 ) []pkg.StalledTab {
-	if row.StallCount < stalledTabMinStallCount || row.TaskFile == "" || isManagerPage(row.TaskFile) {
+	if row.StallCount < stalledTabMinStallCount || row.TaskFile == "" {
 		return nil
 	}
-	task := strings.TrimSuffix(filepath.Base(row.TaskFile), ".md")
+	// ⚠️ The snapshot stores `task_file` as a BARE PAGE NAME with no directory and no
+	// `.md` (measured 2026-11-20: 3199 of 3248 rows, and the row carries no path
+	// field at all). `filepath.Dir` on it yields "." — which made both manager-page
+	// exclusions dead code and passed `--dir .` to the script. The path must be
+	// RESOLVED by name across the configured vaults first.
+	pagePath, vaultName, found := resolveStalledPagePath(ctx, vaults, row.TaskFile)
+	if !found || isManagerPage(pagePath) {
+		return nil
+	}
+	task := strings.TrimSuffix(filepath.Base(pagePath), ".md")
 	undecidable := []pkg.StalledTab{{SessionID: sessionID, Task: task, Verdict: "cannot-tell"}}
 	out, _, runErr := run(ctx,
-		"--vault", "", "--task", task, "--dir", filepath.Dir(row.TaskFile),
+		"--vault", vaultName, "--task", task, "--dir", filepath.Dir(pagePath),
 		"--session-id", sessionID, "--stall-count", strconv.Itoa(row.StallCount),
 		"--dry-run",
 	)
@@ -618,6 +629,36 @@ func stalledRowsForSession(
 	}
 	for i := range parsed {
 		parsed[i].Task = task
+		// The script prints an 8-char id; the snapshot holds the full one.
+		parsed[i].SessionID = sessionID
 	}
 	return parsed
+}
+
+// resolveStalledPagePath finds `<name>.md` across the configured vaults' task, goal
+// and topic folders and returns the page's full path with its vault name.
+//
+// The folder resolution goes through the same `resolve-folders.py` seam the listers
+// use, so a renamed vault folder is honoured rather than guessed at. A name that
+// resolves nowhere returns found=false and the row is skipped — acting on an
+// unresolved page would pass `--dir .` again, which is the defect this replaces.
+func resolveStalledPagePath(
+	ctx context.Context,
+	vaults []pkg.Vault,
+	name string,
+) (path string, vaultName string, found bool) {
+	for _, require := range []string{"tasks_dir", "goals_dir", "topics_dir"} {
+		folderFor := pkg.NewKeepaliveFolderFor(keepaliveScript("resolve-folders.py"), require)
+		for _, vault := range vaults {
+			dir, err := folderFor(ctx, vault)
+			if err != nil || dir == "" {
+				continue
+			}
+			candidate := filepath.Join(dir, name+".md")
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				return candidate, vault.Name, true
+			}
+		}
+	}
+	return "", "", false
 }
