@@ -39,6 +39,17 @@ func NewKeepaliveFolderFor(run KeepaliveScriptRunner, require string) KeepaliveF
 			return "", err
 		}
 		if code != 0 {
+			// ⚠️ `UNKNOWN vault '<name>' does not configure <key>` (exit 1) is an
+			// ABSENT folder, not a failure: the vault simply has no topics/tasks
+			// dir. Measured 2026-11-20 — the first live ticks logged
+			// `result=error` for NINE such vaults (private-boss, private-family,
+			// private-agent, private-gaming, private-starcitizen, private-trading,
+			// assistant-data, assistant-personal, assistant-brogrammers), which
+			// reads as a broken tick when it is a real answer. Every OTHER
+			// non-zero exit stays an error.
+			if isUnconfiguredFolder(out) {
+				return "", nil
+			}
 			return "", errors.Errorf(ctx, "resolve-folders for %s exited %d", vault.Name, code)
 		}
 		line := strings.SplitN(strings.TrimSpace(out), "\n", 2)[0]
@@ -48,6 +59,13 @@ func NewKeepaliveFolderFor(run KeepaliveScriptRunner, require string) KeepaliveF
 		}
 		return strings.TrimSpace(fields[index]), nil
 	}
+}
+
+// isUnconfiguredFolder reports whether resolve-folders' output is its own
+// `UNKNOWN … does not configure …` refusal rather than a real failure.
+func isUnconfiguredFolder(output string) bool {
+	line := strings.SplitN(strings.TrimSpace(output), "\n", 2)[0]
+	return strings.HasPrefix(line, "UNKNOWN ") && strings.Contains(line, "does not configure")
 }
 
 // folderFieldIndex maps a resolve-folders `--require` key to its output field.
