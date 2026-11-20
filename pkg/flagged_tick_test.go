@@ -582,6 +582,28 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			gomega.Expect(modes).To(gomega.ConsistOf("headless", "interactive"))
 			gomega.Expect(modes).NotTo(gomega.ContainElement(""))
 		})
+
+		// The cap is charged against the mode the row will OPEN in, not the stale
+		// one on the record. An agent row stored `interactive` opens headless
+		// (matrix Rule 2), so charging it to the interactive sub-cap refused it —
+		// and halted the batch — whenever that cap sat at its limit.
+		ginkgo.It("charges an agent row stored interactive to the headless cap", func() {
+			rows := []FlaggedRow{rowWith("agent", "interactive", "stale")}
+			caps := &recordingCaps{}
+			_, err := newTick(staticSource{rows: rows}, &recordingReopener{}, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(caps.modes()).To(gomega.ConsistOf("headless"))
+		})
+
+		ginkgo.It("keeps a human row's stored mode", func() {
+			rows := []FlaggedRow{rowWith("human", "interactive", "h")}
+			caps := &recordingCaps{}
+			_, err := newTick(staticSource{rows: rows}, &recordingReopener{}, caps).
+				Tick(context.Background())
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(caps.modes()).To(gomega.ConsistOf("interactive"))
+		})
 	})
 
 	// A row that reaches the cap check has already passed the provenance gate, so

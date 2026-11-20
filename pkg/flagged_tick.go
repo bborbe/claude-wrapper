@@ -988,7 +988,13 @@ func (t *FlaggedTick) tickFromRows(
 		// limit. Passing `false` refused every one of them at the soft cap — the
 		// fleet stood at 51 live against 50 allowed on 2026-11-18 00:58 and 28 rows
 		// went unconsidered.
-		if err := t.Caps.CheckWorker(ctx, row.Mode, row.OperatorNamed()); err != nil {
+		// The cap is charged against the mode the row will ACTUALLY open in, which
+		// follows its role, not its stored `mode:`. A `role: agent` row stored
+		// `interactive` opens headless (matrix Rule 2), so charging it to the
+		// interactive sub-cap refused it — and halted the batch — whenever that cap
+		// sat at its hard limit, which is exactly the stale-mode row this change
+		// exists to route correctly.
+		if err := t.Caps.CheckWorker(ctx, row.CapMode(), row.OperatorNamed()); err != nil {
 			halted = reasonUnconsidered
 			result.Refused = append(result.Refused, row.Key()+": "+reasonCapsRefused+": "+err.Error())
 			continue
