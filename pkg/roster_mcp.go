@@ -967,6 +967,18 @@ func (s *RosterToolServer) stopAgent(
 	if err != nil {
 		return "", err
 	}
+	if row.Unlisted {
+		// An unlisted row carries liveness and nothing else: there is no child
+		// here to signal, and stopping one is the same boundary as the rehydrated
+		// case — the daemon cannot stop what it does not hold.
+		return "", errors.Wrapf(
+			ctx, ErrAgentNotOwned,
+			"stop_agent acts only on a session this wrapper spawned; %s is live on the "+
+				"heartbeat endpoint but is not one this daemon holds, so there is no child to stop "+
+				"— let it exit, or close its pane",
+			body.AgentID,
+		)
+	}
 	if row.Rehydrated {
 		return "", errors.Wrapf(
 			ctx, ErrAgentNotOwned,

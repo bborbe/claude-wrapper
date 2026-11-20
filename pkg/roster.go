@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -49,7 +50,18 @@ type AgentRow struct {
 	// Without it three fields a caller DOES see read as live measurements when
 	// they are not: status is never terminal, and an empty pending set is
 	// indistinguishable from "no gate outstanding".
-	Rehydrated      bool      `json:"rehydrated"`
+	Rehydrated bool `json:"rehydrated"`
+	// Unlisted marks a row that is live on the heartbeat endpoint but is neither
+	// a session this process spawned nor a ledger record — an ordinary
+	// interactive tab, or a peer's worker.
+	//
+	// It exists because the alternative is silence: a roster that omits these
+	// answers "nothing is running" to a manager looking at a live fleet. The row
+	// carries liveness and nothing else, and UnlistedReason says so, so an empty
+	// label or a null status is not read as a measurement.
+	Unlisted bool `json:"unlisted"`
+	// UnlistedReason explains an Unlisted row in words. Empty on every other row.
+	UnlistedReason  string    `json:"unlisted_reason,omitempty"`
 	CreatedAt       *string   `json:"created_at"`
 	LastMessage     *string   `json:"last_message"`
 	CurrentToolCall *ToolCall `json:"current_tool_call"`
@@ -214,7 +226,7 @@ func (r *roster) List(ctx context.Context) ([]AgentRow, error) {
 		seen[row.SessionID] = struct{}{}
 	}
 
-	foreign, err := r.foreignRows(ctx, seen)
+	foreign, live, err := r.foreignRows(ctx, seen)
 	if err != nil {
 		// A store that cannot be read returns this process's own roster rather
 		// than an empty one, and the degradation is LOGGED — otherwise it is
@@ -227,7 +239,51 @@ func (r *roster) List(ctx context.Context) ([]AgentRow, error) {
 		return r.enrich(ctx, rows), nil
 	}
 	rows = append(rows, foreign...)
+	rows = append(rows, r.unlistedRows(live, seen, foreign)...)
 	return r.enrich(ctx, rows), nil
+}
+
+// unlistedRows returns one row per session the liveness union reports live that
+// no row already carries.
+//
+// This is the honest half of the roster. A session this daemon did not spawn and
+// the ledger has no record of — an ordinary interactive tab, a peer's worker — is
+// genuinely live and genuinely invisible to both existing sources, and a short
+// list answers "nothing is running" to a manager looking at a live fleet. The
+// rows are marked Unlisted so a caller reads them as liveness alone.
+//
+// A nil live set means the probe could not run; that is rendered as no rows, and
+// the caller's own degradation log is the signal — never as "nothing is
+// unlisted", which would be the same confident wrong answer this change removes.
+func (r *roster) unlistedRows(
+	live map[string]struct{},
+	seen map[string]struct{},
+	foreign []AgentRow,
+) []AgentRow {
+	if live == nil {
+		return nil
+	}
+	known := make(map[string]struct{}, len(seen)+len(foreign))
+	for id := range seen {
+		known[id] = struct{}{}
+	}
+	for i := range foreign {
+		known[foreign[i].SessionID] = struct{}{}
+	}
+	ids := make([]string, 0, len(live))
+	for id := range live {
+		if _, ok := known[id]; !ok {
+			ids = append(ids, id)
+		}
+	}
+	// Sorted so two calls over the same fleet render the same order: a roster
+	// that reshuffles between reads is a diff a caller cannot trust.
+	sort.Strings(ids)
+	rows := make([]AgentRow, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, rowForUnlisted(id))
+	}
+	return rows
 }
 
 // Get returns one row by agent id.
@@ -249,23 +305,25 @@ func (r *roster) Get(ctx context.Context, agentID string) (*AgentRow, error) {
 func (r *roster) foreignRows(
 	ctx context.Context,
 	seen map[string]struct{},
-) ([]AgentRow, error) {
+) ([]AgentRow, map[string]struct{}, error) {
 	if r.ledger == nil || r.liveness == nil {
-		return nil, nil
+		// No liveness source: the roster is honest about being unable to tell,
+		// which is why the live set is nil rather than empty.
+		return nil, nil, nil
 	}
 	records, err := r.ledger.Rows(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if records == nil {
-		return nil, errors.Errorf(ctx, "ledger returned no rows")
+		return nil, nil, errors.Errorf(ctx, "ledger returned no rows")
 	}
 	live, err := r.liveness.Live(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if live == nil {
-		return nil, errors.Errorf(ctx, "liveness returned no set")
+		return nil, nil, errors.Errorf(ctx, "liveness returned no set")
 	}
 	rows := make([]AgentRow, 0, len(records))
 	for _, record := range records {
@@ -285,7 +343,22 @@ func (r *roster) foreignRows(
 		}
 		rows = append(rows, r.rowForForeign(record))
 	}
-	return rows, nil
+	return rows, live, nil
+}
+
+// rowForUnlisted builds a row for a session that is live but that neither this
+// process nor the ledger knows.
+//
+// The agent id is the session id, the same convention this process's own rows
+// use: an unlisted session has no ledger id to borrow, and inventing one would
+// make it addressable under an id nothing else agrees with.
+func rowForUnlisted(sessionID string) AgentRow {
+	return AgentRow{
+		AgentID:        sessionID,
+		SessionID:      sessionID,
+		Unlisted:       true,
+		UnlistedReason: "live on the heartbeat endpoint, but not a session this daemon spawned and not in the ledger",
+	}
 }
 
 // rowForOwn builds a row for a session this process spawned.
