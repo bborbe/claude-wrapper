@@ -36,6 +36,12 @@ var _ = ginkgo.Describe("KeepaliveEffectForVerdict", func() {
 			Result: KeepaliveResultSkipped,
 			Reason: "claimed",
 		}),
+		// ⚠️ Printed at topic-keepalive.py:534, NOT in its docstring — the same
+		// class of omission that produced the crash-loop and claim-word errors.
+		ginkgo.Entry("stand-down", "stand-down", KeepaliveEffect{
+			Result: KeepaliveResultKept,
+			Reason: "stand-down",
+		}),
 		ginkgo.Entry("leave", "leave", KeepaliveEffect{
 			Result: KeepaliveResultKept,
 			Reason: "leave",

@@ -42,6 +42,11 @@ func KeepaliveEffectForVerdict(ctx context.Context, verdict string) (KeepaliveEf
 		return KeepaliveEffect{Result: KeepaliveResultCapped, Reason: "crash-loop"}, nil
 	case "claimed":
 		return KeepaliveEffect{Result: KeepaliveResultSkipped, Reason: "claimed"}, nil
+	case "stand-down":
+		// The flag was cleared and a marker exists: the manager is RETIRED and never
+		// resumed. `kept` is right — there is nothing to act on — but the reason
+		// names it, so a retired manager is distinguishable from an armed one.
+		return KeepaliveEffect{Result: KeepaliveResultKept, Reason: "stand-down"}, nil
 	case "leave", "jump":
 		return KeepaliveEffect{Result: KeepaliveResultKept, Reason: verdict}, nil
 	case "cannot-tell":
