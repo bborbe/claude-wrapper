@@ -87,6 +87,19 @@ var _ = ginkgo.Describe("FileSubjectReader", func() {
 		}
 	})
 
+	ginkgo.It("fails CLOSED when the state dir cannot be read", func() {
+		// A stat error that is not "not found" must not read as "no marker": that
+		// would adopt a worker whose subject the operator stood down.
+		file := filepath.Join(ginkgo.GinkgoT().TempDir(), "not-a-dir")
+		gomega.Expect(os.WriteFile(file, []byte("x"), 0o600)).To(gomega.Succeed())
+		broken := NewFileSubjectReader(subjects, file)
+
+		_, stopped, err := broken.Stopped(ctx, "personal work")
+
+		gomega.Expect(err).NotTo(gomega.BeNil())
+		gomega.Expect(stopped).To(gomega.BeFalse())
+	})
+
 	ginkgo.It("never reports an empty subject as stopped", func() {
 		_, stopped, err := reader.Stopped(ctx, "")
 

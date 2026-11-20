@@ -74,8 +74,16 @@ func (r *FileSubjectReader) Stopped(
 	folded := baseSlug(subject)
 	for _, branch := range standdownBranches {
 		name := branch + "--" + folded + ".stopped"
-		if _, err := os.Stat(filepath.Join(r.StateDir, name)); err == nil {
+		// ⚠️ Only "not found" means "not stopped". Any other stat error — an
+		// unreadable or unsearchable StateDir — is returned, so the caller's guard
+		// fails CLOSED. Swallowing it here would read as "no marker" and adopt a
+		// worker whose subject the operator explicitly stood down.
+		_, err := os.Stat(filepath.Join(r.StateDir, name))
+		if err == nil {
 			return name, true, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", false, errors.Wrapf(ctx, err, "stat stand-down marker %s", name)
 		}
 	}
 	return "", false, nil

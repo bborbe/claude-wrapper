@@ -72,7 +72,7 @@ func defaultOwnershipClaimsPath() string {
 
 // Holder returns the manager that holds worker, or "" when it is unclaimed.
 func (s *FileClaimStore) Holder(ctx context.Context, worker string) (string, error) {
-	data, err := s.read()
+	data, err := s.read(ctx)
 	if err != nil {
 		return "", errors.Wrap(ctx, err, "read ownership claims")
 	}
@@ -89,7 +89,7 @@ func (s *FileClaimStore) Claim(
 		return err
 	}
 	defer unlock()
-	data, err := s.read()
+	data, err := s.read(ctx)
 	if err != nil {
 		return errors.Wrap(ctx, err, "read ownership claims")
 	}
@@ -107,14 +107,14 @@ func (s *FileClaimStore) Claim(
 // ⚠️ Malformed is empty, not an error: the store's own reader does the same, and
 // refusing here would stop every adoption on a file a human hand-edited. The
 // write that follows repairs it.
-func (s *FileClaimStore) read() (claimFile, error) {
+func (s *FileClaimStore) read(ctx context.Context) (claimFile, error) {
 	empty := claimFile{Version: 1, Claims: map[string]claimEntry{}}
 	raw, err := os.ReadFile(s.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return empty, nil
 		}
-		return empty, errors.Wrap(context.Background(), err, "read claim file")
+		return empty, errors.Wrap(ctx, err, "read claim file")
 	}
 	var data claimFile
 	if err := json.Unmarshal(raw, &data); err != nil {
@@ -139,11 +139,11 @@ func (s *FileClaimStore) write(ctx context.Context, data claimFile) error {
 		}
 	}
 	tmp := s.Path + ".tmp"
-	out, err := os.Create(tmp)
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return errors.Wrap(ctx, err, "create claim tmp")
 	}
-	encoded, err := encodeClaims(data)
+	encoded, err := encodeClaims(ctx, data)
 	if err != nil {
 		_ = out.Close()
 		return err
@@ -151,6 +151,12 @@ func (s *FileClaimStore) write(ctx context.Context, data claimFile) error {
 	if _, err := out.Write(encoded); err != nil {
 		_ = out.Close()
 		return errors.Wrap(ctx, err, "write claim tmp")
+	}
+	// fsync before the rename: without it a crash can leave the replaced file
+	// empty while the rename already happened.
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return errors.Wrap(ctx, err, "sync claim tmp")
 	}
 	if err := out.Close(); err != nil {
 		return errors.Wrap(ctx, err, "close claim tmp")
@@ -167,14 +173,26 @@ func (s *FileClaimStore) write(ctx context.Context, data claimFile) error {
 // ⚠️ The top level is a MAP, not the struct, so `encoding/json` sorts the keys —
 // Python's `sort_keys=True` writes `claims` before `version`, and a struct would
 // emit them in field order and rewrite the whole file on every claim.
-func encodeClaims(data claimFile) ([]byte, error) {
+func encodeClaims(ctx context.Context, data claimFile) ([]byte, error) {
+	// ⚠️ The entries are maps too, not the struct: Python's `sort_keys=True` sorts
+	// inside each entry (`claimed_at` first), and a struct would emit field order
+	// and rewrite every entry line on each claim.
+	claims := make(map[string]interface{}, len(data.Claims))
+	for session, entry := range data.Claims {
+		claims[session] = map[string]string{
+			"session":    entry.Session,
+			"manager":    entry.Manager,
+			"note":       entry.Note,
+			"claimed_at": entry.ClaimedAt,
+		}
+	}
 	document := map[string]interface{}{
 		"version": data.Version,
-		"claims":  data.Claims,
+		"claims":  claims,
 	}
 	encoded, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
-		return nil, errors.Wrap(context.Background(), err, "marshal claim file")
+		return nil, errors.Wrap(ctx, err, "marshal claim file")
 	}
 	return append(encoded, '\n'), nil
 }

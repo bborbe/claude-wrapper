@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -71,6 +72,21 @@ var _ = ginkgo.Describe("FileClaimStore", func() {
 		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(string(raw)).To(gomega.HavePrefix("{\n  \"claims\": {\n    \"a\":"))
 		gomega.Expect(string(raw)).To(gomega.HaveSuffix("}\n"))
+	})
+
+	ginkgo.It("sorts the keys inside an entry, as json.dump(sort_keys=True) does", func() {
+		// Python sorts at every level. A struct would emit field order and rewrite
+		// every entry line on each claim, which is the diff this store must avoid.
+		store := NewFileClaimStore(path, now)
+		gomega.Expect(store.Claim(ctx, "w1", "m1", "n")).To(gomega.Succeed())
+
+		raw, err := os.ReadFile(path)
+		gomega.Expect(err).To(gomega.BeNil())
+		text := string(raw)
+		gomega.Expect(strings.Index(text, `"claimed_at"`)).To(gomega.BeNumerically("<",
+			strings.Index(text, `"manager"`)))
+		gomega.Expect(strings.Index(text, `"manager"`)).To(gomega.BeNumerically("<",
+			strings.Index(text, `"note"`)))
 	})
 
 	ginkgo.It("round-trips a claim through the store it wrote", func() {
