@@ -6,8 +6,77 @@ package hook
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// credentialPaths matches a reference to a credential store or a secret-printing
+// CLI. A command naming one is never approved by this guard.
+var credentialPaths = regexp.MustCompile(
+	`\.netrc\b|\.ssh/|\bid_(rsa|ed25519|ecdsa|dsa)\b|\.aws/|\.kube/config|` +
+		`\.docker/config\.json|gh/hosts\.yml|\.gnupg/|\.pgpass\b|\.npmrc\b|\.pypirc\b|` +
+		`\bteamvault[-a-z]*\b|\bsecurity\s+find-(generic|internet)-password\b`,
+)
+
+// credentialGlobPaths matches a glob inside the dot-directory NAME, which selects a
+// credential store without spelling it (`cat ~/.a?s/credentials`). A glob in a later
+// segment (`~/.claude/*.json`) stays allowed.
+var credentialGlobPaths = regexp.MustCompile(
+	`[~/]\.[A-Za-z0-9_.-]*[*?\[]|/(Users|home)/[^/\s]+/\.[A-Za-z0-9_.-]*[*?\[]`,
+)
+
+// CredentialRead reports whether the command names a credential store or a
+// secret-printing CLI.
+//
+// The glob rule is tested against the command with its quoted spans blanked: the
+// shell expands a glob only unquoted, so `gh api "repos/o/r/contents/x.yml?ref=master"`
+// reads a file and never selects a directory, while `cat ~/.a?s/credentials` does.
+func CredentialRead(command string) bool {
+	// Both rules run on the raw text AND on the text with quoted spans removed: a
+	// quote split hides a literal path from the raw scan (`cat ~/.a""ws/credentials`
+	// spells `.aws/credentials` to the shell) while a glob is the reverse case.
+	unquoted := unquotedText(command)
+	if credentialPaths.MatchString(command) || credentialPaths.MatchString(unquoted) {
+		return true
+	}
+	return credentialGlobPaths.MatchString(unquoted)
+}
+
+// unquotedText blanks every single- and double-quoted span, so a pattern can be
+// matched against the text the shell still expands. An unterminated quote blanks
+// the rest of the line, which errs towards allowing a match, never towards missing
+// one: the literal patterns above are tested on the raw text regardless.
+func unquotedText(command string) string {
+	var out strings.Builder
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' && i+1 < len(command) {
+				// `\w` inside double quotes is the literal `w`; keep the character,
+				// drop only the backslash, or `.a\ws` would read as `.as` and evade
+				// the credential patterns.
+				i++
+				out.WriteByte(command[i])
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		case c == '\'' || c == '"':
+			quote = c
+			continue
+		case c == '\\' && i+1 < len(command):
+			i++
+			out.WriteByte(command[i])
+			continue
+		}
+		out.WriteByte(c)
+	}
+	return out.String()
+}
 
 // maxCompoundSegments bounds how many subcommands a compound may carry; a long
 // chain is not something to compose.
@@ -63,49 +132,91 @@ var singleShapeHeads = map[string]bool{"git": true, "sed": true, "gh": true}
 // matches no `Bash(git <sub>:*)` rule, so only the shape guard can approve it.
 func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	original, _ := input.BashCommand()
-	command := original
-	substituted, rewritten := SubstituteLiterals(original)
-	if rewritten {
-		body, ok := dropLiteralPrefix(original, substituted)
-		if !ok {
-			return Decision{}
-		}
-		command = body
-	}
-	// The rewritten text carries the syntax check; the original only has to be
-	// free of a substitution, since its `${NAME}` words are what got rewritten.
-	if UnsafeSyntax(command) || strings.Contains(original, "`") ||
-		strings.Contains(original, "$(") {
+	if CredentialRead(original) {
+		// No arm may approve a read of a credential store, whatever rule names the
+		// program: the value would land in the transcript.
 		return Decision{}
 	}
-	segments, ok := SplitCompound(command)
-	if !ok || len(segments) < 1 || len(segments) > maxCompoundSegments {
+	plan, ok := planCompound(original)
+	if !ok {
 		return Decision{}
 	}
-	if len(segments) == 1 && !singleShapeHeads[firstWord(segments[0])] {
+	if plan.command != original && CredentialRead(plan.command) {
+		// A literal prefix can assemble the path after the raw scan ran:
+		// `d=.ssh; cat ~/$d/id_rsa` names no store until the rewrite lands.
 		return Decision{}
 	}
 	rules, err := g.loadRules(input.Cwd)
 	if err != nil {
 		return Decision{}
 	}
-	if rewritten && originalGated(original, rules) {
+	if plan.rewritten && originalGated(original, rules) {
 		return Decision{}
 	}
-	roots := DefaultGitRoots()
-	if len(segments) == 1 {
-		if compoundSingleAllows(segments[0], command, rules, input.Cwd, roots) {
-			return AllowDecision(fmt.Sprintf(compoundAllowReason, 1))
-		}
-		return Decision{}
-	}
-	if compoundTextAllows(segments, rules, input.Cwd, roots) {
-		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
-	}
-	if CompoundTreeAllows(command, rules, input.Cwd, roots) {
-		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(segments)))
+	if plan.allows(rules, input.Cwd, DefaultGitRoots()) {
+		return AllowDecision(fmt.Sprintf(compoundAllowReason, len(plan.segments)))
 	}
 	return Decision{}
+}
+
+// compoundPlan is the text a compound is judged on and the arm that judges it.
+type compoundPlan struct {
+	command   string
+	segments  []string
+	rewritten bool
+	treeOnly  bool
+}
+
+// planCompound rewrites a leading literal prefix and decides which arm judges the
+// rest. Text the split cannot account for — a redirect, a heredoc, a substitution,
+// a long chain, a prefix the rewrite cannot carry, a single command — goes to the
+// syntax tree alone, which models each node or refuses it.
+func planCompound(original string) (compoundPlan, bool) {
+	plan := compoundPlan{command: original}
+	if substituted, rewritten := SubstituteLiterals(original); rewritten {
+		if body, ok := dropLiteralPrefix(original, substituted); ok {
+			plan.command, plan.rewritten = body, true
+		} else {
+			// The tree arm models the assignment itself: a fresh local whose
+			// value is walked, read back through a read-only expansion.
+			plan.treeOnly = true
+		}
+	}
+	// The rewritten text carries the syntax check; the original only has to be
+	// free of a substitution, since its `${NAME}` words are what got rewritten.
+	plan.treeOnly = plan.treeOnly || UnsafeSyntax(plan.command) ||
+		strings.Contains(original, "`") || strings.Contains(original, "$(")
+	segments, ok := SplitCompound(plan.command)
+	if !ok {
+		// The text split does not model a backslash inside quotes; the parser does.
+		plan.treeOnly = true
+		segments = []string{plan.command}
+	}
+	if len(segments) < 1 {
+		return compoundPlan{}, false
+	}
+	plan.segments = segments
+	// A single command matching a `permissions.allow` rule goes to the tree arm too:
+	// under `defaultMode: auto` Claude Code grants nothing from that list, so a
+	// headless worker parked on every routine `ls` / `grep` / `vault-cli task get`.
+	// The tree arm applies the rule with the same gates as a compound.
+	if len(segments) > maxCompoundSegments ||
+		(len(segments) == 1 && !singleShapeHeads[firstWord(segments[0])]) {
+		plan.treeOnly = true
+	}
+	return plan, true
+}
+
+// allows runs the arm the plan chose.
+func (p compoundPlan) allows(rules CompoundRules, cwd string, roots []string) bool {
+	if p.treeOnly {
+		return CompoundTreeAllows(p.command, rules, cwd, roots)
+	}
+	if len(p.segments) == 1 {
+		return compoundSingleAllows(p.segments[0], p.command, rules, cwd, roots)
+	}
+	return compoundTextAllows(p.segments, rules, cwd, roots) ||
+		CompoundTreeAllows(p.command, rules, cwd, roots)
 }
 
 // compoundSingleAllows reports whether a single command is approved by a shape guard.
@@ -148,7 +259,9 @@ func dropLiteralPrefix(original string, substituted string) (string, bool) {
 		return "", false
 	}
 	for _, pair := range compoundAssignPair.FindAllStringSubmatch(prefix, -1) {
-		if shellReadName(pair[1]) || strings.ContainsAny(pair[2], "*?[]~!#") {
+		// A leading `~/` expands at assignment exactly as it does in the word the
+		// rewrite carries it into; a `~` anywhere else does not.
+		if shellReadName(pair[1]) || strings.ContainsAny(strings.TrimPrefix(pair[2], "~/"), "*?[]~!#") {
 			return "", false
 		}
 	}

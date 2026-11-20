@@ -123,6 +123,41 @@ var _ = ginkgo.Describe("Spawn resume", func() {
 		s.release(resumed)
 	})
 
+	// The gap this closes: a session spawned by a peer, or an ordinary
+	// interactive tab, is not in this daemon's s.sessions — so the original guard
+	// passed it while the session was genuinely live, and the resume put two
+	// writers on one conversation.
+	ginkgo.It("refuses a resume whose target is live but not held by this daemon", func() {
+		s := newSupervisor(exit)
+		s.liveness = &rosterLiveness{live: map[string]struct{}{resumed: {}}}
+
+		err := s.reserve(ctx, resumed)
+		gomega.Expect(stderrors.Is(err, ErrSessionLive)).To(gomega.BeTrue())
+		// The message must name the state and the clearing action, not just
+		// "still running": a manager reading it has to know which fact it is.
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("heartbeat endpoint"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("two writers"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("let that session exit"))
+	})
+
+	// Negative control: a dead id is still resumable, so the new refusal cannot
+	// pass by refusing everything.
+	ginkgo.It("still reserves a resume whose target is not live", func() {
+		s := newSupervisor(exit)
+		s.liveness = &rosterLiveness{live: map[string]struct{}{}}
+		gomega.Expect(s.reserve(ctx, resumed)).To(gomega.Succeed())
+		s.release(resumed)
+	})
+
+	// Negative control: a probe that could not run is not evidence of death, so
+	// the resume proceeds exactly as it did before the guard existed.
+	ginkgo.It("skips the foreign-live check when the probe returns no set", func() {
+		s := newSupervisor(exit)
+		s.liveness = &rosterLiveness{live: nil}
+		gomega.Expect(s.reserve(ctx, resumed)).To(gomega.Succeed())
+		s.release(resumed)
+	})
+
 	// Negative control: a fresh spawn still mints its own id, so the fix cannot
 	// pass by changing the id for everyone.
 	ginkgo.It("still mints a fresh id when nothing is resumed", func() {

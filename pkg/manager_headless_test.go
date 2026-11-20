@@ -27,7 +27,7 @@ var _ = ginkgo.Describe("RosterToolServer manager headless refusal", func() {
 	ginkgo.BeforeEach(func() {
 		ctx = context.Background()
 		supervisor = &headlessSupervisor{}
-		server = &RosterToolServer{Supervisor: supervisor}
+		server = withAnswerPath(&RosterToolServer{Supervisor: supervisor})
 	})
 
 	ginkgo.It("test_spawn_and_resume_refuse_a_manager_headless", func() {

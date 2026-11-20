@@ -109,6 +109,11 @@ type RosterToolServer struct {
 	// Decider records a manager answer. Nil is legal — the answer still lands,
 	// and only its audit row is skipped.
 	Decider *PermissionDecider
+	// Board closes the attention card a manager's answer settles, so the store
+	// stops showing a gate nobody can answer. Nil is legal — the answer still
+	// lands and only the card close is skipped, which is the correct degradation
+	// for a daemon started without an attention store.
+	Board BoardStore
 	// A2A owns the docker / k8s workers: the create and stop calls, the turn
 	// plane and the push channel. Nil means the A2A tools refuse, which is the
 	// correct answer for a daemon started without a controller configured.
@@ -153,6 +158,20 @@ type RosterToolServer struct {
 	// pkg.OpenSurface POST /api/1.0/open calls, so the two surfaces cannot
 	// drift. Nil means open_rows refuses with "open_rows is not wired".
 	Open *OpenSurface
+	// Scripts runs claude-supervisor's answer-path probe before a headless
+	// spawn_agent creates a child. A headless worker's permission gates park with
+	// the session that spawned it and no other session can release them, so a
+	// spawner whose probe reads non-OK opens a worker that dies on the 15-minute
+	// deny. Nil refuses the spawn rather than opening it unguarded.
+	Scripts ScriptRunner
+	// AnswerPathScript is the probe's path (DefaultAnswerPathCheckScript). Empty
+	// refuses a headless spawn for the same reason Scripts nil does: the guard
+	// never fails open.
+	AnswerPathScript string
+	// Runner runs the `vault-cli` bind of a spawned session to its task. Nil means
+	// a task-bearing spawn reports a failed bind and writes nothing — the correct
+	// degradation for a daemon started without a runner.
+	Runner CommandRunner
 }
 
 // currentDateTime returns the clock the pane polls run on.
@@ -377,11 +396,11 @@ func (s *RosterToolServer) spawnLocalAgent(
 			"interactive spawn is not this slice's surface — a tab worker is spawned and steered by the tab-spawn slice",
 		)
 	}
-	session, mode, modeSource, err := s.startHeadless(ctx, body, sessionID, resolution)
+	session, mode, modeSource, err := s.startHeadless(ctx, body, sessionID, resolution, true)
 	if err != nil {
 		return "", err
 	}
-	return marshalJSON(ctx, map[string]string{
+	reply := map[string]any{
 		"agent_id":    session.ID,
 		"session_id":  session.ID,
 		"state":       string(session.State),
@@ -394,7 +413,14 @@ func (s *RosterToolServer) spawnLocalAgent(
 		// 2026-11-11: 119 of 120 live children in `auto`, none in `acceptEdits`.
 		"permission_mode":        mode,
 		"permission_mode_source": modeSource,
-	})
+	}
+	// Bind the spawned session to the task the caller named. The bind is optional:
+	// a spawn that names no task writes nothing and reports no `bind` key, so a
+	// caller that never binds sees no change.
+	if bind := s.bindForReply(ctx, body, session.ID); bind != nil {
+		reply["bind"] = bind
+	}
+	return marshalJSON(ctx, reply)
 }
 
 // headlessCwd resolves the directory a headless worker runs in.
@@ -716,6 +742,19 @@ func (s *RosterToolServer) answerPermission(
 	}); err != nil {
 		return "", errors.Wrapf(ctx, err, "answer permission failed")
 	}
+	// The park is settled; close its attention card too, or the store keeps the
+	// gate open and every manager keeps waking on it. Best-effort and off the
+	// critical path: the answer has landed, so a slow or down store must never
+	// delay or fail the reply. Only a permission park has a permission card, and
+	// the close is detached from the request context so a returned call does not
+	// cancel it mid-flight.
+	if kind == AnswerKindPermission {
+		go func() {
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			s.closeSettledCard(closeCtx, session.ID, body.Behavior, sessionID)
+		}()
+	}
 	if s.Decider != nil && session.Question != nil {
 		// The manager's answer carries the same `latency_ms` the timeout path writes.
 		// `Question.RequestedAt` is stamped when this process registered the park, so the
@@ -948,6 +987,18 @@ func (s *RosterToolServer) stopAgent(
 	row, err := s.Roster.Get(ctx, body.AgentID)
 	if err != nil {
 		return "", err
+	}
+	if row.Unlisted {
+		// An unlisted row carries liveness and nothing else: there is no child
+		// here to signal, and stopping one is the same boundary as the rehydrated
+		// case — the daemon cannot stop what it does not hold.
+		return "", errors.Wrapf(
+			ctx, ErrAgentNotOwned,
+			"stop_agent acts only on a session this wrapper spawned; %s is live on the "+
+				"heartbeat endpoint but is not one this daemon holds, so there is no child to stop "+
+				"— let it exit, or close its pane",
+			body.AgentID,
+		)
 	}
 	if row.Rehydrated {
 		return "", errors.Wrapf(

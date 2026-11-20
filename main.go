@@ -318,6 +318,14 @@ func newSupervisor(
 			TaskResolver:      taskResolver,
 			OpenCards:         openCardsFromURL(attentionURL),
 		},
+		// The resume guard needs to know whether a target it does not hold is
+		// nevertheless live. Same registry + heartbeat union the roster renders
+		// from, built here because the supervisor is constructed before the fleet
+		// faces; both are stateless readers over the same two stores.
+		pkg.WithLiveness(pkg.NewRegistryLiveness(
+			pkg.NewSessionRegistry(""),
+			pkg.NewHeartbeatClient(attentionURL, nil),
+		)),
 	)
 	// Installed HERE, before any child can be spawned or adopted: the recorder is
 	// copied into each child at construction, so installing it later would leave
@@ -341,6 +349,17 @@ func openCardsFromURL(attentionURL string) pkg.OpenCardReader {
 		return nil
 	}
 	return pkg.NewBoardOpenCards(pkg.NewBoardStore(attentionURL, nil))
+}
+
+// boardStoreFromURL builds the attention-store writer a manager's answer uses to
+// close the card it settled. An empty URL returns nil, which the answer path
+// treats as "no store" rather than an unreadable one — the same distinction
+// openCardsFromURL makes, so an empty -attention-url emits no per-answer warning.
+func boardStoreFromURL(attentionURL string) pkg.BoardStore {
+	if strings.TrimSpace(attentionURL) == "" {
+		return nil
+	}
+	return pkg.NewBoardStore(attentionURL, nil)
 }
 
 // newParkedGate builds the flagged tick's park gate, or nil when the state
@@ -647,19 +666,13 @@ func startFleetFaces(
 	tabs := pkg.NewTabClient("")
 	vaults := pkg.NewVaultCLILister()
 	tabSpawner := pkg.NewTabSpawner(
-		tabs,
-		registry,
-		pkg.NewRoleMapReader(""),
-		vaults,
-		ledger,
-		now,
+		tabs, registry, pkg.NewRoleMapReader(""), vaults, ledger, now,
 		// No exit recorder: the daemon ships no copy of the script, and an empty
 		// path omits the hook rather than naming one that does not exist.
 		"",
 	)
 	// The fleet-wide caps; shared with the flagged tick so both read one limit.
 	caps := pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil)
-
 	rosterServer := &pkg.RosterToolServer{
 		Roster: pkg.NewRoster(
 			supervisor,
@@ -671,6 +684,7 @@ func startFleetFaces(
 		Supervisor: supervisor,
 		Ledger:     ledger,
 		Decider:    decider,
+		Board:      boardStoreFromURL(attentionURL), // closes a settled answer's card
 		A2A:        a2aManager,
 		Spawner:    tabSpawner,
 		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in
@@ -690,13 +704,21 @@ func startFleetFaces(
 		Locks: locks,
 		// The append-only switch history; without it every reply says `recorded: false`.
 		PermissionModeLog: pkg.NewPermissionModeLog("", now),
+		// Answer-path guard on the live spawn path: spawn_agent refuses a headless
+		// spawn from a session whose probe reads non-OK (its parks would die).
+		Scripts: pkg.ExecScriptRunner{}, AnswerPathScript: openPaths.answerPath,
+		// The vault-cli bind of a spawned session to its task: spawn_agent writes the
+		// spawned id onto the task it was given, honouring vault-cli's ownership rule.
+		Runner: pkg.ExecCommandRunner{},
 	}
-	// Mounted before the MCP face so open_rows is wired when it starts serving.
-	mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
+	// Mounted before the MCP face so open_rows is wired when it starts serving;
+	// the executor is shared with the flagged tick so both route one way.
+	openExecutor := mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
 	mux.Handle("/supervisor/mcp", rosterServer)
 
 	go startFlaggedTick(
 		ctx, flaggedTickInterval, flaggedRowsScript,
+		openExecutor,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
 		caps,
 		registry,
@@ -730,7 +752,7 @@ func mountOpenSurface(
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
 	paths openScriptPaths,
-) {
+) pkg.OpenExecutor {
 	opener := pkg.NewOpenTabOpener(
 		tabs, registry, vaults, caps, ledger, pkg.ExecScriptRunner{}, now,
 		paths.managerLauncher, paths.topicSpawn,
@@ -754,6 +776,7 @@ func mountOpenSurface(
 	rosterServer.Open = surface
 	// The REST half of the one open operation; contract: docs/open-endpoint.md.
 	mux.Handle("/api/1.0/open", handler.Open(surface))
+	return executor
 }
 
 // newA2AManager builds the A2A spawn targets: docker and k8s workers, created on
@@ -1011,6 +1034,7 @@ func startFlaggedTick(
 	ctx context.Context,
 	interval time.Duration,
 	script string,
+	open pkg.OpenExecutor,
 	reopener pkg.FlaggedReopener,
 	caps pkg.SpawnCaps,
 	registry pkg.SessionRegistry,
@@ -1025,6 +1049,7 @@ func startFlaggedTick(
 	}
 	tick := &pkg.FlaggedTick{
 		Source:   pkg.ExecFlaggedRowsSource{Script: expandHome(script)},
+		Open:     open,
 		Reopener: reopener,
 		Caps:     caps,
 		Chain:    pkg.NewRegistryChainProbe(registry),
@@ -1037,8 +1062,69 @@ func startFlaggedTick(
 	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
 		tick.Idle = nudger
 	}
+	// The adopt job runs on the same cadence and reads the same stores: both are
+	// fleet liveness, and row 4 ran every fleet round.
+	go startAdoptTick(ctx, interval, ledger, registry, now)
 	if err := tick.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("flagged tick stopped: %v", err)
+	}
+}
+
+// adoptSelf is the adopter the daemon records on a claim.
+//
+// It is deliberately not a session id: the daemon has no session of its own, and
+// the claim's `manager` field must not name one it is not. A non-session holder
+// reads as a dead holder to `gate-owner-filter.py`, which fails OPEN — the
+// worker's gates route normally until a live manager takes the claim over, the
+// safe direction for an adopter that cannot answer a prompt itself.
+const adoptSelf = "claude-wrapper"
+
+// startAdoptTick adopts the live workers an exited manager left behind, so their
+// gates have one owner. Ported from `adopt-orphans.py` (fleet-round row 4).
+//
+// ⚠️ The stores are the SCRIPT's own: `ownership-claim.py`'s file and lock, and
+// `manager-liveness.py`'s stand-down markers. A second format or a second marker
+// derivation would drift from those writers silently, which is the defect the
+// whole port exists to avoid.
+func startAdoptTick(
+	ctx context.Context,
+	interval time.Duration,
+	ledger pkg.LedgerReader,
+	registry pkg.SessionRegistry,
+	now libtime.CurrentDateTimeGetter,
+) {
+	if interval <= 0 {
+		log.Printf("adopt tick disabled (--adopt-tick-interval=%s)", interval)
+		return
+	}
+	tick := &pkg.AdoptTick{
+		Ledger:   ledger,
+		Registry: registry,
+		Claims:   pkg.NewFileClaimStore("", now),
+		Subjects: pkg.NewFileSubjectReader(
+			expandHome("~/.claude/state/worker-manager"),
+			expandHome("~/.claude/state/sweep-gate"),
+		),
+		Self: adoptSelf,
+	}
+	for {
+		result, err := tick.Run(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			log.Printf("job=adopt action=tick failed: %v", err)
+		case ctx.Err() != nil:
+			return
+		default:
+			// Printed on EVERY round, including a quiet one: a suppressed line
+			// and a round that adopted nothing must not read the same.
+			log.Printf("job=adopt action=tick adopted=%d skipped=%d adopted_sessions=%s",
+				len(result.Adopted), len(result.Skipped), strings.Join(result.Adopted, ","))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
 	}
 }
 

@@ -46,6 +46,15 @@ install:
 	codesign --verify --strict "$(INSTALL_BIN).new"
 	mv -f "$(INSTALL_BIN).new" "$(INSTALL_BIN)"
 
+# install-hook builds cmd/hook, smoke-tests it, and swaps it into
+# ~/.claude/hooks/hook — the PreToolUse hook every session runs on every tool call.
+# It fails closed (`hook || exit 2`), so the smoke gate runs before the swap and the
+# previous binary is kept at ~/.claude/hooks/hook.prev for a one-line rollback.
+# DRY_RUN=1 stops after the smoke gate.
+.PHONY: install-hook
+install-hook:
+	./scripts/install-hook.sh
+
 .PHONY: run
 run:
 	go run -mod=mod . -listen "localhost:$(CLAUDE_WRAPPER_PORT)" -claude-bin claude

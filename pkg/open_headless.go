@@ -11,17 +11,26 @@ import (
 	"github.com/bborbe/errors"
 )
 
-// startHeadless runs every guard of the in-process headless spawn — the
+// startHeadless runs the guards of the in-process headless spawn — the
 // terminal-task resume guard, the promptless-resume refusal, the caps and
 // start rate — then spawns with the launcher's model and MCP configs, sends
 // the opening turn (stopping the child if that fails) and files the ledger
 // row. spawn_agent and the open endpoint both call it, so neither carries a
 // second copy of a guard.
+//
+// probeAnswerPath decides whether this call also runs the answer-path guard.
+// spawn_agent passes true: it is the live path, and until this parameter existed
+// it carried no guard at all. The open endpoint passes false because it already
+// ran the same probe in `openExecutor.answerPathProbe` before calling
+// SpawnOpenHeadless, and its tick mode has no caller session to probe — probing
+// again here would double the subprocess on the request path and refuse every
+// tick-mode spawn.
 func (s *RosterToolServer) startHeadless(
 	ctx context.Context,
 	body spawnAgentArgs,
 	sessionID string,
 	resolution SpawnModeResolution,
+	probeAnswerPath bool,
 ) (*Session, string, string, error) {
 	if s.Supervisor == nil {
 		return nil, "", "", errors.Errorf(ctx, "spawn_agent is not wired")
@@ -51,6 +60,15 @@ func (s *RosterToolServer) startHeadless(
 	}
 	if err := refusePromptlessResume(ctx, body); err != nil {
 		return nil, "", "", err
+	}
+	// The answer-path guard, after every free refusal and before any side effect.
+	// A headless worker's permission gates park with the spawning session and no
+	// other session can release them, so a spawner whose probe reads non-OK must
+	// not open one — its first park would die on the 15-minute deny.
+	if probeAnswerPath {
+		if refusal := s.answerPathRefusal(ctx, sessionID); refusal != "" {
+			return nil, "", "", refuseUnansweredSpawn(ctx, refusal)
+		}
 	}
 	if err := s.enforceCaps(ctx, body, SpawnModeHeadless); err != nil {
 		return nil, "", "", err
@@ -144,7 +162,7 @@ func (s *RosterToolServer) SpawnOpenHeadless(
 	}, request.CallerSessionID, SpawnModeResolution{
 		Mode:   SpawnModeHeadless,
 		Source: OpenModeSource,
-	})
+	}, false)
 	if err != nil {
 		return nil, err
 	}

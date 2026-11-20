@@ -8,8 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -202,66 +200,26 @@ func (o *openTabOpener) resolveLauncher(
 	return launcher, err
 }
 
-// humanLauncher resolves matrix Rule 4: the task's own launcher, then the
-// `-claude` sibling of claude_script, then manager_launcher, then claude_script.
+// humanLauncher resolves the launcher for a non-manager tab row: the task's own
+// `launcher:`, then the vault's worker default (`worker_launcher`), then
+// `claude_script`.
+//
+// A `role: human` row is NOT special-cased any more (operator ruling 2026-11-20):
+// it resolves exactly like a worker, so only an explicit `launcher:` overrides the
+// worker default. The previous rule sent every human row to the `-claude` sibling,
+// which put routine operator rows on Opus 5.5 for no reason.
 func humanLauncher(
 	ctx context.Context,
 	vault *Vault,
 	subject string,
-) (launcher, source string, err error) { //nolint:unparam // source is Rule 4's answer
+) (launcher, source string, err error) {
 	if value := strings.TrimSpace(TaskLauncher(vault.Path, subject)); value != "" {
 		if err := validateLauncher(ctx, value, "launcher", vault.Name); err != nil {
 			return "", "", err
 		}
 		return value, "task", nil
 	}
-	if claudeScript := strings.TrimSpace(vault.ClaudeScript); claudeScript != "" {
-		sibling := claudeSibling(claudeScript)
-		if launcherExists(sibling) {
-			if err := validateLauncher(ctx, sibling, "claude_script", vault.Name); err != nil {
-				return "", "", err
-			}
-			return sibling, "claude-sibling", nil
-		}
-	}
-	if managerLauncher := strings.TrimSpace(vault.ManagerLauncher); managerLauncher != "" {
-		if err := validateLauncher(ctx, managerLauncher, "manager_launcher", vault.Name); err != nil {
-			return "", "", err
-		}
-		return managerLauncher, "manager", nil
-	}
-	if claudeScript := strings.TrimSpace(vault.ClaudeScript); claudeScript != "" {
-		if err := validateLauncher(ctx, claudeScript, "claude_script", vault.Name); err != nil {
-			return "", "", err
-		}
-		return claudeScript, "vault", nil
-	}
-	return "", "", errors.Wrapf(
-		ctx, ErrNoLauncher, "vault %q has no launcher for a human row", vault.Name,
-	)
-}
-
-// claudeSibling ports manager-launcher.py's sibling(): the `-claude` sibling of
-// a claude script, unchanged when it is already one.
-func claudeSibling(claudeScript string) string {
-	dir, base := filepath.Split(claudeScript)
-	base = strings.TrimSuffix(base, "-deepseek")
-	if strings.HasSuffix(base, "-claude") {
-		return claudeScript
-	}
-	return filepath.Join(dir, base+"-claude")
-}
-
-// launcherExists reports whether a launcher value can be executed.
-//
-// A value containing a path separator is a file path and is checked with
-// FileExists; a bare name is looked up on PATH.
-func launcherExists(value string) bool {
-	if strings.Contains(value, "/") {
-		return FileExists(value)
-	}
-	_, err := exec.LookPath(value)
-	return err == nil
+	return launcherForVault(ctx, vault)
 }
 
 // managerLauncher runs manager-launcher.py and returns the launcher it prints.
