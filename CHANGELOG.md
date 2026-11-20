@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **a `role: human` row no longer opens on the Claude launcher.** Operator ruling 2026-11-20 reverses the 2026-11-06 human-row ruling: `pkg/open_tab.go`'s `humanLauncher` now resolves the worker chain — the task's own `launcher:`, then `worker_launcher`, then `claude_script` — so a routine operator row lands on `cc-*-deepseek` instead of `cc-*-claude` at Opus 5.5. Measured 2026-11-20: BRO-22863 Check Alerts opened on `cc-seibert-claude --model claude-opus-5-5[1m]` purely because its frontmatter said `role: human`. Change set: `pkg/open_tab.go`, `pkg/open_tab_test.go`, `CHANGELOG.md`.
+
 ## v0.48.0
 
 - feat: **the fleet snapshot covers the whole roster, not just the tracked tasks of the configured subjects.** `sweepgate.FleetSnapshot` now adds an entry for every registry session the task projection missed. Measured 2026-11-20 against the registry-live set: **6 live sessions were absent** from a snapshot built by the task projection alone, and a session absent from the baseline reads as first-seen on the next round — a silent counter reset. These entries carry no task (`TaskFile`/`TaskMtime` empty, the same shape the Python writes) and their `stall_count` is **pinned at 0**: the stall test is "busy AND the task file did not move", and with no task file nothing could move, so counting them would manufacture a stall every round for a session the round cannot judge. Change set: `pkg/sweepgate/fleet_snapshot.go`, `pkg/sweepgate/fleet_snapshot_test.go`, `CHANGELOG.md`.
