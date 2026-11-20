@@ -540,6 +540,9 @@ var _ = Describe("CompoundTreeAllows dynamic words", func() {
 		Entry("a quoted empty part before a bare glob", func() string { return `git -C ` + root + ` log ''*` }, false),
 		Entry("a credential path assembled from a literal prefix", func() string { return `d=.ssh; cat ~/$d/id_rsa` }, false),
 		Entry("a globbed credential directory", func() string { return `cat ~/.a?s/credentials` }, false),
+		Entry("a quote-split credential path", func() string { return `cat ~/.a""ws/credentials` }, false),
+		Entry("a quote-split credential path behind a variable", func() string { return `d=.ss""h; cat ~/$d/id_rsa` }, false),
+		Entry("a backslash-split credential path", func() string { return `cat ~/.a\ws/credentials` }, false),
 		Entry("a glob in a later segment stays allowed", func() string { return `ls ~/.claude/*.json` }, true),
 		Entry("a quoted query string is not a glob", func() string {
 			return `gh api "repos/bborbe/x/contents/.github/w.yml?ref=master"`

@@ -32,10 +32,14 @@ var credentialGlobPaths = regexp.MustCompile(
 // shell expands a glob only unquoted, so `gh api "repos/o/r/contents/x.yml?ref=master"`
 // reads a file and never selects a directory, while `cat ~/.a?s/credentials` does.
 func CredentialRead(command string) bool {
-	if credentialPaths.MatchString(command) {
+	// Both rules run on the raw text AND on the text with quoted spans removed: a
+	// quote split hides a literal path from the raw scan (`cat ~/.a""ws/credentials`
+	// spells `.aws/credentials` to the shell) while a glob is the reverse case.
+	unquoted := unquotedText(command)
+	if credentialPaths.MatchString(command) || credentialPaths.MatchString(unquoted) {
 		return true
 	}
-	return credentialGlobPaths.MatchString(unquotedText(command))
+	return credentialGlobPaths.MatchString(unquoted)
 }
 
 // unquotedText blanks every single- and double-quoted span, so a pattern can be
@@ -50,7 +54,11 @@ func unquotedText(command string) string {
 		switch {
 		case quote != 0:
 			if c == '\\' && quote == '"' && i+1 < len(command) {
+				// `\w` inside double quotes is the literal `w`; keep the character,
+				// drop only the backslash, or `.a\ws` would read as `.as` and evade
+				// the credential patterns.
 				i++
+				out.WriteByte(command[i])
 				continue
 			}
 			if c == quote {
@@ -62,6 +70,7 @@ func unquotedText(command string) string {
 			continue
 		case c == '\\' && i+1 < len(command):
 			i++
+			out.WriteByte(command[i])
 			continue
 		}
 		out.WriteByte(c)
