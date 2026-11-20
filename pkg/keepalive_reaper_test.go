@@ -141,3 +141,42 @@ var _ = ginkgo.Describe("StoodDownCloseReaper", func() {
 		}))
 	})
 })
+
+// stubResolver returns a fixed AnchoredTask for every session.
+type stubResolver struct{ task AnchoredTask }
+
+func (r stubResolver) Resolve(context.Context, string) (AnchoredTask, error) { return r.task, nil }
+
+var _ = ginkgo.Describe("TerminalTaskReaper", func() {
+	ctx := context.Background()
+
+	ginkgo.It("closes a session whose anchored task is completed", func() {
+		sup := &reaperSupervisor{sessions: []Session{{ID: "s1"}}}
+		reaper := &TerminalTaskReaper{
+			Supervisor: sup,
+			Resolver:   stubResolver{task: AnchoredTask{Status: "completed", Matches: 1}},
+		}
+
+		results, err := reaper.Reap(ctx)
+
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(sup.stopped).To(gomega.Equal([]string{"s1"}))
+		gomega.Expect(results).To(gomega.Equal([]ReaperResult{
+			{Kind: "terminal-task", SessionID: "s1", Closed: true},
+		}))
+	})
+
+	// A non-terminal task is not notable — no line, no close.
+	ginkgo.It("leaves a session whose task is in progress alone", func() {
+		sup := &reaperSupervisor{sessions: []Session{{ID: "s1"}}}
+		reaper := &TerminalTaskReaper{
+			Supervisor: sup,
+			Resolver:   stubResolver{task: AnchoredTask{Status: "in_progress", Matches: 1}},
+		}
+
+		results, _ := reaper.Reap(ctx)
+
+		gomega.Expect(results).To(gomega.BeEmpty())
+		gomega.Expect(sup.stopped).To(gomega.BeEmpty())
+	})
+})
