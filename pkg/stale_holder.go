@@ -20,20 +20,81 @@ import (
 // resumable rather than refused on a holder nobody holds.
 func (s *supervisor) reserve(ctx context.Context, id string) error {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	if s.starting == nil {
 		s.starting = map[string]struct{}{}
 	}
 	if _, busy := s.starting[id]; busy {
+		s.mutex.Unlock()
 		return errors.Wrapf(ctx, ErrSessionLive, "session %q is already being resumed", id)
 	}
 	if c, ok := s.sessions[id]; ok && !c.isExited() {
 		if !s.releaseIfProvablyStale(c) {
+			s.mutex.Unlock()
 			return errors.Wrapf(ctx, ErrSessionLive, "session %q is still running", id)
 		}
 	}
+	s.mutex.Unlock()
+
+	// The liveness probe runs OUTSIDE the lock. It reads the session registry and
+	// the heartbeat store, and holding s.mutex across that read would stall every
+	// other spawn for as long as a store takes to answer.
+	if err := s.refuseForeignLive(ctx, id); err != nil {
+		return err
+	}
+
+	// Re-take the lock and re-check `starting`: the window opened above is
+	// exactly where two concurrent resumes of one conversation would otherwise
+	// both pass, which is the two-writers corruption this guard exists to stop.
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if _, busy := s.starting[id]; busy {
+		return errors.Wrapf(ctx, ErrSessionLive, "session %q is already being resumed", id)
+	}
 	s.starting[id] = struct{}{}
 	return nil
+}
+
+// refuseForeignLive refuses a resume whose target is live on the heartbeat
+// endpoint but is not a session this daemon holds.
+//
+// The s.sessions check above can only see this process's own children, so a
+// session spawned by a peer — or an ordinary interactive tab — passes it while
+// being genuinely live. Resuming that id starts a second writer on one
+// conversation, which is the failure the original guard was written for; it just
+// could not see this case.
+//
+// An unreadable or nil probe is not evidence of death, but it is not evidence of
+// life either: the resume proceeds exactly as it did before this guard existed
+// and the failure is LOGGED, rather than the guard silently deciding either way.
+func (s *supervisor) refuseForeignLive(ctx context.Context, id string) error {
+	if s.liveness == nil {
+		return nil
+	}
+	live, err := s.liveness.Live(ctx)
+	if err != nil {
+		log.Printf(
+			"WARNING: the liveness probe failed for resume %q (%v) — the foreign-live check was skipped",
+			id, err,
+		)
+		return nil
+	}
+	if live == nil {
+		log.Printf(
+			"WARNING: the liveness probe returned no set for resume %q — the foreign-live check was skipped",
+			id,
+		)
+		return nil
+	}
+	if _, ok := live[id]; !ok {
+		return nil
+	}
+	return errors.Wrapf(
+		ctx, ErrSessionLive,
+		"session %q is live on the heartbeat endpoint but is not a session this daemon holds — "+
+			"resuming it would put two writers on one conversation; let that session exit, "+
+			"or address it directly by its pane",
+		id,
+	)
 }
 
 func (s *supervisor) release(id string) {

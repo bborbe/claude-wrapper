@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -32,60 +31,42 @@ var _ = ginkgo.Describe("flagged reopen prompt", func() {
 		})
 	})
 
-	ginkgo.Context("a goal row", func() {
-		ginkgo.It("opens through the goal loop", func() {
-			prompt := reopenPrompt(FlaggedRow{Kind: "goal", Name: "Some Goal"})
-
-			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:goal-loop "Some Goal"`))
-		})
-	})
-
-	ginkgo.Context("a topic row", func() {
-		ginkgo.It("opens through the goal loop, the command the repo uses for topics", func() {
-			prompt := reopenPrompt(FlaggedRow{Kind: "topic", Name: "Some Topic"})
-
-			gomega.Expect(prompt).To(gomega.Equal(`/supervisor:goal-loop "Some Topic"`))
+	ginkgo.Context("a goal or topic row", func() {
+		ginkgo.It("has no headless worker prompt — it opens a manager tab instead", func() {
+			gomega.Expect(reopenPrompt(FlaggedRow{Kind: "goal", Name: "Some Goal"})).To(gomega.BeEmpty())
+			gomega.Expect(reopenPrompt(FlaggedRow{Kind: "topic", Name: "Some Topic"})).To(gomega.BeEmpty())
 		})
 	})
 })
 
-var _ = ginkgo.Describe("flagged reopen of an interactive row", func() {
-	ginkgo.It("refuses an agent row and opens a human row", func() {
-		ctx := context.Background()
-		tabs := &fakeTabClient{}
-		vaults := &fakeVaults{vaults: []Vault{{
-			Name:           "v1",
-			Path:           ginkgo.GinkgoT().TempDir(),
-			ClaudeScript:   "/scripts/cc-v1",
-			WorkerLauncher: "/scripts/cc-v1",
-		}}}
-		spawner := &tabSpawner{
-			tabs:     tabs,
-			registry: &fakeRegistry{names: map[string][]string{}},
-			roleMap: &fakeRoleMap{entries: map[string]RoleMapEntry{
-				"Agents": {Chip: new("pink"), WindowID: new(16)},
-			}},
-			vaults: vaults,
-			ledger: &fakeLedger{},
-			now:    steppingClock(),
-			sleep:  func(time.Duration) {},
-		}
-		supervisor := &recordingSupervisor{}
-		reopener := NewFlaggedReopener(supervisor, spawner, vaults, &fakeLedger{}, steppingClock())
+var _ = ginkgo.Describe("flagged reopen routes by role through the open decision", func() {
+	ginkgo.It("opens an agent row headless even when its stored mode is interactive", func() {
+		f := newOpenExecutorFixture()
+		writeOpenPage(f.dir, openTaskTestFolder, "T", "role: agent", "mode: interactive")
+		reopener := &flaggedReopener{Executor: f.executor}
 
-		err := reopener.Reopen(ctx, FlaggedRow{
+		err := reopener.Reopen(context.Background(), FlaggedRow{
 			Kind: "task", Vault: "v1", Name: "T", Role: RoleAgent, Mode: SpawnModeInteractive,
 		})
-		gomega.Expect(err).NotTo(gomega.BeNil())
-		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Rule 2"))
-		gomega.Expect(tabs.spawned).To(gomega.BeEmpty())
-		gomega.Expect(supervisor.spawns).To(gomega.BeEmpty())
 
-		err = reopener.Reopen(ctx, FlaggedRow{
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(f.headless.requests).To(gomega.HaveLen(1))
+		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("opens a human row as a tab", func() {
+		f := newOpenExecutorFixture()
+		writeOpenPage(f.dir, openTaskTestFolder, "T", "role: human")
+		reopener := &flaggedReopener{Executor: f.executor}
+
+		err := reopener.Reopen(context.Background(), FlaggedRow{
 			Kind: "task", Vault: "v1", Name: "T", Role: RoleHuman, Mode: SpawnModeInteractive,
 		})
+
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(tabs.spawned).To(gomega.HaveLen(1))
+		gomega.Expect(f.tabOpener.requests).To(gomega.HaveLen(1))
+		gomega.Expect(f.tabOpener.requests[0].WindowID).To(gomega.Equal(12))
+		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
 	})
 })
 
