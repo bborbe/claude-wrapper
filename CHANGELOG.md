@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.51.0
 
 - feat: **the keepalive tick is assembled and wired into the daemon.** `main_keepalive.go` builds the eight keep-alive procedures from the complete seams — two listers over the filtered vault list, the opener over the mounted `OpenSurface`, the pane sender, and the pending-record drain pre-step — and `main.go` gains a `-keepalive` flag (default OFF) that gates the tick to the :18090 daemon only, so the :18091 instance never double-acts. The due-park leg uses the real `NewParkEventDue` parser and the stood-down marker the `NewStoodDownMarker` slug→session→live join, not stubs. `DefaultPendingRecordMaxAge` (45m) added. Change set: `main_keepalive.go` (new), `main.go`, `pkg/keepalive_pending_record.go`, `CHANGELOG.md`.
 
