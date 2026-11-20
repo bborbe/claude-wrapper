@@ -25,13 +25,14 @@ func startTickJobs(
 	supervisor pkg.Supervisor,
 	keepalive bool,
 	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatReader,
 	vaults pkg.VaultLister,
 	tabs pkg.TabClient,
 	surface *pkg.OpenSurface,
 	stateDir string,
 	now libtime.CurrentDateTimeGetter,
 ) {
-	startLifecycleJobs(ctx, supervisor, now)
+	startLifecycleJobs(ctx, supervisor, now, registry, heartbeats, vaults)
 	startKeepaliveIfEnabled(ctx, keepalive, registry, vaults, tabs, surface, stateDir, now)
 }
 

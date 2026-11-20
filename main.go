@@ -437,8 +437,11 @@ func startLifecycleJobs(
 	ctx context.Context,
 	supervisor pkg.Supervisor,
 	now libtime.CurrentDateTimeGetter,
+	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatReader,
+	vaults pkg.VaultLister,
 ) {
-	jobs := lifecycleJobs(supervisor, now)
+	jobs := lifecycleJobs(ctx, supervisor, now, registry, heartbeats, vaults)
 	for _, job := range jobs {
 		go func(j interface {
 			Run(context.Context) error
@@ -453,11 +456,14 @@ func startLifecycleJobs(
 // lifecycleJobs is the list itself, kept out of the start loop so adding a port
 // does not push the caller past its funlen ceiling.
 func lifecycleJobs(
+	ctx context.Context,
 	supervisor pkg.Supervisor,
 	now libtime.CurrentDateTimeGetter,
+	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatReader,
+	vaults pkg.VaultLister,
 ) []interface{ Run(context.Context) error } {
-	return []interface{ Run(context.Context) error }{
-		&pkg.IdleReaperJob{Supervisor: supervisor},
+	jobs := []interface{ Run(context.Context) error }{
 		&pkg.StateLedgerJob{Supervisor: supervisor, Now: now},
 		&pkg.ManagerLivenessJob{
 			Check:         pkg.NewLapseCheck(pkg.ManagerLivenessCheckScript),
@@ -473,6 +479,14 @@ func lifecycleJobs(
 		// over a store this process owns.
 		&pkg.SessionExitDailyJob{Now: now},
 	}
+	// The one ReaperJob replaces IdleReaperJob and the round's four reap rows.
+	reaperJob, err := newReaperJob(ctx, supervisor, registry, heartbeats, vaults, now)
+	if err != nil {
+		log.Printf("WARNING: reaper job assembly failed: %v", err)
+	} else {
+		jobs = append(jobs, reaperJob)
+	}
+	return jobs
 }
 
 // warnIfDrainOverrunsExitTimeout names the invariant when an operator has raised
@@ -693,7 +707,7 @@ func startFleetFaces(
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
-	startTickJobs(ctx, supervisor, keepalive, registry, vaults, tabs, rosterServer.Open, stateDir, now)
+	startTickJobs(ctx, supervisor, keepalive, registry, heartbeats, vaults, tabs, rosterServer.Open, stateDir, now)
 
 	startFleetPusherJobs(
 		ctx, registry, attentionURL, fleetPusherHeartbeat,
