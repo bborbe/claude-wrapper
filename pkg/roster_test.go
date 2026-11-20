@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"time"
 
@@ -352,5 +353,92 @@ var _ = ginkgo.Describe("Roster", func() {
 		// false.
 		gomega.Expect(rows[1].SessionStatus).To(gomega.BeNil())
 		gomega.Expect(rows[1].AwaitingInput).To(gomega.BeNil())
+	})
+
+	ginkgo.It("reports a held session's park, so a manager reads it instead of nothing", func() {
+		// The orphan this closes: a headless worker's park is held by this daemon,
+		// and the manager's own-parks step reads `pending_question` off the roster.
+		// Before this field existed the park was invisible here — the roster
+		// answered "nothing parked" while `pending_permissions` (the tool) named the
+		// request — so a manager never answered it and the worker auto-denied.
+		//
+		// The session below is shaped like one ADOPTED from a previous daemon: its
+		// question was restored by `Adopt`, not raised by this process. The roster
+		// cannot and must not tell the two apart — a park is answerable either way.
+		supervisor := &rosterSupervisor{sessions: []Session{
+			{
+				ID:        "parked-worker",
+				Cwd:       "/tmp",
+				StartedAt: time.Now().Add(-time.Hour),
+				Question: &Question{
+					RequestID:   "req-1",
+					Kind:        AnswerKindPermission,
+					ToolName:    "Bash",
+					ToolUseID:   "toolu-1",
+					Input:       map[string]any{"command": "git push origin fix/x"},
+					RequestedAt: time.Now(),
+				},
+			},
+			{ID: "idle-worker", Cwd: "/tmp", StartedAt: time.Now()},
+		}}
+
+		rows, err := NewRoster(supervisor, nil, nil, nil, nil).List(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(2))
+
+		parked := rows[0]
+		gomega.Expect(parked.PendingQuestion).NotTo(gomega.BeNil())
+		gomega.Expect(parked.PendingQuestion.RequestID).To(gomega.Equal("req-1"))
+		gomega.Expect(parked.PendingQuestion.ToolName).To(gomega.Equal("Bash"))
+		gomega.Expect(parked.PendingQuestion.Kind).To(gomega.Equal("permission"))
+		gomega.Expect(parked.PendingQuestion.Input["command"]).To(gomega.Equal("git push origin fix/x"))
+		gomega.Expect(parked.PendingPermissions).To(gomega.BeEmpty())
+
+		gomega.Expect(rows[1].PendingQuestion).To(gomega.BeNil())
+		gomega.Expect(rows[1].PendingPermissions).To(gomega.BeEmpty())
+
+		// The KEY must be present on both rows, because `own-parks.md` reads its
+		// absence as "an older server that cannot report parks" and would skip the
+		// whole step. A null value is "not parked"; a missing key is "cannot say".
+		parkedJSON, err := json.Marshal(parked)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(string(parkedJSON)).To(gomega.ContainSubstring(`"pending_question":{"request_id":"req-1"`))
+		gomega.Expect(string(parkedJSON)).To(gomega.ContainSubstring(`"pending_permissions":[]`))
+
+		idleJSON, err := json.Marshal(rows[1])
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(string(idleJSON)).To(gomega.ContainSubstring(`"pending_question":null`))
+		gomega.Expect(string(idleJSON)).To(gomega.ContainSubstring(`"pending_permissions":[]`))
+	})
+
+	ginkgo.It("never leaks a Write's content into the roster park", func() {
+		// A park must be judgeable without dumping its payload: only the identifying
+		// input (a command or a file path) is surfaced, the same rule the
+		// `pending_permissions` tool applies.
+		supervisor := &rosterSupervisor{sessions: []Session{{
+			ID:        "write-parked",
+			Cwd:       "/tmp",
+			StartedAt: time.Now(),
+			Question: &Question{
+				RequestID: "req-write",
+				Kind:      AnswerKindPermission,
+				ToolName:  "Write",
+				Input: map[string]any{
+					"file_path": "/tmp/notes.md",
+					"content":   "a secret that must not reach a manager",
+				},
+			},
+		}}}
+
+		rows, err := NewRoster(supervisor, nil, nil, nil, nil).List(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].PendingQuestion).NotTo(gomega.BeNil())
+		gomega.Expect(rows[0].PendingQuestion.Input["file_path"]).To(gomega.Equal("/tmp/notes.md"))
+		gomega.Expect(rows[0].PendingQuestion.Input).NotTo(gomega.HaveKey("content"))
+
+		encoded, err := json.Marshal(rows[0])
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(string(encoded)).NotTo(gomega.ContainSubstring("a secret that must not reach a manager"))
 	})
 })
