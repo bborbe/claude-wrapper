@@ -691,6 +691,9 @@ func startFleetFaces(
 		// Answer-path guard on the live spawn path: spawn_agent refuses a headless
 		// spawn from a session whose probe reads non-OK (its parks would die).
 		Scripts: pkg.ExecScriptRunner{}, AnswerPathScript: openPaths.answerPath,
+		// The vault-cli bind of a spawned session to its task: spawn_agent writes the
+		// spawned id onto the task it was given, honouring vault-cli's ownership rule.
+		Runner: pkg.ExecCommandRunner{},
 	}
 	// Mounted before the MCP face so open_rows is wired when it starts serving;
 	// the executor is shared with the flagged tick so both route one way.
