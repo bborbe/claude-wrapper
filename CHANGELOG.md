@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.55.0
 
 - feat: **`ResolveOwner` / `OwnerLiveness` port `flagged-rows.py`'s owner ladder to Go.** Fourth slice of item 5, and the input `ResolveBranch` was still missing: its `ChainLive` and `OwnerLive` come from resolving WHICH subject owns a row, which the predicate computes before the branch partition runs. The ladder is preserved in order — a topic owns itself; a goal owns itself, else its declaring topic; a task owns itself via `managed_by`, then its `goals:` in order, then its own topic — and selection is by REGISTRY liveness, never by the recorded session, so an owner is still chosen when its session id has rotated. Two rules are carried rather than flattened: `nil` (unanswerable) leaves a subject as the owner and never demotes it, because a failed registry read must not prove that no manager is live; and a goal's topic is NOT a rung for a worker — it exists so an unmanaged goal's manager can be started, and consulting it would parent workers to the wrong subject. Change set: `pkg/flagged_owner.go`, `pkg/flagged_owner_test.go`, `CHANGELOG.md`.
 
