@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- test: **SC2's follow-the-verdict probe, on the native source.** Two sessions, not one. The first is stubbed `live` while its heartbeat row is stale — the heartbeat is corroboration and must not drag the verdict down — and then flipped to `ABSENT`. The second reads `live` from a child row with no exit code while the registry lists NO pid for it, so a consumer that self-derived from `os.kill(pid, 0)` would report it absent and fails the spec; that is the falsifier the criterion exists for. The criterion names `/api/1.0/liveness`, and this source makes no HTTP call — it calls `LivenessVerdicts` in-process, the same function the endpoint serves — so the stub is applied at that function's inputs. Recorded as a deviation from the criterion's letter rather than passed off as an endpoint stub. Change set: `pkg/flagged_rows_native_test.go`, `CHANGELOG.md`.
+
 ## v0.56.0
 
 - feat: **the flagged tick reads the native source; `flagged-rows.py` is no longer executed.** `startFlaggedTick` now builds `NativeFlaggedRowsSource` from the vault lister, the child table and the heartbeat store, so the daemon derives eligibility itself instead of shelling out to the predicate it has just been ported from. The `-flagged-rows-script` flag and its default path are removed with it: a flag nothing reads is a trap, and a deploy that still passes it now fails loudly at startup rather than silently overriding nothing. The exec source stays in `pkg` as the documented cross-repo contract (`docs/eligibility-predicate.md`) and as the reference the port was verified against, until the script itself is deleted by the sibling task that owns that deletion. Change set: `main.go`, `CHANGELOG.md`.
