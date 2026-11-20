@@ -18,7 +18,19 @@ so a tab session can be watched, not controlled. Joining
 make run            # localhost:18090
 make test
 make precommit      # the gate
+make install-hook   # build cmd/hook, smoke-test, swap into ~/.claude/hooks/hook
 ```
+
+## Hook
+
+`cmd/hook` is the PreToolUse hook `~/.claude/settings.json` registers for every tool
+call, as `~/.claude/hooks/hook || exit 2` — so it fails closed, and a broken binary
+refuses every tool call in every session. `make install-hook` therefore smoke-tests
+the build before it swaps it in: three allow, three pass, two deny and one malformed
+payload (which must exit 2), with every probe chosen to be independent of the
+operator's allow list. The previous binary is kept at `~/.claude/hooks/hook.prev`;
+roll back with `mv ~/.claude/hooks/hook.prev ~/.claude/hooks/hook` from any terminal.
+`DRY_RUN=1 make install-hook` stops after the smoke gate.
 
 ## MCP
 

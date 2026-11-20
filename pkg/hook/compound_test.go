@@ -7,6 +7,7 @@ package hook_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,7 +203,7 @@ var _ = Describe("GitMergeAllows", func() {
 
 var _ = Describe("CompoundTreeAllows", func() {
 	rules := hook.CompoundRules{
-		Allow: []string{"pwd", "ls", "make build:*"},
+		Allow: []string{"pwd", "ls", "make build:*", "timeout:*", "command:*", "export:*"},
 		Gated: []string{"ls -R"},
 	}
 	cwd := tempRepo(map[string]string{})
@@ -223,12 +224,41 @@ var _ = Describe("CompoundTreeAllows", func() {
 		Entry("an assignment prefix", "PATH=/evil ls", false),
 		Entry("a command substitution", "ls $(date)", false),
 		Entry("a shell wrapper", "bash -c 'ls'", false),
-		Entry("a redirect to a file", "ls > /tmp/x", false),
+		Entry("a runner builtin even when a rule names it", "timeout 5 ls", false),
+		Entry("a state-changing builtin", "pwd && export X=1", false),
+		Entry("command running a program", "command ls", false),
+		Entry("command -v only looks a name up", "command -v ls || pwd", true),
+		Entry("a redirect to a /tmp scratch file", "ls > /tmp/x", true),
+		Entry("an append to a /tmp scratch file", "ls >> /tmp/x 2>&1", true),
+		Entry("a redirect escaping /tmp through ..", "ls > /tmp/../etc/x", false),
+		Entry("a redirect outside /tmp and the roots", "ls > /etc/x", false),
+		Entry("a relative redirect target", "ls > x", false),
+		Entry("an allocated descriptor", "ls {fd}> /tmp/x", false),
+		Entry("an input redirect from a file", "ls < /etc/passwd", false),
+		Entry("a heredoc with a literal body", "ls <<'EOF'\nx\nEOF", true),
+		Entry("a quoted ? is not a glob", `gh api "repos/o/r/contents/x?ref=master" --jq .content | base64 -d`, true),
+		Entry("an unquoted ? after a plain first character", `gh api repos/o/r/contents/x?ref=master`, true),
+		Entry("a glob that can expand to an option", `gh api repos/o/r | sed -n 1p -*`, false),
+		Entry("a gh api write in a pipe", `gh api -X PUT repos/o/r/rulesets/1 | ls`, false),
+		Entry("a heredoc body with a substitution", "ls <<EOF\n$(date)\nEOF", false),
+		Entry("a heredoc body with a parameter", "ls <<EOF\n$HOME\nEOF", false),
 		Entry("a descriptor duplication", "ls 2>&1", true),
 		Entry("a redirect to /dev/null", "ls > /dev/null", true),
 		Entry("a background job", "ls &", false),
 		Entry("an unparsable command", "ls &&", false),
 	)
+
+	It("allows a write to a file that does not exist yet under a root", func() {
+		Expect(hook.CompoundTreeAllows("ls > "+filepath.Join(cwd, "new.txt"), rules, cwd, roots)).
+			To(BeTrue())
+	})
+
+	It("refuses a write through a /tmp symlink that points outside /tmp", func() {
+		link := filepath.Join("/tmp", fmt.Sprintf("hook-escape-%d", GinkgoRandomSeed()))
+		Expect(os.Symlink("/etc", link)).To(Succeed())
+		DeferCleanup(os.Remove, link)
+		Expect(hook.TmpTarget(filepath.Join(link, "x"))).To(BeFalse())
+	})
 })
 
 var _ = Describe("CompoundBashGuard", func() {
@@ -251,11 +281,28 @@ var _ = Describe("CompoundBashGuard", func() {
 		Entry("a part matching no rule", "pwd && curl example.com", false),
 		Entry("a gated part", "pwd && ls -R", false),
 		Entry("a substitution", "pwd && ls $(date)", false),
-		Entry("nine parts", "pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd", false),
+		Entry("nine parts go to the tree", "pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd && pwd", true),
+		Entry("twenty-five calls exceed the tree bound", strings.TrimSuffix(strings.Repeat("pwd && ", 25), " && "), false),
+		Entry("a redirect to /tmp in a chain", "pwd && ls > /tmp/x 2>&1", true),
+		Entry("a redirect outside /tmp in a chain", "pwd && ls > /etc/x", false),
 	)
 
-	It("makes no decision for a single plain command", func() {
-		Expect(guard.Evaluate(bashInput("pwd")).Allow).To(BeFalse())
+	It("allows a single command its allow rule names", func() {
+		input := bashInput("pwd")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeTrue())
+	})
+
+	It("makes no decision for a single command no rule names", func() {
+		input := bashInput("curl example.com")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeFalse())
+	})
+
+	It("makes no decision for a single gated command", func() {
+		input := bashInput("ls -R")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeFalse())
 	})
 
 	It("holds allow authority", func() {
@@ -451,6 +498,182 @@ func (alwaysAllow) Evaluate(hook.Input) hook.Decision {
 	return hook.AllowDecision("allowed")
 }
 
+var _ = Describe("CompoundTreeAllows dynamic words", func() {
+	rules := hook.CompoundRules{Allow: []string{"echo:*", "ls:*", "make test:*"}, Gated: []string{"ls -R:*"}}
+	root := tempRepo(map[string]string{"notes.txt": "x"})
+	roots := []string{root}
+
+	DescribeTable("composes rules over words that only read",
+		func(command func() string, allowed bool) {
+			Expect(hook.CompoundTreeAllows(command(), rules, root, roots)).To(Equal(allowed))
+		},
+		Entry("a loop variable in a quoted banner", func() string { return `for c in a b; do echo "=== $c ==="; done` }, true),
+		Entry("a fresh local", func() string { return `x=foo; echo "$x"` }, true),
+		Entry("a substitution whose command is allowed", func() string { return `echo "$(ls)"` }, true),
+		Entry("a substitution whose command is not", func() string { return `echo "$(curl example.com)"` }, false),
+		Entry("a gated call inside a substitution", func() string { return `echo "$(ls -R)"` }, false),
+		Entry("an assigning expansion", func() string { return `echo "${x:=y}"` }, false),
+		Entry("an indirect expansion", func() string { return `echo "${!x}"` }, false),
+		Entry("a default expansion", func() string { return `echo "${x:-none}"` }, true),
+		Entry("assigning PATH", func() string { return `PATH=/x; ls` }, false),
+		Entry("a loop over PATH", func() string { return `for PATH in /x; do ls; done` }, false),
+		Entry("a literal env prefix", func() string { return `FOO=bar ls` }, true),
+		Entry("an env prefix redirecting a tool", func() string { return `KUBECONFIG=/x ls` }, false),
+		Entry("an env prefix with a dynamic value", func() string { return `FOO=$x ls` }, false),
+		Entry("printf -v assigns", func() string { return `printf -v x y` }, false),
+		Entry("a dynamic program word", func() string { return `$x ls` }, false),
+		Entry("cd under a root, then a rule", func() string { return "cd " + root + " && make test 2>&1 | ls" }, true),
+		Entry("cd outside the roots", func() string { return "cd /etc && ls" }, false),
+		Entry("cd into /tmp stays refused", func() string { return "cd /tmp && ls" }, false),
+		Entry("a numeric array index", func() string { return `ls | echo "EXIT=${PIPESTATUS[0]}"` }, true),
+		Entry("an arithmetic array index", func() string { return `echo "${a[$(ls)+1]}"` }, false),
+		Entry("an escaped space", func() string { return `ls 65\ Runbooks` }, true),
+		Entry("a word glued from literal parts", func() string { return `git -C ` + root + ` log -1 --format="%h %s"` }, true),
+		Entry("a glued word hiding an expansion", func() string { return `ls --color="$(curl x)"` }, false),
+		Entry("a backslash inside double quotes", func() string { return `ls | echo "a\|b"` }, true),
+		Entry("an unquoted backslash hides a flag", func() string { return `echo x | ls \-R` }, false),
+		Entry("a relative sed operand before cd", func() string { return "sed -n 1p notes.txt" }, true),
+		Entry("a relative sed operand after cd", func() string { return "cd " + root + " && sed -n 1p notes.txt" }, false),
+		Entry("an env prefix loading a library", func() string { return `LD_PRELOAD=/tmp/x.so ls` }, false),
+		Entry("an env prefix repointing git", func() string { return `GIT_DIR=/tmp/x git status` }, false),
+		Entry("a quoted first part that still globs", func() string { return `git -C ` + root + ` log "--upload-pac"?=sh` }, false),
+		Entry("a quoted empty part before a bare glob", func() string { return `git -C ` + root + ` log ''*` }, false),
+		Entry("a credential path assembled from a literal prefix", func() string { return `d=.ssh; cat ~/$d/id_rsa` }, false),
+		Entry("a globbed credential directory", func() string { return `cat ~/.a?s/credentials` }, false),
+		Entry("a quote-split credential path", func() string { return `cat ~/.a""ws/credentials` }, false),
+		Entry("a quote-split credential path behind a variable", func() string { return `d=.ss""h; cat ~/$d/id_rsa` }, false),
+		Entry("a backslash-split credential path", func() string { return `cat ~/.a\ws/credentials` }, false),
+		Entry("a glob in a later segment stays allowed", func() string { return `ls ~/.claude/*.json` }, true),
+		Entry("a quoted query string is not a glob", func() string {
+			return `gh api "repos/bborbe/x/contents/.github/w.yml?ref=master"`
+		}, true),
+	)
+})
+
+var _ = Describe("CompoundBashGuard rule fallbacks", func() {
+	rules := hook.CompoundRules{Allow: []string{
+		"cat:*", "echo:*", "gh repo view:*", "gh run view:*", "gh pr close:*",
+	}}
+	guard := hook.NewCompoundBashGuardWithRules(
+		func(string) (hook.CompoundRules, error) { return rules, nil },
+	)
+	DescribeTable("lets a rule approve a read-only gh verb and nothing that writes",
+		func(command string, allow bool) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			Expect(guard.Evaluate(input).Allow).To(Equal(allow))
+		},
+		Entry("gh repo view under its rule", "gh repo view o/r --json name | cat", true),
+		Entry("gh run view", "gh run view 1 --log | cat", true),
+		Entry("gh repo view --web opens a browser", "gh repo view o/r --web | cat", false),
+		Entry("gh pr close is a write even with a rule", "gh pr close 1 | cat", false),
+		Entry("a ~ literal prefix read back", "D=~/x; cat \"$D/y\"; echo done", true),
+		Entry("a ~ prefix not at the start of the value", "D=x~y; cat $D; echo done", true),
+		Entry("a ~ prefix read back in double quotes", "D=~/Documents/workspaces; cat \"$D/x\" | cat", true),
+		Entry("an unbalanced text split the parser reads", `echo "a \" b" && cat x`, true),
+	)
+})
+
+var _ = Describe("Credential reads", func() {
+	tv := "team" + "vault-cli"
+	rules := hook.CompoundRules{Allow: []string{"cat:*", "head:*", "grep:*", "ls:*", "echo:*", tv + ":*"}}
+	guard := hook.NewCompoundBashGuardWithRules(
+		func(string) (hook.CompoundRules, error) { return rules, nil },
+	)
+	DescribeTable("are never approved, whatever rule names the program",
+		func(command string) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			Expect(guard.Evaluate(input).Allow).To(BeFalse())
+		},
+		Entry("netrc piped", "cat ~/.netrc | head"),
+		Entry("netrc alone", "cat ~/.netrc"),
+		Entry("an ssh key", "cat ~/.ssh/id_ed25519"),
+		Entry("an ssh key by name", "ls /x | cat id_rsa"),
+		Entry("aws credentials", "grep key ~/.aws/credentials"),
+		Entry("kube config", "cat ~/.kube/config | head -3"),
+		Entry("gh hosts", "cat ~/.config/gh/hosts.yml"),
+		Entry("a credential CLI substitution", "echo \"$"+"("+tv+" password --"+"teamvault-key x)\""),
+		Entry("the credential CLI alone", tv+" username --"+"teamvault-key x"),
+		Entry("keychain", "security find-generic-password -s x -w | head"),
+	)
+	It("still approves an ordinary read", func() {
+		input := bashInput("cat /tmp/x | head")
+		input.HookEventName = hook.EventPreToolUse
+		Expect(guard.Evaluate(input).Allow).To(BeTrue())
+	})
+})
+
+var _ = Describe("Deny precedence over the compound allow", func() {
+	// Every deny guard in the default chain must win even when CompoundBashGuard
+	// would allow the same call: the compound guard's rules here allow everything.
+	rules := hook.CompoundRules{Allow: []string{"git:*", "gh:*", "make:*", "kubectlnukeprod:*", "cd:*", "pm" + "set:*", "ls:*"}}
+	registry := hook.NewRegistry(append(
+		hook.NewDefaultRegistry().Guards(),
+		hook.NewCompoundBashGuardWithRules(func(string) (hook.CompoundRules, error) { return rules, nil }),
+	)...)
+	verb := "pu" + "sh"
+	DescribeTable("denies",
+		func(command string) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			decision := registry.Evaluate(input)
+			Expect(decision.Allow).To(BeFalse())
+			Expect(decision.Deny).To(BeTrue())
+		},
+		Entry("a branch upload", "git "+verb+" origin x"),
+		Entry("an admin merge", "gh -R bborbe/x pr merge 5 --merge --"+"admin"),
+		Entry("a prod apply", "BRANCH="+"prod make "+"apply"),
+		Entry("a prod cluster delete", "kubectlnukeprod -n prod delete pod x"),
+		Entry("a machine sleep", "ls && pm"+"set "+"sleep"+"now"),
+	)
+})
+
+var _ = Describe("GitWriteAllows", func() {
+	root := tempRepo(map[string]string{})
+	repo := filepath.Join(root, "repo")
+	Expect(os.MkdirAll(repo, 0o755)).To(Succeed())
+	outside := tempRepo(map[string]string{})
+	roots := []string{root}
+
+	DescribeTable("approves only a local additive write under the roots",
+		func(values func() []string, allowed bool) {
+			Expect(hook.GitWriteAllows(values(), roots)).To(Equal(allowed))
+		},
+		Entry("commit", func() []string { return []string{"-C", repo, "commit", "-m", "x"} }, true),
+		Entry("commit amend", func() []string { return []string{"-C", repo, "commit", "--amend", "-m", "x"} }, false),
+		Entry("commit --am is the same option", func() []string { return []string{"-C", repo, "commit", "--am", "-m", "x"} }, false),
+		Entry("commit --ame is the same option", func() []string { return []string{"-C", repo, "commit", "--ame", "-m", "x"} }, false),
+		Entry("fetch", func() []string { return []string{"-C", repo, "fetch", "origin"} }, true),
+		Entry("add", func() []string { return []string{"-C", repo, "add", "a.go", "b.go"} }, true),
+		Entry("add with config flag", func() []string { return []string{"-C", repo, "-c", "x=y", "add"} }, false),
+		Entry("fetch with upload-pack", func() []string { return []string{"-C", repo, "fetch", "--upload-pack=x"} }, false),
+		Entry("worktree add beside the repo", func() []string {
+			return []string{"-C", repo, "worktree", "add", "--no-track", "../repo-x", "-b", "feat/x", "origin/master"}
+		}, true),
+		Entry("worktree add outside the roots", func() []string {
+			return []string{"-C", repo, "worktree", "add", filepath.Join(outside, "x"), "-b", "feat/x"}
+		}, false),
+		Entry("worktree add under /tmp", func() []string {
+			return []string{"-C", repo, "worktree", "add", "--detach", "/tmp/hook-wt-x", "HEAD"}
+		}, true),
+		Entry("worktree add walking out with ..", func() []string {
+			return []string{"-C", repo, "worktree", "add", "../../../x"}
+		}, false),
+		Entry("worktree remove", func() []string { return []string{"-C", repo, "worktree", "remove", "../repo-x"} }, false),
+		Entry("push", func() []string { return []string{"-C", repo, "push", "origin", "x"} }, false),
+		Entry("reset", func() []string { return []string{"-C", repo, "reset", "--hard"} }, false),
+		Entry("commit outside the roots", func() []string { return []string{"-C", outside, "commit", "-m", "x"} }, false),
+		Entry("commit without -C", func() []string { return []string{"commit", "-m", "x"} }, false),
+		Entry("fetch in a removed worktree under the roots", func() []string {
+			return []string{"-C", filepath.Join(root, "gone"), "fetch", "origin"}
+		}, true),
+		Entry("a removed worktree walking out with ..", func() []string {
+			return []string{"-C", filepath.Join(root, "gone", "..", ".."), "fetch"}
+		}, false),
+	)
+})
+
 var _ = Describe("SedFilterAllows", func() {
 	root := tempRepo(map[string]string{"a.txt": "x\n"})
 	roots := []string{root}
@@ -507,6 +730,41 @@ var _ = Describe("gh shape guards", func() {
 			[]string{"-R", "bborbe/x", "pr", "create", "--reviewer", "someone"}, false),
 		Entry("a foreign repo",
 			[]string{"-R", "other/x", "pr", "create", "--title", "t"}, false),
+	)
+
+	DescribeTable("approves a read of one REST path",
+		func(values []string, allowed bool) {
+			Expect(hook.GhAPIAllows(values)).To(Equal(allowed))
+		},
+		Entry("a default GET", []string{"api", "repos/o/r/pulls/1"}, true),
+		Entry("a GET with jq and paginate",
+			[]string{"api", "repos/o/r/pulls", "--paginate", "--jq", ".[].number"}, true),
+		Entry("an explicit GET", []string{"api", "-X", "GET", "repos/o/r"}, true),
+		Entry("an explicit HEAD", []string{"api", "--method=HEAD", "repos/o/r"}, true),
+		Entry("a PUT", []string{"api", "-X", "PUT", "repos/o/r/rulesets/1"}, false),
+		Entry("a DELETE via equals", []string{"api", "--method=DELETE", "repos/o/r"}, false),
+		Entry("a field turns it into a POST", []string{"api", "repos/o/r/issues", "-f", "title=x"}, false),
+		Entry("a typed field", []string{"api", "repos/o/r/issues", "-F", "x=1"}, false),
+		Entry("an input file", []string{"api", "repos/o/r", "--input", "/tmp/x"}, false),
+		Entry("verbose prints the token", []string{"api", "repos/o/r", "--verbose"}, false),
+		Entry("another host", []string{"api", "--hostname", "evil.example", "repos/o/r"}, false),
+		Entry("a full URL", []string{"api", "https://evil.example/x"}, false),
+		Entry("a dot-dot endpoint", []string{"api", "repos/o/r/../../x"}, false),
+		Entry("two endpoints", []string{"api", "repos/o/r", "repos/o/s"}, false),
+		Entry("no endpoint", []string{"api", "--jq", ".x"}, false),
+		Entry("a missing jq value", []string{"api", "repos/o/r", "--jq"}, false),
+	)
+
+	DescribeTable("approves base64 decoding stdin only",
+		func(values []string, allowed bool) {
+			Expect(hook.Base64DecodeAllows(values)).To(Equal(allowed))
+		},
+		Entry("decode", []string{"-d"}, true),
+		Entry("decode with a break width", []string{"--decode", "-b", "76"}, true),
+		Entry("encode is the rules' job", []string{}, false),
+		Entry("an output file", []string{"-d", "-o", "/etc/x"}, false),
+		Entry("an input file", []string{"-d", "-i", "/x"}, false),
+		Entry("an operand", []string{"-d", "/x"}, false),
 	)
 
 	DescribeTable("approves a read-only PR query for any owner",

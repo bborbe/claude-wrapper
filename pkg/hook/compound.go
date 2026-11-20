@@ -163,6 +163,16 @@ func SubstituteLiterals(command string) (string, bool) {
 		if value == "" || compoundUnsafeValue.MatchString(value) {
 			return "", false
 		}
+		// The shell expands a leading `~/` at assignment, so the word that reads the
+		// variable sees the home path — also inside double quotes, where a literal
+		// `~` would stay unexpanded.
+		if strings.HasPrefix(value, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", false
+			}
+			value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
+		}
 		env[pair[1]] = value
 	}
 	if len(env) == 0 {
