@@ -623,6 +623,8 @@ var _ = Describe("Credential reads", func() {
 		Entry("a quoted netrc path", `cat "~/.netrc"`),
 		Entry("a quote-split aws path", `cat ~/.a""ws/credentials`),
 		Entry("a quoted ssh key", `cat '~/.ssh/id_rsa'`),
+		Entry("a quoted path inside a substitution", `echo $(cat '~/.netrc')`),
+		Entry("a quoted path on a second line", "echo hi\ncat '~/.netrc'"),
 	)
 })
 

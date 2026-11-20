@@ -63,9 +63,18 @@ func CredentialRead(command string) bool {
 // credentialScanText returns command with every inert quoted span blanked: a span
 // that is the value of a free-text flag, or any argument to a head that cannot read
 // a file. Every other span is kept verbatim, so a real credential read still matches.
+//
+// Two shapes are deliberately never inert, because both RUN what they name:
+//   - a span inside a command substitution or backtick group
+//     (`echo $(cat '~/.netrc')`), tracked by depth rather than by looking at the
+//     span's own text — the substitution opens OUTSIDE the quotes there;
+//   - a span on a later LINE of a multi-line command, where the head has changed
+//     (`echo hi` newline `cat '~/.netrc'`). A newline ends a segment exactly as
+//     `;` does.
 func credentialScanText(command string) string {
 	var out strings.Builder
 	var head, prev, word strings.Builder
+	depth, inBacktick := 0, false
 	flush := func() {
 		w := word.String()
 		word.Reset()
@@ -78,12 +87,17 @@ func credentialScanText(command string) string {
 		prev.Reset()
 		prev.WriteString(w)
 	}
+	reset := func() {
+		flush()
+		head.Reset()
+		prev.Reset()
+	}
 	for i := 0; i < len(command); i++ {
 		c := command[i]
 		switch c {
 		case '\'', '"':
 			span, next := quotedSpanAt(command, i)
-			if isInertSpan(span, prev.String(), head.String()) {
+			if depth == 0 && !inBacktick && isInertSpan(span, prev.String(), head.String()) {
 				out.WriteString(strings.Repeat(" ", len(span)))
 			} else {
 				out.WriteString(span)
@@ -91,13 +105,27 @@ func credentialScanText(command string) string {
 			prev.Reset()
 			prev.WriteString(span)
 			i = next - 1
-		case ' ', '\t', '\n':
+		case ' ', '\t':
 			flush()
 			out.WriteByte(c)
-		case '|', ';', '&':
-			flush()
-			head.Reset()
-			prev.Reset()
+		case '\n', '|', ';', '&', '(':
+			reset()
+			out.WriteByte(c)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			reset()
+			out.WriteByte(c)
+		case '`':
+			inBacktick = !inBacktick
+			reset()
+			out.WriteByte(c)
+		case '$':
+			if i+1 < len(command) && command[i+1] == '(' {
+				depth++
+			}
+			word.WriteByte(c)
 			out.WriteByte(c)
 		default:
 			word.WriteByte(c)
