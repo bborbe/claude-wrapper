@@ -15,17 +15,58 @@ import (
 var credentialPaths = regexp.MustCompile(
 	`\.netrc\b|\.ssh/|\bid_(rsa|ed25519|ecdsa|dsa)\b|\.aws/|\.kube/config|` +
 		`\.docker/config\.json|gh/hosts\.yml|\.gnupg/|\.pgpass\b|\.npmrc\b|\.pypirc\b|` +
-		`\bteamvault[-a-z]*\b|\bsecurity\s+find-(generic|internet)-password\b|` +
-		// A glob inside the dot-directory NAME selects a credential store without
-		// spelling it: `cat ~/.a?s/credentials` matches no literal above. A glob in
-		// a later segment (`~/.claude/*.json`) stays allowed.
-		`[~/]\.[A-Za-z0-9_.-]*[*?\[]|/(Users|home)/[^/\s]+/\.[A-Za-z0-9_.-]*[*?\[]`,
+		`\bteamvault[-a-z]*\b|\bsecurity\s+find-(generic|internet)-password\b`,
+)
+
+// credentialGlobPaths matches a glob inside the dot-directory NAME, which selects a
+// credential store without spelling it (`cat ~/.a?s/credentials`). A glob in a later
+// segment (`~/.claude/*.json`) stays allowed.
+var credentialGlobPaths = regexp.MustCompile(
+	`[~/]\.[A-Za-z0-9_.-]*[*?\[]|/(Users|home)/[^/\s]+/\.[A-Za-z0-9_.-]*[*?\[]`,
 )
 
 // CredentialRead reports whether the command names a credential store or a
 // secret-printing CLI.
+//
+// The glob rule is tested against the command with its quoted spans blanked: the
+// shell expands a glob only unquoted, so `gh api "repos/o/r/contents/x.yml?ref=master"`
+// reads a file and never selects a directory, while `cat ~/.a?s/credentials` does.
 func CredentialRead(command string) bool {
-	return credentialPaths.MatchString(command)
+	if credentialPaths.MatchString(command) {
+		return true
+	}
+	return credentialGlobPaths.MatchString(unquotedText(command))
+}
+
+// unquotedText blanks every single- and double-quoted span, so a pattern can be
+// matched against the text the shell still expands. An unterminated quote blanks
+// the rest of the line, which errs towards allowing a match, never towards missing
+// one: the literal patterns above are tested on the raw text regardless.
+func unquotedText(command string) string {
+	var out strings.Builder
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' && i+1 < len(command) {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		case c == '\'' || c == '"':
+			quote = c
+			continue
+		case c == '\\' && i+1 < len(command):
+			i++
+			continue
+		}
+		out.WriteByte(c)
+	}
+	return out.String()
 }
 
 // maxCompoundSegments bounds how many subcommands a compound may carry; a long
