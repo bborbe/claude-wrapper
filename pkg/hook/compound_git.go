@@ -361,8 +361,10 @@ func GitWriteAllows(values []string, roots []string) bool {
 	}
 	switch values[2] {
 	case "commit":
+		// `--am`, `--ame` … are git's unique long-option abbreviations of `--amend`,
+		// and every one of them rewrites history: refuse the whole `--am` prefix.
 		return gitWriteArgs(values[3:], func(value string) bool {
-			return strings.HasPrefix(value, "--amend")
+			return strings.HasPrefix(value, "--am")
 		})
 	case "fetch", "add":
 		return gitWriteArgs(values[3:], nil)

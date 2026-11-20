@@ -244,9 +244,14 @@ func staticCallWords(args []*syntax.Word) (words []string, bare []string, static
 			return nil, nil, false
 		}
 		words = append(words, value)
-		if _, unquoted := arg.Parts[0].(*syntax.Lit); unquoted {
-			// Only an unquoted word is subject to glob and tilde expansion.
-			bare = append(bare, value)
+		// Any unquoted part can glob, wherever it sits: `"--upload-pac"?=sh` starts
+		// quoted and still expands to `--upload-pack=sh`, and `''*` is a bare `*`.
+		// Keying this on the FIRST part alone let both through unchecked.
+		for _, part := range arg.Parts {
+			if _, unquoted := part.(*syntax.Lit); unquoted {
+				bare = append(bare, value)
+				break
+			}
 		}
 	}
 	return words, bare, true

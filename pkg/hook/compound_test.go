@@ -534,6 +534,13 @@ var _ = Describe("CompoundTreeAllows dynamic words", func() {
 		Entry("an unquoted backslash hides a flag", func() string { return `echo x | ls \-R` }, false),
 		Entry("a relative sed operand before cd", func() string { return "sed -n 1p notes.txt" }, true),
 		Entry("a relative sed operand after cd", func() string { return "cd " + root + " && sed -n 1p notes.txt" }, false),
+		Entry("an env prefix loading a library", func() string { return `LD_PRELOAD=/tmp/x.so ls` }, false),
+		Entry("an env prefix repointing git", func() string { return `GIT_DIR=/tmp/x git status` }, false),
+		Entry("a quoted first part that still globs", func() string { return `git -C ` + root + ` log "--upload-pac"?=sh` }, false),
+		Entry("a quoted empty part before a bare glob", func() string { return `git -C ` + root + ` log ''*` }, false),
+		Entry("a credential path assembled from a literal prefix", func() string { return `d=.ssh; cat ~/$d/id_rsa` }, false),
+		Entry("a globbed credential directory", func() string { return `cat ~/.a?s/credentials` }, false),
+		Entry("a glob in a later segment stays allowed", func() string { return `ls ~/.claude/*.json` }, true),
 	)
 })
 
@@ -629,6 +636,8 @@ var _ = Describe("GitWriteAllows", func() {
 		},
 		Entry("commit", func() []string { return []string{"-C", repo, "commit", "-m", "x"} }, true),
 		Entry("commit amend", func() []string { return []string{"-C", repo, "commit", "--amend", "-m", "x"} }, false),
+		Entry("commit --am is the same option", func() []string { return []string{"-C", repo, "commit", "--am", "-m", "x"} }, false),
+		Entry("commit --ame is the same option", func() []string { return []string{"-C", repo, "commit", "--ame", "-m", "x"} }, false),
 		Entry("fetch", func() []string { return []string{"-C", repo, "fetch", "origin"} }, true),
 		Entry("add", func() []string { return []string{"-C", repo, "add", "a.go", "b.go"} }, true),
 		Entry("add with config flag", func() []string { return []string{"-C", repo, "-c", "x=y", "add"} }, false),

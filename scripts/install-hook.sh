@@ -19,8 +19,8 @@ NEW="$HOOK_DIR/hook.new"
 # and the build both resolve from the cwd.
 cd "$(dirname "$0")/.."
 
-if [ -n "$(git status --porcelain -- cmd pkg scripts)" ]; then
-	echo "install-hook: uncommitted changes under cmd/, pkg/ or scripts/ — commit first" >&2
+if [ -n "$(git status --porcelain -- cmd pkg scripts go.mod go.sum Makefile)" ]; then
+	echo "install-hook: uncommitted changes under cmd/, pkg/, scripts/, go.mod, go.sum or Makefile — commit first" >&2
 	exit 1
 fi
 COMMIT=$(git rev-parse --short HEAD)
@@ -52,12 +52,15 @@ check() {
 
 bash_payload() {
 	printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s","session_id":"install-hook"}' \
-		"$1" "$HOME/Documents/workspaces"
+		"$1" "$WORKSPACES"
 }
 
 # Every probe is chosen to be independent of the operator's allow list, so the
-# smoke tests the binary and not the settings file on this machine.
-REPO="$HOME/Documents/workspaces/claude-wrapper"
+# smoke tests the binary and not the settings file on this machine. The repo path
+# is this checkout's own — never a hard-coded one, which a worktree or a clone
+# elsewhere would silently miss.
+REPO="$(pwd)"
+WORKSPACES="$(dirname "$REPO")"
 
 # 3 allow: shape-guard approvals (a read-only git chain, a git + sed pipe, a compound
 # of two shape-approved calls), which need no allow rule.

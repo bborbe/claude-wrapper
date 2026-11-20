@@ -66,6 +66,11 @@ var envRedirectNames = map[string]bool{
 	"TEAMVAULT_CONFIG": true, "SSH_AUTH_SOCK": true, "SSL_CERT_FILE": true,
 	"SSL_CERT_DIR": true, "CURL_CA_BUNDLE": true, "REQUESTS_CA_BUNDLE": true,
 	"TMPDIR": true, "SHELL": true, "PWD": true, "OLDPWD": true, "ZDOTDIR": true,
+	// LD_PRELOAD loads a library into every process the call starts, GIT_DIR and
+	// GIT_CONFIG_GLOBAL repoint git at another repository or config, and
+	// GIT_SSH_VARIANT picks the transport: each reaches outside the call's own argv.
+	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "GIT_DIR": true,
+	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_SSH_VARIANT": true,
 }
 
 // localName reports whether name may be assigned as a fresh, unexported local: not

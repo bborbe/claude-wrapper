@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -53,7 +54,7 @@ var _ = Describe("TmpWriteGuard", func() {
 		DeferCleanup(os.Remove, link)
 		target, err := filepath.EvalSymlinks(link)
 		Expect(err).NotTo(HaveOccurred())
-		if filepath.HasPrefix(target, "/private/tmp/") || filepath.HasPrefix(target, "/tmp/") {
+		if strings.HasPrefix(target, "/private/tmp/") || strings.HasPrefix(target, "/tmp/") {
 			Skip("the test temp dir is itself under /tmp")
 		}
 		Expect(decide("Write", filepath.Join(link, "new.txt")).Allow).To(BeFalse())

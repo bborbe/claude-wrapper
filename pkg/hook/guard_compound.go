@@ -15,7 +15,11 @@ import (
 var credentialPaths = regexp.MustCompile(
 	`\.netrc\b|\.ssh/|\bid_(rsa|ed25519|ecdsa|dsa)\b|\.aws/|\.kube/config|` +
 		`\.docker/config\.json|gh/hosts\.yml|\.gnupg/|\.pgpass\b|\.npmrc\b|\.pypirc\b|` +
-		`\bteamvault[-a-z]*\b|\bsecurity\s+find-(generic|internet)-password\b`,
+		`\bteamvault[-a-z]*\b|\bsecurity\s+find-(generic|internet)-password\b|` +
+		// A glob inside the dot-directory NAME selects a credential store without
+		// spelling it: `cat ~/.a?s/credentials` matches no literal above. A glob in
+		// a later segment (`~/.claude/*.json`) stays allowed.
+		`[~/]\.[A-Za-z0-9_.-]*[*?\[]|/(Users|home)/[^/\s]+/\.[A-Za-z0-9_.-]*[*?\[]`,
 )
 
 // CredentialRead reports whether the command names a credential store or a
@@ -85,6 +89,11 @@ func (g *CompoundBashGuard) Evaluate(input Input) Decision {
 	}
 	plan, ok := planCompound(original)
 	if !ok {
+		return Decision{}
+	}
+	if plan.command != original && CredentialRead(plan.command) {
+		// A literal prefix can assemble the path after the raw scan ran:
+		// `d=.ssh; cat ~/$d/id_rsa` names no store until the rewrite lands.
 		return Decision{}
 	}
 	rules, err := g.loadRules(input.Cwd)
