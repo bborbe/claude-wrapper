@@ -70,6 +70,48 @@ type AgentRow struct {
 	// different fact from not-waiting, so it is never reported as false.
 	SessionStatus *string `json:"session_status"`
 	AwaitingInput *bool   `json:"awaiting_input"`
+	// PendingQuestion is the park this process holds for the session, or null.
+	//
+	// It is populated for a session this daemon HOLDS — including one adopted from
+	// a previous daemon generation, whose question `Adopt` restored from the
+	// session's durable record — and null for a foreign or unlisted row, which this
+	// process cannot answer and so cannot honestly report. That is the whole point
+	// of the field: a manager's own-parks step reads it to answer a worker's park,
+	// and a park that lived only in a dead process's memory would read here as
+	// "nothing parked".
+	//
+	// ⚠️ The field is present on EVERY row, never omitted. `commands/steps/own-parks.md`
+	// reads its presence as "this server can report parks", and its absence as an
+	// older server that cannot — so an `omitempty` here would make the live daemon
+	// look like the server that shipped before parks were readable at all.
+	PendingQuestion *PendingQuestion `json:"pending_question"`
+	// PendingPermissions is always empty here, and deliberately so.
+	//
+	// A wrapper park is a `pending_question`, never a `pending_permissions` entry:
+	// `pending_permissions` is the policy-layer list, whose rows carry
+	// `allowlist_entry`, and the policy has already answered every allowlisted park
+	// before one can reach this roster. Emitting it as `[]` keeps a reader from
+	// treating a wrapper park as a policy-classified one and dispatching it to a
+	// wrangler that would only escalate it.
+	PendingPermissions []any `json:"pending_permissions"`
+}
+
+// PendingQuestion is a held session's park in the shape the fleet's own-parks step
+// reads (`commands/steps/own-parks.md`).
+//
+// It carries only the identifying input — `command` and `file_path` — never a
+// Write's `content`, matching `pending_permissions`' own rule that a park must be
+// judgeable without dumping its payload into a manager's context. For an
+// `AskUserQuestion` the `questions` carry the prompt and its option labels, which
+// is what the step routes to the operator.
+type PendingQuestion struct {
+	RequestID   string           `json:"request_id"`
+	Kind        string           `json:"kind"`
+	ToolName    string           `json:"tool_name"`
+	ToolUseID   string           `json:"tool_use_id,omitempty"`
+	Input       map[string]any   `json:"input,omitempty"`
+	Questions   []QuestionPrompt `json:"questions,omitempty"`
+	RequestedAt string           `json:"requested_at,omitempty"`
 }
 
 // Roster answers "what is the fleet doing" across every session, not only the
@@ -365,12 +407,45 @@ func rowForUnlisted(sessionID string) AgentRow {
 func (r *roster) rowForOwn(session Session) AgentRow {
 	created := session.StartedAt.UTC().Format(time.RFC3339)
 	return AgentRow{
-		AgentID:    session.ID,
-		SessionID:  session.ID,
-		Cwd:        session.Cwd,
-		Rehydrated: false,
-		CreatedAt:  &created,
+		AgentID:            session.ID,
+		SessionID:          session.ID,
+		Cwd:                session.Cwd,
+		Rehydrated:         false,
+		CreatedAt:          &created,
+		PendingQuestion:    pendingQuestionOf(session.Question),
+		PendingPermissions: []any{},
 	}
+}
+
+// pendingQuestionOf reduces a held session's question to the roster's park shape.
+//
+// nil in, nil out: an unparked session carries no park, and the field's presence
+// (not its value) is what tells a reader this server can report parks at all. The
+// input is reduced to the identifying keys so a Write's content never enters a
+// manager's context through the roster.
+func pendingQuestionOf(question *Question) *PendingQuestion {
+	if question == nil {
+		return nil
+	}
+	out := &PendingQuestion{
+		RequestID: question.RequestID,
+		Kind:      string(question.Kind),
+		ToolName:  question.ToolName,
+		ToolUseID: question.ToolUseID,
+		Questions: question.Questions,
+	}
+	if !question.RequestedAt.IsZero() {
+		out.RequestedAt = question.RequestedAt.UTC().Format(time.RFC3339)
+	}
+	for _, key := range []string{"command", "file_path"} {
+		if value, ok := question.Input[key].(string); ok && value != "" {
+			if out.Input == nil {
+				out.Input = map[string]any{}
+			}
+			out.Input[key] = value
+		}
+	}
+	return out
 }
 
 // rowForForeign builds a row for a ledger record this process did not spawn.
@@ -435,6 +510,12 @@ func (r *roster) enrich(ctx context.Context, rows []AgentRow) []AgentRow {
 	entries := r.registrySnapshot(ctx)
 	for i := range rows {
 		applyRegistryStatus(&rows[i], entries)
+		// `pending_permissions` is served as `[]` on EVERY row, never `null`: a
+		// reader distinguishes "the server reports no policy parks" from "the
+		// server predates the field" by presence, and a null would blur the two.
+		if rows[i].PendingPermissions == nil {
+			rows[i].PendingPermissions = []any{}
+		}
 	}
 	if r.transcripts == nil {
 		return rows
