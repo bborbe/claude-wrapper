@@ -64,6 +64,11 @@ func (t *AdoptTick) Run(ctx context.Context) (AdoptResult, error) {
 	if err != nil {
 		return result, errors.Wrap(ctx, err, "read live registry")
 	}
+	// The adopter is live by construction — it is the process running this tick.
+	// Without this the daemon's own claim reads as a dead holder on the next
+	// round and every stranded worker is re-adopted every tick, rewriting the
+	// store each time.
+	live[t.Self] = true
 	rows, err := t.Ledger.Rows(ctx)
 	if err != nil {
 		return result, errors.Wrap(ctx, err, "read ledger rows")

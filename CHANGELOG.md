@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the adopt job runs inside the daemon, so a stranded worker's gate has one owner without a model round.** `pkg/adopt_tick.go` shipped the core and its five guards; nothing invoked it, so row 4 of the fleet round was still the only adopter and the port was dead code. `startAdoptTick` now runs it on the flagged tick's own cadence and stores, logging `job=adopt action=tick adopted=<n> skipped=<n> adopted_sessions=<ids>` on every round — including a quiet one, because a suppressed line and a round that adopted nothing must not read the same. ⚠️ **The stores are the scripts' own, never a second format.** `pkg/claim_store.go` writes `ownership-claim.py`'s `~/.claude/state/ownership-claims.json` in that file's exact shape (two-space indent, sorted keys, `version` 1, `claimed_at` in UTC seconds) and takes its `.lock` before the read-modify-write, because that file has a second writer: a port without the flock would interleave with a manager's `ownership-claim.py claim` and drop one of the two claims. `pkg/subject_reader.go` reads `~/.claude/state/worker-manager/<sid>.json` for the subject and `~/.claude/state/sweep-gate/<branch>--<slug>.stopped` on all four tiers, reusing the package's existing `baseSlug` so the marker name matches `manager-liveness.py`'s writer byte for byte. ⚠️ **The adopter counts as live.** `AdoptTick.Run` now adds `Self` to the live set: without it the daemon's own claim reads as a dead holder on the next round and every stranded worker is re-adopted every tick, rewriting the store each time — pinned by a test that fails when the line is removed. ⚠️ **`Self` is `claude-wrapper`, not a session id.** The daemon has no session, and the claim's `manager` field must not name one it is not; a non-session holder reads as dead to `gate-owner-filter.py`, which fails OPEN, so the worker's gates route normally until a live manager takes the claim over. Change set: `pkg/claim_store.go` (new), `pkg/subject_reader.go` (new), `pkg/adopt_tick.go`, `main.go`, `pkg/claim_store_test.go` (new), `pkg/subject_reader_test.go` (new), `pkg/adopt_tick_test.go`, `CHANGELOG.md`.
+
 ## v0.49.0
 
 - fix: **a `role: human` row no longer opens on the Claude launcher.** Operator ruling 2026-11-20 reverses the 2026-11-06 human-row ruling: `pkg/open_tab.go`'s `humanLauncher` now resolves the worker chain — the task's own `launcher:`, then `worker_launcher`, then `claude_script` — so a routine operator row lands on `cc-*-deepseek` instead of `cc-*-claude` at Opus 5.5. Measured 2026-11-20: BRO-22863 Check Alerts opened on `cc-seibert-claude --model claude-opus-5-5[1m]` purely because its frontmatter said `role: human`. Change set: `pkg/open_tab.go`, `pkg/open_tab_test.go`, `CHANGELOG.md`.
@@ -296,7 +300,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## v0.24.1
 
 - fix: **the wake tick's delivery confirmation is escape-safe.** `SendWhenReadyWith` now takes the confirmation rule as well as the readiness rule. The spawn path keeps the echoed-message check; the wake path uses a spinner over an empty composer — the same positive evidence `pane-wake.py` used. The echoed-message check reads the raw `--escapes` screen, where SGR sequences interleave the message text, so a send that DID land read as unconfirmed: measured live on 2026-11-14, three woken sessions carried the wake message in their transcripts while the log reported `failed:`.
-
 
 ## v0.24.0
 
