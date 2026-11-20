@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.54.0
 
 - feat: **`Refusals` ports `flag_provenance.py`'s `agent-set-flag` rule to Go.** Third and last slice of item 5's projection: `FlaggedRow` needs a `refused` field, and this is the predicate that fills it. An agent-set flag opens nothing at any tier — the 2026-11-10 operator ruling — so the reason is identical for a task, a goal and a topic; before it, a goal or topic accepted any provenance and a manager opened on an agent's own write. Two rules are preserved rather than flattened: a TASK flag must be a YAML boolean (a quoted scalar is a string, and `commands/open.md` reads the flag off a parsed page), while a goal or topic flag is read tolerantly and also accepts `1`; and an UNFLAGGED row returns nothing at all, because "not flagged" is the eligibility gate's reason, not a provenance refusal — folding the two would put a spurious token on every unflagged row. An absent `flag_set_by` refuses, with `legacy` the marker that keeps the already-dispositioned rows admitted. Change set: `pkg/flagged_refused.go`, `pkg/flagged_refused_test.go`, `CHANGELOG.md`.
 
