@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **the fleet snapshot covers the whole roster, not just the tracked tasks of the configured subjects.** `sweepgate.FleetSnapshot` now adds an entry for every registry session the task projection missed. Measured 2026-11-20 against the registry-live set: **6 live sessions were absent** from a snapshot built by the task projection alone, and a session absent from the baseline reads as first-seen on the next round — a silent counter reset. These entries carry no task (`TaskFile`/`TaskMtime` empty, the same shape the Python writes) and their `stall_count` is **pinned at 0**: the stall test is "busy AND the task file did not move", and with no task file nothing could move, so counting them would manufacture a stall every round for a session the round cannot judge. Change set: `pkg/sweepgate/fleet_snapshot.go`, `pkg/sweepgate/fleet_snapshot_test.go`, `CHANGELOG.md`.
+
 ## v0.47.0
 
 - fix: **a credential path split by quoting or by an escape slipped past the scan.** `cat ~/.a""ws/credentials` spells `.aws/credentials` to the shell but contains no `.aws/` in its raw text, and `cat ~/.a\ws/credentials` hides it the same way; both were approved. `CredentialRead` now runs its literal rules on the text with quoted spans removed as well as on the raw text, and that helper keeps the character a backslash escapes instead of dropping it — which also stopped `.a\ws` reading as `.as`. Change set: `pkg/hook/guard_compound.go`, `pkg/hook/compound_test.go`, `CHANGELOG.md`.
