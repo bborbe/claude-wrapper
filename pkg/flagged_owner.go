@@ -7,6 +7,8 @@ package pkg
 import (
 	"regexp"
 	"strings"
+
+	"github.com/bborbe/collection"
 )
 
 // Owner is the subject that owns a row: a goal, a topic, or the fleet sentinel.
@@ -52,7 +54,11 @@ type OwnerContext struct {
 }
 
 var (
-	wikilinkNameRe  = regexp.MustCompile(`\[\[([^\]|#]+)\]\]`)
+	// A wikilink's TARGET, with any `|alias` or `#anchor` dropped. The optional
+	// group is what makes `[[Ship It|the goal]]` name `Ship It`; without it the
+	// link does not match at all and the raw text falls through as a name that
+	// resolves no page.
+	wikilinkNameRe  = regexp.MustCompile(`\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]`)
 	managedByLineRe = regexp.MustCompile(`(?m)^managed_by:[ \t]*(.*)$`)
 )
 
@@ -105,9 +111,11 @@ func ResolveOwner(kind, name, block string, ctx OwnerContext) Owner {
 // PROVEN false opens a manager; nil does not.
 func OwnerLiveness(owner Owner, kind, name string, ctx OwnerContext) (ownerLive, chainLive *bool) {
 	if !owner.IsFleet() {
-		// A resolved subject IS a live manager by construction — it was selected
-		// because its registry entry is live — so the chain is proven true here.
-		return ctx.SubjectLiveness(owner.Kind, owner.Name), boolRef(true)
+		// The chain carries the SAME probe that selected the owner, not a proven
+		// true: `ResolveOwner` also keeps a subject when the probe could not answer,
+		// so reporting true here would assert a liveness nobody measured. A nil
+		// chain does not fire `open-manager`, so the safe direction is unchanged.
+		return ctx.SubjectLiveness(owner.Kind, owner.Name), ctx.SubjectLive(owner.Kind, owner.Name)
 	}
 	switch kind {
 	case "topic":
@@ -118,7 +126,7 @@ func OwnerLiveness(owner Owner, kind, name string, ctx OwnerContext) (ownerLive,
 			if topic, ok := ctx.TopicOf[name]; ok {
 				chain = ctx.SubjectLive("topic", topic)
 			} else {
-				chain = boolRef(false)
+				chain = collection.Ptr(false)
 			}
 		}
 		return ctx.FleetLive, chain
@@ -176,19 +184,28 @@ func startsWord(line string) bool {
 		(c >= 'A' && c <= 'Z')
 }
 
-// managedByOf returns the page's `managed_by` value with list brackets and quotes
-// stripped.
+// managedByOf returns the page's `managed_by` value as a subject name.
+//
+// A wikilink is unwrapped the same way `goalsOf` unwraps one, so
+// `managed_by: "[[Ship It|the goal]]"` and `managed_by: Ship It` name the SAME
+// subject — an alias or anchor left on the value would resolve no page and send
+// the row to the fleet for a reason nobody could see.
 func managedByOf(block string) []string {
 	match := managedByLineRe.FindStringSubmatch(block)
 	if match == nil {
 		return nil
 	}
-	value := strings.Trim(strings.TrimSpace(match[1]), "[]'\"")
+	value := strings.TrimSpace(match[1])
+	if links := wikilinkNameRe.FindAllStringSubmatch(value, -1); len(links) > 0 {
+		names := make([]string, 0, len(links))
+		for _, m := range links {
+			names = append(names, strings.TrimSpace(m[1]))
+		}
+		return names
+	}
+	value = strings.Trim(value, "[]'\"")
 	if value == "" {
 		return nil
 	}
 	return []string{value}
 }
-
-// boolRef returns a pointer to b, for the tri-state probe answers.
-func boolRef(b bool) *bool { return &b }

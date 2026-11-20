@@ -3,6 +3,7 @@ module github.com/bborbe/claude-wrapper
 go 1.27.4
 
 require (
+	github.com/bborbe/collection v1.21.7
 	github.com/bborbe/errors v1.7.0
 	github.com/bborbe/time v1.27.28
 	github.com/onsi/ginkgo/v2 v2.34.0
@@ -14,7 +15,6 @@ require (
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
-	github.com/bborbe/collection v1.21.7 // indirect
 	github.com/bborbe/math v1.4.20 // indirect
 	github.com/bborbe/parse v1.12.7 // indirect
 	github.com/bborbe/run v1.12.0 // indirect

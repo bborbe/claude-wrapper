@@ -74,6 +74,17 @@ var _ = ginkgo.Describe("ResolveOwner", func() {
 		gomega.Expect(owner).To(gomega.Equal(Owner{Kind: "goal", Name: "Explicit Goal"}))
 	})
 
+	ginkgo.It("unwraps an aliased or anchored managed_by the same way goals are unwrapped", func() {
+		// Left on the value, the alias would name no page and send the row to the
+		// fleet for a reason nobody could see.
+		for _, value := range []string{"[[Explicit Goal|the goal]]", "[[Explicit Goal#Section]]"} {
+			block := "managed_by: \"" + value + "\"\n"
+			owner := ResolveOwner("task", "Do It", block,
+				ownerCtx(nil, map[string]*bool{"goal/Explicit Goal": &yes}, nil, nil))
+			gomega.Expect(owner).To(gomega.Equal(Owner{Kind: "goal", Name: "Explicit Goal"}), "value=%s", value)
+		}
+	})
+
 	ginkgo.It("walks a task's goals in order and takes the first live one", func() {
 		block := "goals:\n  - \"[[Dead Goal]]\"\n  - \"[[Live Goal]]\"\n"
 		owner := ResolveOwner("task", "Do It", block,
@@ -114,9 +125,21 @@ var _ = ginkgo.Describe("OwnerLiveness", func() {
 	ginkgo.It("reads a resolved subject's own liveness and a PROVEN live chain", func() {
 		ownerLive, chainLive := OwnerLiveness(
 			Owner{Kind: "goal", Name: "Ship It"}, "task", "Do It",
-			ownerCtx(nil, nil, map[string]*bool{"goal/Ship It": &yes}, &yes))
+			ownerCtx(nil, map[string]*bool{"goal/Ship It": &yes},
+				map[string]*bool{"goal/Ship It": &yes}, &yes))
 		gomega.Expect(ownerLive).To(gomega.Equal(&yes))
 		gomega.Expect(chainLive).To(gomega.Equal(&yes))
+	})
+
+	ginkgo.It("does not claim a live chain for an owner kept only because the probe could not answer", func() {
+		// ResolveOwner keeps a subject when SubjectLive is nil, so reporting a
+		// proven-true chain here would assert a liveness nobody measured. nil does
+		// not fire open-manager either, so the safe direction is unchanged.
+		ownerLive, chainLive := OwnerLiveness(
+			Owner{Kind: "goal", Name: "Ship It"}, "task", "Do It",
+			ownerCtx(nil, map[string]*bool{"goal/Ship It": nil}, nil, &yes))
+		gomega.Expect(ownerLive).To(gomega.BeNil())
+		gomega.Expect(chainLive).To(gomega.BeNil())
 	})
 
 	ginkgo.It("reads the fleet sentinel's liveness and the subject's chain", func() {
