@@ -50,6 +50,10 @@ var _ = ginkgo.Describe("KeepaliveEffectForVerdict", func() {
 			Result: KeepaliveResultKept,
 			Reason: "jump",
 		}),
+		// A live session in any of these states is left alone — `kept`, never a resume.
+		ginkgo.Entry("stopped", "stopped", KeepaliveEffect{Result: KeepaliveResultKept, Reason: "stopped"}),
+		ginkgo.Entry("sleeping", "sleeping", KeepaliveEffect{Result: KeepaliveResultKept, Reason: "sleeping"}),
+		ginkgo.Entry("working", "working", KeepaliveEffect{Result: KeepaliveResultKept, Reason: "working"}),
 		ginkgo.Entry("cannot-tell", "cannot-tell", KeepaliveEffect{
 			Result: KeepaliveResultSkipped,
 			Reason: "cannot-tell",
