@@ -118,6 +118,40 @@ var _ = ginkgo.Describe("livenessReaper", func() {
 	})
 })
 
+// stubIdleTicker returns a fixed IdleReaperResult.
+type stubIdleTicker struct{ closed []string }
+
+func (s stubIdleTicker) Tick(context.Context) (IdleReaperResult, error) {
+	return IdleReaperResult{Closed: s.closed}, nil
+}
+
+var _ = ginkgo.Describe("IdleCloseReaper", func() {
+	ctx := context.Background()
+
+	// The fifth per-kind fixture SC3(a) requires. It stubs the idle tick rather
+	// than driving the idle decision, because the decision needs a fully
+	// populated Session fake (an earlier attempt panicked at idle_reaper.go:175).
+	ginkgo.It("re-labels each closed id as an idle-close result", func() {
+		reaper := &IdleCloseReaper{Job: stubIdleTicker{closed: []string{"s1", "s2"}}}
+
+		results, err := reaper.Reap(ctx)
+
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(results).To(gomega.Equal([]ReaperResult{
+			{Kind: "idle-close", SessionID: "s1", Closed: true},
+			{Kind: "idle-close", SessionID: "s2", Closed: true},
+		}))
+	})
+
+	ginkgo.It("reports nothing when the idle tick closes nothing", func() {
+		reaper := &IdleCloseReaper{Job: stubIdleTicker{}}
+
+		results, _ := reaper.Reap(ctx)
+
+		gomega.Expect(results).To(gomega.BeEmpty())
+	})
+})
+
 var _ = ginkgo.Describe("StoodDownCloseReaper", func() {
 	ctx := context.Background()
 

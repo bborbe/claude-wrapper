@@ -129,7 +129,29 @@ var _ = ginkgo.Describe("NewKeepaliveAct", func() {
 		gomega.Expect(*sent).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("refuses an empty session id without acting", func() {
+	// ⚠️ A RESUME needs no session id — it opens by name. Measured 2026-11-20:
+	// `due-park-watch` reports `id=<task name>` (SC1), and the old blanket
+	// session-id guard made it fail with "keepalive act needs a session id", so
+	// that procedure could never act on a real due park.
+	ginkgo.It("resumes by name with no session id", func() {
+		run, opened, _ := act()
+
+		err := run(ctx, "resume", LapsedManagerDecision{Verdict: "resume", Vault: "v", Name: "a task"})
+
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(*opened).To(gomega.Equal([]OpenRow{{Kind: OpenKindTask, Vault: "v", Name: "a task"}}))
+	})
+
+	ginkgo.It("refuses a restart with no session id", func() {
+		run, _, sent := act()
+
+		err := run(ctx, "restart", LapsedManagerDecision{Vault: "v", Name: "n"})
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(*sent).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses a resume with no session id and no subject", func() {
 		run, opened, sent := act()
 
 		err := run(ctx, "resume", LapsedManagerDecision{})

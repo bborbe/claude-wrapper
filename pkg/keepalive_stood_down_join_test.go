@@ -53,9 +53,18 @@ var _ = ginkgo.Describe("stood-down candidate join", func() {
 			gomega.Expect(candidates).To(gomega.HaveLen(1))
 		})
 
-		ginkgo.It("refuses a slug with no -- separator", func() {
-			_, err := ParseStoodDownCandidates(ctx, "900\tnotaslug\n")
-			gomega.Expect(err).To(gomega.HaveOccurred())
+		// ⚠️ A bare slug is a LEGACY marker, not a malformed one. Measured
+		// 2026-11-20: the first live tick returned `data-division-documentation`
+		// with no `--`, and the old hard error failed the WHOLE leg (it reported
+		// `result=error` instead of closing anything). An unknown branch is empty
+		// and the join resolves the page by base alone.
+		ginkgo.It("accepts a legacy slug with no -- separator as a base-only candidate", func() {
+			candidates, err := ParseStoodDownCandidates(ctx, "5001797\tdata-division-documentation\n")
+
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(candidates).To(gomega.Equal([]StoodDownCandidate{
+				{Slug: "data-division-documentation", Branch: "", Base: "data-division-documentation"},
+			}))
 		})
 	})
 
