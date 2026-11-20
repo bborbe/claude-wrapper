@@ -240,15 +240,22 @@ type Task struct {
 	Phase           string
 	OperatorFlagged bool
 	Role            string
-	Session         string
-	SessionIDs      []string
-	Goals           []string
-	BlockedBy       []string
-	DeferDate       string
-	DeclaredWait    string
-	ProgressHash    string
-	Met             string
-	Mtime           time.Time
+	// Mode is the row's spawn mode, NORMALISED to `interactive` or `headless`.
+	//
+	// `flagged-rows.py`'s `SPAWN_MODES` admits only those two; a page carrying
+	// anything else (`non_interactive` was live on eight pages) is normalised to
+	// the fleet default and REPORTED rather than copied through, because the spawn
+	// layer accepts two values and a third would be rejected at spawn time.
+	Mode         string
+	Session      string
+	SessionIDs   []string
+	Goals        []string
+	BlockedBy    []string
+	DeferDate    string
+	DeclaredWait string
+	ProgressHash string
+	Met          string
+	Mtime        time.Time
 	// Liveness and Stuck are set by a later enrichment pass. They default to
 	// "none" and false, which is what the digest uses for a caller that has not
 	// enriched them (the fixture calls the digest before enrichment).
@@ -276,6 +283,7 @@ func ParseTask(name, text string, mtime time.Time) (Task, bool) {
 	return Task{
 		Name:            name,
 		Status:          FMScalar(fm, "status"),
+		Mode:            spawnMode(fm),
 		Phase:           FMScalar(fm, "phase"),
 		OperatorFlagged: operatorFlagged(fm),
 		Role:            FMScalar(fm, "role"),
@@ -289,6 +297,20 @@ func ParseTask(name, text string, mtime time.Time) (Task, bool) {
 		Met:             CheckboxCount(text, ""),
 		Mtime:           mtime,
 	}, true
+}
+
+// spawnMode reads the row's spawn mode, normalised to the two the spawn layer accepts.
+//
+// A value outside `interactive` / `headless` is normalised to `interactive` — the
+// fleet default — rather than passed through: the spawn layer refuses a third
+// value, so copying one through would turn a page typo into a failed spawn.
+func spawnMode(fm string) string {
+	switch mode := strings.Trim(FMScalar(fm, "mode"), `'"`); mode {
+	case "headless", "interactive":
+		return mode
+	default:
+		return "interactive"
+	}
 }
 
 // ReadTask reads one task page and its mtime.

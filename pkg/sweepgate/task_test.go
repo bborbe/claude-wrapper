@@ -127,3 +127,25 @@ var _ = ginkgo.Describe("hashes progress and counts checkboxes", func() {
 		gomega.Expect(CheckboxCount("# Task\n", "Success Criteria")).To(gomega.Equal("—"))
 	})
 })
+
+var _ = ginkgo.Describe("spawnMode", func() {
+	ginkgo.It("reads the two values the spawn layer accepts", func() {
+		gomega.Expect(spawnMode("mode: headless\n")).To(gomega.Equal("headless"))
+		gomega.Expect(spawnMode("mode: interactive\n")).To(gomega.Equal("interactive"))
+	})
+
+	ginkgo.It("normalises an absent mode to the fleet default", func() {
+		gomega.Expect(spawnMode("status: in_progress\n")).To(gomega.Equal("interactive"))
+	})
+
+	ginkgo.It("normalises a value the spawn layer would refuse", func() {
+		// `non_interactive` was live on eight pages. Copying it through would turn
+		// a page typo into a failed spawn, because the spawn layer accepts exactly
+		// two values.
+		gomega.Expect(spawnMode("mode: non_interactive\n")).To(gomega.Equal("interactive"))
+	})
+
+	ginkgo.It("strips quotes around the value", func() {
+		gomega.Expect(spawnMode("mode: \"headless\"\n")).To(gomega.Equal("headless"))
+	})
+})
