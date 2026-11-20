@@ -24,6 +24,12 @@ type KeepaliveOpener func(ctx context.Context, row OpenRow) error
 // A session with no reachable pane is the sender's `no-pane` case, not the act's.
 type KeepalivePaneSender func(ctx context.Context, sessionID string, text string) error
 
+// KeepaliveStopper is the no-kill TRIPWIRE: the act must never stop a process, so
+// this seam exists only to be proven absent. Production wires a no-op; the fixture
+// fakes it and asserts ZERO stop calls after a restart. The inverse proof adds a
+// stop call to the restart path and expects the fixture to go red.
+type KeepaliveStopper func(ctx context.Context, sessionID string) error
+
 // NewKeepaliveAct builds the act from TWO seams, because `resume` and `restart`
 // are different routes, not two words for one command.
 //
@@ -43,8 +49,13 @@ type KeepalivePaneSender func(ctx context.Context, sessionID string, text string
 func NewKeepaliveAct(
 	open KeepaliveOpener,
 	restart KeepalivePaneSender,
+	stop KeepaliveStopper,
 	restartCommand func(sessionID string) string,
 ) func(ctx context.Context, verdict string, decision LapsedManagerDecision) error {
+	// ⚠️ The act NEVER calls stop — a restart types the restart command into the
+	// pane and stops nothing. `stop` is a tripwire the fixture asserts is never
+	// called; `_ = stop` keeps it wired without invoking it.
+	_ = stop
 	return func(ctx context.Context, verdict string, decision LapsedManagerDecision) error {
 		if decision.SessionID == "" {
 			return errors.New(ctx, "keepalive act needs a session id")

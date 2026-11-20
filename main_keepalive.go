@@ -158,6 +158,7 @@ func newKeepaliveJob(
 	act := pkg.NewKeepaliveAct(
 		keepaliveOpener(surface),
 		pkg.NewKeepalivePaneSender(tabs, paneResolver, now),
+		nil, // the no-kill tripwire is never called in production
 		func(sessionID string) string { return "/supervisor:restart " + sessionID },
 	)
 	hold := pkg.NewKeepaliveHold(keepaliveScript("session-holds.py"))

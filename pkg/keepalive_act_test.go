@@ -35,9 +35,29 @@ var _ = ginkgo.Describe("NewKeepaliveAct", func() {
 				*sent = append(*sent, restarted{sessionID: sessionID, text: text})
 				return nil
 			},
+			nil, // stop tripwire not observed by these specs
 			func(sessionID string) string { return "/supervisor:restart " + sessionID },
 		), opened, sent
 	}
+
+	// ⚠️ The no-kill row: a restart types the command into the pane and calls NOTHING
+	// that stops a process. The stopper is a tripwire — zero calls after a restart.
+	ginkgo.It("never calls the stop tripwire on a restart", func() {
+		stopped := &[]string{}
+		run := NewKeepaliveAct(
+			func(context.Context, OpenRow) error { return nil },
+			func(context.Context, string, string) error { return nil },
+			func(_ context.Context, sessionID string) error {
+				*stopped = append(*stopped, sessionID)
+				return nil
+			},
+			func(sessionID string) string { return "/supervisor:restart " + sessionID },
+		)
+
+		_ = run(ctx, "restart", LapsedManagerDecision{SessionID: "s1"})
+
+		gomega.Expect(*stopped).To(gomega.BeEmpty())
+	})
 
 	// ⚠️ resume and restart are DIFFERENT routes: resume opens an ABSENT session
 	// through the open surface; restart types into a LIVE session's pane. The old
@@ -120,7 +140,7 @@ var _ = ginkgo.Describe("NewKeepaliveAct", func() {
 	})
 
 	ginkgo.It("refuses a resume wired without an opener", func() {
-		run := NewKeepaliveAct(nil, func(context.Context, string, string) error { return nil }, func(s string) string { return s })
+		run := NewKeepaliveAct(nil, func(context.Context, string, string) error { return nil }, nil, func(s string) string { return s })
 
 		err := run(ctx, "resume", LapsedManagerDecision{SessionID: "s1", Vault: "v", Name: "n"})
 
@@ -128,7 +148,7 @@ var _ = ginkgo.Describe("NewKeepaliveAct", func() {
 	})
 
 	ginkgo.It("refuses a restart wired without a pane sender", func() {
-		run := NewKeepaliveAct(func(context.Context, OpenRow) error { return nil }, nil, func(s string) string { return s })
+		run := NewKeepaliveAct(func(context.Context, OpenRow) error { return nil }, nil, nil, func(s string) string { return s })
 
 		err := run(ctx, "restart", LapsedManagerDecision{SessionID: "s1"})
 
@@ -139,6 +159,7 @@ var _ = ginkgo.Describe("NewKeepaliveAct", func() {
 		run := NewKeepaliveAct(
 			func(context.Context, OpenRow) error { return errors.New(ctx, "vault not configured") },
 			func(context.Context, string, string) error { return nil },
+			nil,
 			func(s string) string { return s },
 		)
 
