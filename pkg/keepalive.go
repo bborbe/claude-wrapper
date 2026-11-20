@@ -42,7 +42,10 @@ const (
 	KeepaliveResultResumed KeepaliveResult = "resumed"
 	// KeepaliveResultRestarted means a lapsed session was restarted in place.
 	KeepaliveResultRestarted KeepaliveResult = "restarted"
-	// KeepaliveResultClosed means a finished session was reaped.
+	// KeepaliveResultClosed is the REAPER's word, not the tick's. It is kept as a
+	// constant because the reaper job's own line format uses it, but it is NOT in
+	// KeepaliveEffects: a keepalive procedure that returned it would claim a close
+	// the ReaperJob then performs a second time.
 	KeepaliveResultClosed KeepaliveResult = "closed"
 	// KeepaliveResultNudged means a watcher was sent a nudge message. It is not
 	// `resumed`: a nudge asks a session to act, and the session may not.
@@ -68,7 +71,6 @@ const (
 var KeepaliveEffects = []KeepaliveResult{
 	KeepaliveResultResumed,
 	KeepaliveResultRestarted,
-	KeepaliveResultClosed,
 	KeepaliveResultNudged,
 	KeepaliveResultKept,
 	KeepaliveResultSkipped,
@@ -95,7 +97,7 @@ func (r KeepaliveResult) Known() bool {
 // `skipped` may name a subject rather than a session.
 func requiresSessionID(result KeepaliveResult) bool {
 	switch result {
-	case KeepaliveResultResumed, KeepaliveResultRestarted, KeepaliveResultNudged, KeepaliveResultClosed:
+	case KeepaliveResultResumed, KeepaliveResultRestarted, KeepaliveResultNudged:
 		return true
 	default:
 		return false
