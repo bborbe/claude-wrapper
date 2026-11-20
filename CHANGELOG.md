@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **`ResolveBranch` ports `flagged-rows.py`'s branch predicate to Go.** Second slice of item 5. The ordered predicate list is a PARTITION — first match wins — so the ORDER is the rule, and the port preserves it with each branch's reason recorded: `unknown` outranks everything (an unanswerable probe must never fold into "not live"), with `degraded` as its one documented exception when the registry proved an owner; `open-manager` fires only on a PROVEN dead chain, never on a nil one; `parked` sits after every LIVE branch and before `resume`, which is what stops a 100% target driving the fleet back into resuming idle workers. ⚠️ `held-owner-live` catches only a row that would otherwise CREATE — `resume` precedes it, so a task with its own absent-but-recorded session resumes and never reaches the hold (a spec pins that ordering). Tri-state inputs are pointers, so nil is distinguishable from false. Change set: `pkg/flagged_branch.go`, `pkg/flagged_branch_test.go`, `CHANGELOG.md`.
+
 ## v0.52.0
 
 - feat: **`sweepgate.Task` carries the row's spawn `Mode`, normalised to what the spawn layer accepts.** First slice of porting `flagged-rows.py` into Go: `FlaggedRow` needs a `mode` field, and `sweepgate.Task` already parses `Name`, `OperatorFlagged`, `Role`, `Session`, `SessionIDs`, `BlockedBy`, `Liveness` and `Mtime`, so this closes one of the three fields the projection was missing (`Vault` is config; `Branch` and `Refused` follow). The value is **normalised** to `interactive` / `headless` rather than copied through — `non_interactive` was live on eight pages, and the spawn layer accepts exactly two values, so copying a third would turn a page typo into a failed spawn. Absent and unrecognised both read `interactive`, the fleet default. Change set: `pkg/sweepgate/task.go`, `pkg/sweepgate/task_test.go`, `CHANGELOG.md`.
