@@ -32,6 +32,10 @@ operator's allow list. The previous binary is kept at `~/.claude/hooks/hook.prev
 roll back with `mv ~/.claude/hooks/hook.prev ~/.claude/hooks/hook` from any terminal.
 `DRY_RUN=1 make install-hook` stops after the smoke gate.
 
+[`docs/hook-guard.md`](docs/hook-guard.md) is the extension guide: what decides a
+command, how to teach the guard a new shape, and the four instruments that prove a
+change without regressing one.
+
 ## MCP
 
 `/mcp` is the client-facing MCP face: an MCP client drives a session through it
