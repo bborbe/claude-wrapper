@@ -1048,8 +1048,69 @@ func startFlaggedTick(
 	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
 		tick.Idle = nudger
 	}
+	// The adopt job runs on the same cadence and reads the same stores: both are
+	// fleet liveness, and row 4 ran every fleet round.
+	go startAdoptTick(ctx, interval, ledger, registry, now)
 	if err := tick.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("flagged tick stopped: %v", err)
+	}
+}
+
+// adoptSelf is the adopter the daemon records on a claim.
+//
+// It is deliberately not a session id: the daemon has no session of its own, and
+// the claim's `manager` field must not name one it is not. A non-session holder
+// reads as a dead holder to `gate-owner-filter.py`, which fails OPEN — the
+// worker's gates route normally until a live manager takes the claim over, the
+// safe direction for an adopter that cannot answer a prompt itself.
+const adoptSelf = "claude-wrapper"
+
+// startAdoptTick adopts the live workers an exited manager left behind, so their
+// gates have one owner. Ported from `adopt-orphans.py` (fleet-round row 4).
+//
+// ⚠️ The stores are the SCRIPT's own: `ownership-claim.py`'s file and lock, and
+// `manager-liveness.py`'s stand-down markers. A second format or a second marker
+// derivation would drift from those writers silently, which is the defect the
+// whole port exists to avoid.
+func startAdoptTick(
+	ctx context.Context,
+	interval time.Duration,
+	ledger pkg.LedgerReader,
+	registry pkg.SessionRegistry,
+	now libtime.CurrentDateTimeGetter,
+) {
+	if interval <= 0 {
+		log.Printf("adopt tick disabled (--adopt-tick-interval=%s)", interval)
+		return
+	}
+	tick := &pkg.AdoptTick{
+		Ledger:   ledger,
+		Registry: registry,
+		Claims:   pkg.NewFileClaimStore("", now),
+		Subjects: pkg.NewFileSubjectReader(
+			expandHome("~/.claude/state/worker-manager"),
+			expandHome("~/.claude/state/sweep-gate"),
+		),
+		Self: adoptSelf,
+	}
+	for {
+		result, err := tick.Run(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			log.Printf("job=adopt action=tick failed: %v", err)
+		case ctx.Err() != nil:
+			return
+		default:
+			// Printed on EVERY round, including a quiet one: a suppressed line
+			// and a round that adopted nothing must not read the same.
+			log.Printf("job=adopt action=tick adopted=%d skipped=%d adopted_sessions=%s",
+				len(result.Adopted), len(result.Skipped), strings.Join(result.Adopted, ","))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
 	}
 }
 

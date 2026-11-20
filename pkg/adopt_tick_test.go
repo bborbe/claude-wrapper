@@ -171,6 +171,19 @@ var _ = ginkgo.Describe("adopt tick run", func() {
 		gomega.Expect(claims.claimed).To(gomega.Equal([]string{"w1->self"}))
 	})
 
+	ginkgo.It("does not re-adopt a worker the daemon itself already holds", func() {
+		// The adopter is live by construction. Without that, the daemon's own
+		// claim reads as a dead holder on the next round and every stranded
+		// worker is re-adopted on every tick, rewriting the store each time.
+		claims := &fakeClaims{holder: map[string]string{"w1": "self"}}
+
+		result, err := newTick(claims, &fakeSubjects{}).Run(ctx)
+
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(result.Adopted).To(gomega.BeEmpty())
+		gomega.Expect(claims.claimed).To(gomega.BeEmpty())
+	})
+
 	ginkgo.It("skips a stood-down subject", func() {
 		claims := &fakeClaims{holder: map[string]string{}}
 		subjects := &fakeSubjects{
