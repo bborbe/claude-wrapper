@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.50.3
 
 - fix: **the headless spawn path now emits `--name <label>`, so a spawned session comes up named after its task instead of a derived `private-personal-<hex>`.** `buildArgs()` built the headless child's argv and never emitted `--name`, so `SpawnOptions.Label` reached only `PolicyContext.Label` and the session registry recorded `nameSource: derived`. The label is the join key a reap or a session-connect resolves a live child by, so a derived name joins to nothing. ⚠️ **The option stays optional:** an empty label emits no `--name` and keeps today's derived name, so a caller that passes none sees no change. Change set: `pkg/supervisor.go`, `pkg/supervisor_test.go`, `CHANGELOG.md`.
 
