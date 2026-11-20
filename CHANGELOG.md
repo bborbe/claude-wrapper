@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.56.0
 
 - feat: **the flagged tick reads the native source; `flagged-rows.py` is no longer executed.** `startFlaggedTick` now builds `NativeFlaggedRowsSource` from the vault lister, the child table and the heartbeat store, so the daemon derives eligibility itself instead of shelling out to the predicate it has just been ported from. The `-flagged-rows-script` flag and its default path are removed with it: a flag nothing reads is a trap, and a deploy that still passes it now fails loudly at startup rather than silently overriding nothing. The exec source stays in `pkg` as the documented cross-repo contract (`docs/eligibility-predicate.md`) and as the reference the port was verified against, until the script itself is deleted by the sibling task that owns that deletion. Change set: `main.go`, `CHANGELOG.md`.
 
