@@ -961,7 +961,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 	ginkgo.It("refuses a tab spawn at the cap without opening a pane", func() {
 		spawner := &fakeSpawner{}
 		caps := &fakeSpawnCaps{workerErr: errors.New("the fleet-wide concurrent-worker limit is reached")}
-		server := &RosterToolServer{Spawner: spawner, Caps: caps}
+		server := withAnswerPath(&RosterToolServer{Spawner: spawner, Caps: caps})
 
 		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleHuman}, "spawner")
 
@@ -974,7 +974,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 	ginkgo.It("refuses a headless spawn at the cap before the child is created", func() {
 		supervisor := &toolSupervisor{}
 		caps := &fakeSpawnCaps{workerErr: errors.New("the fleet-wide concurrent-worker limit is reached")}
-		server := &RosterToolServer{Supervisor: supervisor, Caps: caps}
+		server := withAnswerPath(&RosterToolServer{Supervisor: supervisor, Caps: caps})
 		interactive := false
 
 		_, err := server.spawnLocalTarget(
@@ -1014,7 +1014,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 	ginkgo.It("passes operator_named through from the wire to the worker cap", func() {
 		spawner := &fakeSpawner{}
 		caps := &fakeSpawnCaps{}
-		server := &RosterToolServer{Spawner: spawner, Caps: caps}
+		server := withAnswerPath(&RosterToolServer{Spawner: spawner, Caps: caps})
 
 		_, err := server.spawnAgent(ctx, json.RawMessage(`{"prompt":"x","role":"human","operator_named":true}`), "spawner")
 
@@ -1041,7 +1041,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 	ginkgo.It("refuses a manager spawn at the manager cap without opening a pane", func() {
 		spawner := &fakeSpawner{}
 		caps := &fakeSpawnCaps{managerErr: errors.New(ManagerFleetFull + ": 1 live managers")}
-		server := &RosterToolServer{Spawner: spawner, Caps: caps}
+		server := withAnswerPath(&RosterToolServer{Spawner: spawner, Caps: caps})
 
 		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleManager}, "spawner")
 
@@ -1054,7 +1054,7 @@ var _ = ginkgo.Describe("RosterToolServer spawn caps", func() {
 	ginkgo.It("does not open a pane when the start rate refuses", func() {
 		spawner := &fakeSpawner{}
 		caps := &fakeSpawnCaps{startErr: errors.New("refused rather than parked")}
-		server := &RosterToolServer{Spawner: spawner, Caps: caps}
+		server := withAnswerPath(&RosterToolServer{Spawner: spawner, Caps: caps})
 
 		_, err := server.spawnLocalTarget(ctx, spawnAgentArgs{Prompt: "x", Role: RoleHuman}, "spawner")
 
@@ -1135,10 +1135,10 @@ var _ = ginkgo.Describe("spawn caps after review", func() {
 		// The role is `agent` because a manager is never headless (role-mode matrix
 		// Rule 2, enforced in `startHeadless`); the property under test is that the row
 		// carries the REQUEST's role and its resumed_from, not which role it is.
-		server := &RosterToolServer{
+		server := withAnswerPath(&RosterToolServer{
 			Supervisor: &toolSupervisor{live: make(chan Event, 64)},
 			Ledger:     ledger,
-		}
+		})
 
 		_, err := server.spawnAgent(ctx, json.RawMessage(
 			`{"interactive":false,"cwd":"/tmp","role":"agent","prompt":"continue",`+

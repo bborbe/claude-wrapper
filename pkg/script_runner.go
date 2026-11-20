@@ -56,9 +56,12 @@ func (r ExecScriptRunner) RunScript(
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	// #nosec G204 -- the name and script path are daemon flags, and every
-	// caller-supplied value (a vault path, a page path, a subject) is one argv
-	// element, never interpolated into a shell.
+	// #nosec G204,G702 -- the name and script path are daemon flags, and every
+	// caller-supplied value (a vault path, a page path, a subject, a session id)
+	// is one argv element, never interpolated into a shell. G702's taint analysis
+	// traces a session id from the MCP request header down to this argv; argv is
+	// the safe sink, and the answer-path probe additionally refuses an id that is
+	// not a bare filename before it runs.
 	cmd := exec.CommandContext(runCtx, name, args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

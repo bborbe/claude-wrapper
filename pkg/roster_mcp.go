@@ -158,6 +158,16 @@ type RosterToolServer struct {
 	// pkg.OpenSurface POST /api/1.0/open calls, so the two surfaces cannot
 	// drift. Nil means open_rows refuses with "open_rows is not wired".
 	Open *OpenSurface
+	// Scripts runs claude-supervisor's answer-path probe before a headless
+	// spawn_agent creates a child. A headless worker's permission gates park with
+	// the session that spawned it and no other session can release them, so a
+	// spawner whose probe reads non-OK opens a worker that dies on the 15-minute
+	// deny. Nil refuses the spawn rather than opening it unguarded.
+	Scripts ScriptRunner
+	// AnswerPathScript is the probe's path (DefaultAnswerPathCheckScript). Empty
+	// refuses a headless spawn for the same reason Scripts nil does: the guard
+	// never fails open.
+	AnswerPathScript string
 }
 
 // currentDateTime returns the clock the pane polls run on.
@@ -382,7 +392,7 @@ func (s *RosterToolServer) spawnLocalAgent(
 			"interactive spawn is not this slice's surface — a tab worker is spawned and steered by the tab-spawn slice",
 		)
 	}
-	session, mode, modeSource, err := s.startHeadless(ctx, body, sessionID, resolution)
+	session, mode, modeSource, err := s.startHeadless(ctx, body, sessionID, resolution, true)
 	if err != nil {
 		return "", err
 	}
