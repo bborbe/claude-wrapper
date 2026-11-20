@@ -90,6 +90,23 @@ var _ = ginkgo.Describe("buildArgs", func() {
 		gomega.Expect(indexOf(args, "--model") + 1).To(gomega.Equal(indexOf(args, "opus")))
 		gomega.Expect(indexOf(args, "--permission-mode") + 1).To(gomega.Equal(indexOf(args, "acceptEdits")))
 	})
+
+	// The label is the session's display name and the join key a reap resolves a
+	// live child by. Without --name the CLI derives a name that joins to nothing,
+	// which is the defect this pins.
+	ginkgo.It("passes the label as the session name", func() {
+		args := buildArgs(id, SpawnOptions{Label: "A Headless Spawn Ignores Its Label"}, "/tmp/generated.json")
+		gomega.Expect(args).To(gomega.ContainElement("--name"))
+		gomega.Expect(indexOf(args, "--name") + 1).To(
+			gomega.Equal(indexOf(args, "A Headless Spawn Ignores Its Label")))
+	})
+
+	// The option stays optional: an empty label must keep today's derived name,
+	// not emit a bare --name that swallows the next flag.
+	ginkgo.It("omits --name when the label is empty", func() {
+		args := buildArgs(id, SpawnOptions{}, "/tmp/generated.json")
+		gomega.Expect(args).NotTo(gomega.ContainElement("--name"))
+	})
 })
 
 var _ = ginkgo.Describe("childEnv", func() {

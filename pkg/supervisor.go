@@ -1119,6 +1119,13 @@ func buildArgs(id string, options SpawnOptions, mcpConfig string) []string {
 	if options.Model != "" {
 		args = append(args, "--model", options.Model)
 	}
+	// The label is the session's display name and the join key a reap or a
+	// session-connect resolves a live child by. Without --name the CLI derives a
+	// name (e.g. private-personal-a3), which joins to nothing. An empty label
+	// keeps that derived name, so the option stays optional.
+	if options.Label != "" {
+		args = append(args, "--name", options.Label)
+	}
 	if options.PermissionPrompt != "" {
 		args = append(args, "--permission-prompts", options.PermissionPrompt)
 	}
