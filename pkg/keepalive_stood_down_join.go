@@ -54,8 +54,17 @@ func ParseStoodDownCandidates(ctx context.Context, output string) ([]StoodDownCa
 			continue
 		}
 		branch, base, split := strings.Cut(slug, "--")
-		if !split || branch == "" || base == "" {
-			return nil, errors.Errorf(ctx, "stood-down row is not <branch>--<base>: %q", slug)
+		if !split {
+			// ⚠️ A BARE slug is a LEGACY marker (manager-liveness.py calls it
+			// "marker present (legacy record)"): the branch prefix arrived later.
+			// Measured 2026-11-20 — the first live tick returned a hard error for
+			// `data-division-documentation`, which failed the whole leg and left
+			// it reporting `error` instead of closing anything. An unknown branch
+			// is empty here, and the join resolves the page by base alone.
+			branch, base = "", slug
+		}
+		if base == "" {
+			continue
 		}
 		if branch == "task" {
 			continue

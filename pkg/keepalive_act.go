@@ -57,11 +57,12 @@ func NewKeepaliveAct(
 	// called; `_ = stop` keeps it wired without invoking it.
 	_ = stop
 	return func(ctx context.Context, verdict string, decision LapsedManagerDecision) error {
-		if decision.SessionID == "" {
-			return errors.New(ctx, "keepalive act needs a session id")
-		}
 		switch verdict {
 		case "resume":
+			// ⚠️ A RESUME needs no session id: it opens by NAME through the open
+			// surface. Requiring one made `due-park-watch` impossible to act on —
+			// SC1 specifies `id=<task name>` for that procedure, and the first
+			// live tick failed with "keepalive act needs a session id" (2026-11-20).
 			if open == nil {
 				return errors.New(ctx, "keepalive act has no opener")
 			}
@@ -79,6 +80,10 @@ func NewKeepaliveAct(
 				Name:  decision.Name,
 			})
 		case "restart":
+			// A RESTART types into a LIVE session's own pane, so it does need the id.
+			if decision.SessionID == "" {
+				return errors.New(ctx, "keepalive restart needs a session id")
+			}
 			if restart == nil {
 				return errors.New(ctx, "keepalive act has no pane sender")
 			}

@@ -10,12 +10,20 @@ import (
 	"github.com/bborbe/errors"
 )
 
+// IdleTicker is the one method IdleCloseReaper needs from IdleReaperJob. Taking
+// the interface (which *IdleReaperJob satisfies unchanged) is what makes the
+// per-kind `idle-close` fixture possible without a fully-populated Session fake —
+// the fixture stubs the tick instead of driving the idle decision.
+type IdleTicker interface {
+	Tick(ctx context.Context) (IdleReaperResult, error)
+}
+
 // IdleCloseReaper closes headless children that have rested idle past the floor —
 // the existing `IdleReaperJob.Tick`, adapted UNCHANGED. The merge is an adapter,
 // not a rewrite: the idle logic (the floor, the skip reasons, the Stop) stays in
 // IdleReaperJob; this only re-labels its result as a `ReaperResult`.
 type IdleCloseReaper struct {
-	Job *IdleReaperJob
+	Job IdleTicker
 }
 
 // Kind is the `action=` value.

@@ -48,13 +48,21 @@ func pagesForVault(
 	logf func(line string),
 ) []KeepalivePage {
 	dir, err := folderFor(ctx, vault)
-	if err != nil || dir == "" {
-		logListerError(logf, err)
+	if err != nil {
+		logListerError(logf, vault, err)
+		return nil
+	}
+	if dir == "" {
+		// The vault does not configure this folder (resolve-folders' own
+		// `UNKNOWN … does not configure …`). That is a real answer, not a
+		// failure — logging it as `result=error` made nine vaults read as a
+		// broken tick on the first live run (2026-11-20).
+		logListerNone(logf, vault)
 		return nil
 	}
 	entries, readErr := os.ReadDir(dir)
 	if readErr != nil {
-		logListerError(logf, readErr)
+		logListerError(logf, vault, readErr)
 		return nil
 	}
 	return readPagesFromDir(ctx, vault, dir, entries)
@@ -88,13 +96,19 @@ func readPagesFromDir(
 }
 
 // logListerError logs a per-vault listing failure (nil logf is a no-op).
-func logListerError(logf func(line string), err error) {
+func logListerError(logf func(line string), vault Vault, err error) {
 	if logf == nil {
 		return
 	}
-	reason := "empty folder"
-	if err != nil {
-		reason = err.Error()
+	logf(JobLine(KeepaliveJobName, "lister", "result", "error",
+		"reason", err.Error(), "vault", vault.Name))
+}
+
+// logListerNone logs a vault that configures no such folder — a real answer,
+// reported as `none` rather than `error`.
+func logListerNone(logf func(line string), vault Vault) {
+	if logf == nil {
+		return
 	}
-	logf(JobLine(KeepaliveJobName, "lister", "result", "error", "reason", reason))
+	logf(JobLine(KeepaliveJobName, "lister", "result", "none", "vault", vault.Name))
 }
