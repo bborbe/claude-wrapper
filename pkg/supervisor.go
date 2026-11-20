@@ -197,8 +197,9 @@ func NewSupervisorWithPolicy(
 	selfURL string,
 	store SessionStore,
 	policy SupervisorPolicy,
+	opts ...SupervisorOption,
 ) Supervisor {
-	return &supervisor{
+	s := &supervisor{
 		ctx:       ctx,
 		claudeBin: claudeBin,
 		now:       now,
@@ -210,6 +211,10 @@ func NewSupervisorWithPolicy(
 		policy:    policy,
 		ledger:    policy.Ledger,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type supervisor struct {
@@ -238,6 +243,10 @@ type supervisor struct {
 	sessions map[string]*child
 	// starting holds the ids of resume spawns in flight; see reserve.
 	starting map[string]struct{}
+	// liveness answers "is this session live right now" for a resume's target.
+	// Nil means the foreign-live check in reserve is skipped, which is the
+	// correct degradation for a supervisor built without a probe.
+	liveness Liveness
 	pending  Pending
 	// policy is the in-process approval policy; the zero value leaves every park
 	// for the manager.

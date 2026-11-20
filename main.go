@@ -317,6 +317,14 @@ func newSupervisor(
 			TaskResolver:      taskResolver,
 			OpenCards:         openCardsFromURL(attentionURL),
 		},
+		// The resume guard needs to know whether a target it does not hold is
+		// nevertheless live. Same registry + heartbeat union the roster renders
+		// from, built here because the supervisor is constructed before the fleet
+		// faces; both are stateless readers over the same two stores.
+		pkg.WithLiveness(pkg.NewRegistryLiveness(
+			pkg.NewSessionRegistry(""),
+			pkg.NewHeartbeatClient(attentionURL, nil),
+		)),
 	)
 	// Installed HERE, before any child can be spawned or adopted: the recorder is
 	// copied into each child at construction, so installing it later would leave

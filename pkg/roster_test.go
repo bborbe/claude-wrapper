@@ -236,6 +236,66 @@ var _ = ginkgo.Describe("Roster", func() {
 		gomega.Expect(rows[0].Rehydrated).To(gomega.BeTrue())
 	})
 
+	ginkgo.It("adds an unlisted row for a live session neither this process nor the ledger knows", func() {
+		// The defect this closes: an ordinary interactive tab the daemon did not
+		// spawn and the ledger has no record of. It is live, and before this the
+		// roster answered a confident short list — which a manager reads as
+		// "nothing is running".
+		supervisor := &rosterSupervisor{sessions: []Session{
+			{ID: "own-session", Cwd: "/tmp", StartedAt: time.Now()},
+		}}
+		ledger := &rosterLedger{rows: []LedgerRow{
+			{SessionID: "ledger-live", AgentID: "agent_1", Label: "ledger"},
+		}}
+		liveness := &rosterLiveness{live: map[string]struct{}{
+			"own-session": {},
+			"ledger-live": {},
+			"tab-only":    {},
+		}}
+
+		rows, err := NewRoster(supervisor, ledger, liveness, nil, nil).List(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(3))
+
+		var unlisted []AgentRow
+		for _, row := range rows {
+			if row.Unlisted {
+				unlisted = append(unlisted, row)
+			}
+		}
+		gomega.Expect(unlisted).To(gomega.HaveLen(1))
+		gomega.Expect(unlisted[0].SessionID).To(gomega.Equal("tab-only"))
+		gomega.Expect(unlisted[0].AgentID).To(gomega.Equal("tab-only"))
+		gomega.Expect(unlisted[0].UnlistedReason).NotTo(gomega.BeEmpty())
+	})
+
+	ginkgo.It("does not name a session that is not live as unlisted", func() {
+		// The control for SC1: a blanket "the roster may be incomplete" banner
+		// would pass the positive case above and fail this one.
+		ledger := &rosterLedger{rows: []LedgerRow{}}
+		liveness := &rosterLiveness{live: map[string]struct{}{}}
+
+		rows, err := NewRoster(&rosterSupervisor{}, ledger, liveness, nil, nil).List(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("adds no unlisted row when the liveness probe could not run", func() {
+		// A nil set with a nil error means the probe could not run. It must never
+		// be rendered as "nothing is unlisted" — here the ledger read fails first,
+		// so the roster degrades to this process's own rows and says so in the log.
+		supervisor := &rosterSupervisor{sessions: []Session{
+			{ID: "own-session", Cwd: "/tmp", StartedAt: time.Now()},
+		}}
+		liveness := &rosterLiveness{live: nil}
+
+		rows, err := NewRoster(supervisor, &rosterLedger{rows: []LedgerRow{}}, liveness, nil, nil).List(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].SessionID).To(gomega.Equal("own-session"))
+		gomega.Expect(rows[0].Unlisted).To(gomega.BeFalse())
+	})
+
 	ginkgo.It("keeps its own row when the ledger names the same session", func() {
 		supervisor := &rosterSupervisor{sessions: []Session{
 			{ID: "shared", Cwd: "/tmp", StartedAt: time.Now()},
