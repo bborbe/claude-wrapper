@@ -184,7 +184,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget mode resolution", fun
 	})
 
 	server := func(sources SpawnModeSources) *RosterToolServer {
-		return &RosterToolServer{
+		return withAnswerPath(&RosterToolServer{
 			Spawner:    spawner,
 			Supervisor: supervisor,
 			Ledger:     ledger,
@@ -192,7 +192,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnLocalTarget mode resolution", fun
 			Vaults: &fakeVaults{vaults: []Vault{{
 				Name: "v1", Path: vaultDir, ClaudeScript: "/scripts/cc-v1",
 			}}},
-		}
+		})
 	}
 	decode := func(response string) map[string]any {
 		var body map[string]any

@@ -34,11 +34,11 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume", func() {
 		// The live channel is load-bearing: a resume now carries an opening turn, and
 		// the fake supervisor's Send emits on `live` — a nil one blocks forever.
 		supervisor = &toolSupervisor{live: make(chan Event, 64)}
-		server = &RosterToolServer{Supervisor: supervisor, Spawner: &fakeSpawner{}}
+		server = withAnswerPath(&RosterToolServer{Supervisor: supervisor, Spawner: &fakeSpawner{}})
 	})
 
 	spawn := func(args string) (string, error) {
-		return server.spawnAgent(ctx, json.RawMessage(args), "")
+		return server.spawnAgent(ctx, json.RawMessage(args), "test-session")
 	}
 
 	ginkgo.It("forwards a session id to a headless spawn, so the child resumes it", func() {
@@ -132,7 +132,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume guard", func() {
 		// The production call carries a `prompt`, so the fake supervisor must have a
 		// live channel to emit on — a nil one blocks Send forever rather than failing.
 		supervisor = &toolSupervisor{live: make(chan Event, 64)}
-		server = &RosterToolServer{
+		server = withAnswerPath(&RosterToolServer{
 			Supervisor: supervisor,
 			Spawner:    &fakeSpawner{},
 			// WorkerLauncher is load-bearing only for the vault-named spec: a spawn
@@ -143,7 +143,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume guard", func() {
 				Path:           dir,
 				WorkerLauncher: "/bin/true",
 			}}},
-		}
+		})
 
 		logs = &bytes.Buffer{}
 		previous := log.Writer()
@@ -165,7 +165,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent resume guard", func() {
 	}
 
 	spawn := func(args string) (string, error) {
-		return server.spawnAgent(ctx, json.RawMessage(args), "")
+		return server.spawnAgent(ctx, json.RawMessage(args), "test-session")
 	}
 
 	// The production shape: no `task`, no `vault`, an explicit `cwd`.

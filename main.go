@@ -650,12 +650,7 @@ func startFleetFaces(
 	tabs := pkg.NewTabClient("")
 	vaults := pkg.NewVaultCLILister()
 	tabSpawner := pkg.NewTabSpawner(
-		tabs,
-		registry,
-		pkg.NewRoleMapReader(""),
-		vaults,
-		ledger,
-		now,
+		tabs, registry, pkg.NewRoleMapReader(""), vaults, ledger, now,
 		// No exit recorder: the daemon ships no copy of the script, and an empty
 		// path omits the hook rather than naming one that does not exist.
 		"",
@@ -693,6 +688,9 @@ func startFleetFaces(
 		Locks: locks,
 		// The append-only switch history; without it every reply says `recorded: false`.
 		PermissionModeLog: pkg.NewPermissionModeLog("", now),
+		// Answer-path guard on the live spawn path: spawn_agent refuses a headless
+		// spawn from a session whose probe reads non-OK (its parks would die).
+		Scripts: pkg.ExecScriptRunner{}, AnswerPathScript: openPaths.answerPath,
 	}
 	// Mounted before the MCP face so open_rows is wired when it starts serving;
 	// the executor is shared with the flagged tick so both route one way.

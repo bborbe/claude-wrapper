@@ -32,13 +32,13 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent headless spawn permission m
 		// Live channel required: the resume-shipping case carries an opening turn, and
 		// the fake supervisor's Send emits on `live` — a nil one blocks forever.
 		supervisor = &toolSupervisor{live: make(chan Event, 64)}
-		server = &RosterToolServer{Supervisor: supervisor, Spawner: &fakeSpawner{}}
+		server = withAnswerPath(&RosterToolServer{Supervisor: supervisor, Spawner: &fakeSpawner{}})
 	})
 
 	// spawn calls the tool and returns the decoded reply, so a case can read the keys
 	// the caller actually sees rather than a value the test recomputed.
 	spawn := func(args string) map[string]string {
-		reply, err := server.spawnAgent(ctx, json.RawMessage(args), "")
+		reply, err := server.spawnAgent(ctx, json.RawMessage(args), "test-session")
 		gomega.Expect(err).To(gomega.BeNil())
 		var decoded map[string]string
 		gomega.Expect(json.Unmarshal([]byte(reply), &decoded)).To(gomega.Succeed())
@@ -89,7 +89,7 @@ var _ = ginkgo.Describe("RosterToolServer.spawnAgent headless spawn permission m
 
 	ginkgo.It("keeps the tab refusal for shipping", func() {
 		_, err := server.spawnAgent(ctx,
-			json.RawMessage(`{"shipping":true,"interactive":true,"cwd":"/tmp","prompt":"hi","role":"human"}`), "")
+			json.RawMessage(`{"shipping":true,"interactive":true,"cwd":"/tmp","prompt":"hi","role":"human"}`), "test-session")
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(err.Error()).To(gomega.ContainSubstring("needs the server to set the worker"))
 		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
