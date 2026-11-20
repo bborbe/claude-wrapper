@@ -21,7 +21,7 @@ import "context"
 func NewTopiclessGoalManagerProcedure(
 	decide func(ctx context.Context) (LapsedManagerDecision, error),
 	claim func(ctx context.Context, sessionID string) (bool, error),
-	act func(ctx context.Context, verdict string, sessionID string) error,
+	act func(ctx context.Context, verdict string, decision LapsedManagerDecision) error,
 ) KeepaliveProcedure {
 	return &LapsedManagerProcedure{
 		Action: "topicless-goal-manager",

@@ -102,6 +102,7 @@ var _ = ginkgo.Describe("keepalive output parsers", func() {
 			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 			gomega.Expect(decisions).To(gomega.Equal([]LapsedManagerDecision{{
 				Verdict:   "resume",
+				Name:      "task-one",
 				SessionID: "abc123",
 			}}))
 		})

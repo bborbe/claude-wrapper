@@ -15,73 +15,134 @@ import (
 var _ = ginkgo.Describe("NewKeepaliveAct", func() {
 	ctx := context.Background()
 
-	type sent struct{ sessionID, text string }
+	type restarted struct{ sessionID, text string }
 
-	act := func(sendErr error) (func(context.Context, string, string) error, *[]sent) {
-		sentTo := &[]sent{}
+	// act wires both seams to recorders, so a test asserts the exact call each
+	// verdict makes — an OpenRow for resume, a pane send for restart.
+	act := func() (
+		func(context.Context, string, LapsedManagerDecision) error,
+		*[]OpenRow,
+		*[]restarted,
+	) {
+		opened := &[]OpenRow{}
+		sent := &[]restarted{}
 		return NewKeepaliveAct(
-			func(_ context.Context, sessionID, text string) error {
-				*sentTo = append(*sentTo, sent{sessionID: sessionID, text: text})
-				return sendErr
+			func(_ context.Context, row OpenRow) error {
+				*opened = append(*opened, row)
+				return nil
 			},
-			func(sessionID string) string { return "resume " + sessionID },
-			func(sessionID string) string { return "restart " + sessionID },
-		), sentTo
+			func(_ context.Context, sessionID, text string) error {
+				*sent = append(*sent, restarted{sessionID: sessionID, text: text})
+				return nil
+			},
+			func(sessionID string) string { return "/supervisor:restart " + sessionID },
+		), opened, sent
 	}
 
-	// ⚠️ The two commands are not interchangeable: a restart re-drives a live
-	// session, a resume brings back a dead one. Sending the wrong one opens a
-	// second session or types into nothing.
-	ginkgo.It("types the resume command for a resume verdict", func() {
-		run, sentTo := act(nil)
+	// ⚠️ resume and restart are DIFFERENT routes: resume opens an ABSENT session
+	// through the open surface; restart types into a LIVE session's pane. The old
+	// act sent both through Supervisor.Send, which reaches neither.
+	ginkgo.It("opens the row for a resume verdict, deriving the kind from the branch", func() {
+		run, opened, sent := act()
 
-		err := run(ctx, "resume", "s1")
-
-		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-		gomega.Expect(*sentTo).To(gomega.Equal([]sent{{sessionID: "s1", text: "resume s1"}}))
-	})
-
-	ginkgo.It("types the restart command for a restart verdict", func() {
-		run, sentTo := act(nil)
-
-		err := run(ctx, "restart", "s1")
+		err := run(ctx, "resume", LapsedManagerDecision{
+			SessionID: "s1", Vault: "private-personal", Name: "my-topic", Branch: "topic",
+		})
 
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-		gomega.Expect(*sentTo).To(gomega.Equal([]sent{{sessionID: "s1", text: "restart s1"}}))
+		gomega.Expect(*opened).To(gomega.Equal([]OpenRow{{
+			Kind: OpenKindTopic, Vault: "private-personal", Name: "my-topic",
+		}}))
+		gomega.Expect(*sent).To(gomega.BeEmpty())
 	})
 
-	// A word this act does not know is drift, and guessing would type the wrong
-	// command into a real session.
-	ginkgo.It("refuses an unknown verdict without typing anything", func() {
-		run, sentTo := act(nil)
+	ginkgo.It("derives OpenKindGoal for a goal branch", func() {
+		run, opened, _ := act()
 
-		err := run(ctx, "leave", "s1")
+		err := run(ctx, "resume", LapsedManagerDecision{
+			SessionID: "s1", Vault: "v", Name: "g", Branch: "goal",
+		})
+
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect((*opened)[0].Kind).To(gomega.Equal(OpenKindGoal))
+	})
+
+	ginkgo.It("derives OpenKindTask for a non-topic, non-goal branch", func() {
+		run, opened, _ := act()
+
+		err := run(ctx, "resume", LapsedManagerDecision{
+			SessionID: "s1", Vault: "v", Name: "t", Branch: "",
+		})
+
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect((*opened)[0].Kind).To(gomega.Equal(OpenKindTask))
+	})
+
+	ginkgo.It("types the restart command into the pane for a restart verdict", func() {
+		run, opened, sent := act()
+
+		err := run(ctx, "restart", LapsedManagerDecision{SessionID: "s1"})
+
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(*sent).To(gomega.Equal([]restarted{{sessionID: "s1", text: "/supervisor:restart s1"}}))
+		gomega.Expect(*opened).To(gomega.BeEmpty())
+	})
+
+	// A resume that dropped its subject cannot open by name — refuse rather than
+	// open an empty row.
+	ginkgo.It("refuses a resume with no subject without opening anything", func() {
+		run, opened, _ := act()
+
+		err := run(ctx, "resume", LapsedManagerDecision{SessionID: "s1"})
 
 		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(*sentTo).To(gomega.BeEmpty())
+		gomega.Expect(*opened).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("refuses an empty session id without typing anything", func() {
-		run, sentTo := act(nil)
+	ginkgo.It("refuses an unknown verdict without acting", func() {
+		run, opened, sent := act()
 
-		err := run(ctx, "resume", "")
+		err := run(ctx, "leave", LapsedManagerDecision{SessionID: "s1"})
 
 		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(*sentTo).To(gomega.BeEmpty())
+		gomega.Expect(*opened).To(gomega.BeEmpty())
+		gomega.Expect(*sent).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("surfaces a send failure", func() {
-		run, _ := act(errors.New(ctx, "session gone"))
+	ginkgo.It("refuses an empty session id without acting", func() {
+		run, opened, sent := act()
 
-		err := run(ctx, "resume", "s1")
+		err := run(ctx, "resume", LapsedManagerDecision{})
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(*opened).To(gomega.BeEmpty())
+		gomega.Expect(*sent).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("refuses a resume wired without an opener", func() {
+		run := NewKeepaliveAct(nil, func(context.Context, string, string) error { return nil }, func(s string) string { return s })
+
+		err := run(ctx, "resume", LapsedManagerDecision{SessionID: "s1", Vault: "v", Name: "n"})
 
 		gomega.Expect(err).To(gomega.HaveOccurred())
 	})
 
-	ginkgo.It("refuses an act wired without a sender", func() {
-		run := NewKeepaliveAct(nil, nil, nil)
+	ginkgo.It("refuses a restart wired without a pane sender", func() {
+		run := NewKeepaliveAct(func(context.Context, OpenRow) error { return nil }, nil, func(s string) string { return s })
 
-		err := run(ctx, "resume", "s1")
+		err := run(ctx, "restart", LapsedManagerDecision{SessionID: "s1"})
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
+	})
+
+	ginkgo.It("surfaces an opener failure", func() {
+		run := NewKeepaliveAct(
+			func(context.Context, OpenRow) error { return errors.New(ctx, "vault not configured") },
+			func(context.Context, string, string) error { return nil },
+			func(s string) string { return s },
+		)
+
+		err := run(ctx, "resume", LapsedManagerDecision{SessionID: "s1", Vault: "v", Name: "n"})
 
 		gomega.Expect(err).To(gomega.HaveOccurred())
 	})

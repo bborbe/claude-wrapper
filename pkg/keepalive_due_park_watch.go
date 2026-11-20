@@ -31,8 +31,11 @@ type DueParkWatchProcedure struct {
 	// line — and the act is `/supervisor:open --task "<name>"`, which takes a name.
 	// Naming a session here would make the act open the wrong thing.
 	DueTask func(ctx context.Context) (task string, due bool, err error)
-	// Resume brings the task's parked session back.
-	Resume KeepaliveResume
+	// Resume opens the task BY NAME through the open surface (`OpenRow{Kind: task,
+	// Vault, Name}` — the vault resolved by first hit across the filtered vault
+	// list). It takes the TASK, not a session id: the watch names a task, and the
+	// resume opens that task so a fresh session picks it up.
+	Resume func(ctx context.Context, task string) error
 }
 
 // Name is the `action=` value this procedure writes.

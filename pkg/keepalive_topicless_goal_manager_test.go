@@ -23,8 +23,8 @@ var _ = ginkgo.Describe("NewTopiclessGoalManagerProcedure", func() {
 		procedure := NewTopiclessGoalManagerProcedure(
 			func(context.Context) (LapsedManagerDecision, error) { return decision, nil },
 			func(context.Context, string) (bool, error) { return claimGranted, nil },
-			func(_ context.Context, verdict, sessionID string) error {
-				*acts = append(*acts, verdict+" "+sessionID)
+			func(_ context.Context, verdict string, decision LapsedManagerDecision) error {
+				*acts = append(*acts, verdict+" "+decision.SessionID)
 				return nil
 			},
 		)

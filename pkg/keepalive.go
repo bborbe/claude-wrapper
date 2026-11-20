@@ -136,6 +136,12 @@ type KeepaliveProcedure interface {
 
 // KeepaliveJob runs the procedures as one tick inside the daemon.
 type KeepaliveJob struct {
+	// PreSteps run BEFORE the procedures each tick — the pending-record drain and the
+	// once-per-tick pane join. ⚠️ **A pre-step failure is logged as `result=error` and
+	// the procedures STILL run:** a failed drain leaves its entries on disk for next
+	// tick, and a failed pane join only degrades restart/nudge to no-pane/undelivered.
+	// A pre-step never aborts the tick.
+	PreSteps []func(ctx context.Context) error
 	// Procedures are the eight acts. Order affects only the log's readability:
 	// no procedure depends on another's effect in the same tick, which is why a
 	// failing one does not stop the rest.
@@ -162,6 +168,15 @@ func (j *KeepaliveJob) Run(ctx context.Context) error {
 // being resumed, because that would turn one broken store into a fleet-wide
 // outage — the exact failure this port exists to remove.
 func (j *KeepaliveJob) TickAndLog(ctx context.Context) {
+	for _, step := range j.PreSteps {
+		if step == nil {
+			continue
+		}
+		if err := step(ctx); err != nil {
+			// Logged and CONTINUED: a failed drain or pane join must not stop the acts.
+			j.logf(JobLine(KeepaliveJobName, "pre-step", "result", "error", "reason", err.Error()))
+		}
+	}
 	for _, procedure := range j.Procedures {
 		if procedure == nil {
 			continue
@@ -210,6 +225,17 @@ func (j *KeepaliveJob) runOne(ctx context.Context, procedure KeepaliveProcedure)
 func (j *KeepaliveJob) Tick(ctx context.Context) ([]KeepaliveEffect, error) {
 	if len(j.Procedures) == 0 {
 		return nil, errors.New(ctx, "keepalive has no procedures configured")
+	}
+	// Pre-steps run first. Tick is the strict (test / fault-injection) form, so a
+	// pre-step failure is returned rather than swallowed; the daemon path
+	// (TickAndLog) logs it and continues.
+	for _, step := range j.PreSteps {
+		if step == nil {
+			continue
+		}
+		if err := step(ctx); err != nil {
+			return nil, errors.Wrap(ctx, err, "keepalive pre-step failed")
+		}
 	}
 	effects := make([]KeepaliveEffect, 0, len(j.Procedures))
 	for _, procedure := range j.Procedures {

@@ -37,8 +37,11 @@ type ParkNudge struct {
 type ParkNudgeProcedure struct {
 	// Nudges reads the script's NUDGE lines.
 	Nudges func(ctx context.Context) ([]ParkNudge, error)
-	// Send delivers one nudge to the named session.
-	Send func(ctx context.Context, name string, message string) error
+	// Send delivers one nudge to the named SESSION, through the pane route
+	// (`KeepalivePaneSender`/`SendWhenReady`) — a nudged watcher is a TAB, so
+	// `Supervisor.Send` would refuse it. It takes the session id, not the roster
+	// name, because the name→pane join is not the identity; the session id is.
+	Send func(ctx context.Context, sessionID string, message string) error
 }
 
 // Name is the `action=` value this procedure writes.
@@ -63,16 +66,10 @@ func (p *ParkNudgeProcedure) Run(ctx context.Context) (KeepaliveEffect, error) {
 	if nudge.SessionID == "" {
 		return KeepaliveEffect{}, errors.New(ctx, "park nudge names no session")
 	}
-	if nudge.Name == "" {
-		// A session with no roster name (headless, pane-less) cannot be addressed.
-		// The script's own ledger counts it, so it is reported rather than retried.
-		return KeepaliveEffect{
-			Result:    KeepaliveResultSkipped,
-			SessionID: nudge.SessionID,
-			Reason:    "undelivered",
-		}, nil
-	}
-	if sendErr := p.Send(ctx, nudge.Name, nudge.Message); sendErr != nil {
+	// A missing pane (the pane sender's ErrKeepaliveNoPane) or a send failure is
+	// `skipped reason=undelivered`, never an error — the script's ledger already
+	// counts the attempt, so retrying would not re-select it.
+	if sendErr := p.Send(ctx, nudge.SessionID, nudge.Message); sendErr != nil {
 		return KeepaliveEffect{
 			Result:    KeepaliveResultSkipped,
 			SessionID: nudge.SessionID,

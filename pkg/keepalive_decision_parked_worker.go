@@ -6,8 +6,10 @@ package pkg
 
 import (
 	"context"
+	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 )
 
 // DecisionParkedWorkerProcedure resumes a worker whose parked wait has cleared.
@@ -25,10 +27,16 @@ import (
 type DecisionParkedWorkerProcedure struct {
 	// Decide runs the script and returns the row it wants acted on.
 	Decide func(ctx context.Context) (LapsedManagerDecision, error)
-	// Act resumes the session. The verdict is passed through so the act can
-	// distinguish a cleared approval (`a`) from a cleared `blocked_by` (`d`) if it
-	// ever needs to.
-	Act func(ctx context.Context, verdict string, sessionID string) error
+	// Act resumes the session. It receives the whole decision so the resume path
+	// has the subject (vault, task name) the open surface opens by. The verdict is
+	// passed through so the act can distinguish a cleared approval (`a`) from a
+	// cleared `blocked_by` (`d`) if it ever needs to.
+	Act func(ctx context.Context, verdict string, decision LapsedManagerDecision) error
+	// Pending is where a successful `resume` enqueues its later-tick record
+	// (`Kind: decision-park`). nil means no enqueue; the wiring MUST set it.
+	Pending PendingRecordStore
+	// Now supplies the PendingRecord's CreatedAt. Required when Pending is set.
+	Now libtime.CurrentDateTimeGetter
 }
 
 // Name is the `action=` value this procedure writes.
@@ -59,9 +67,32 @@ func (p *DecisionParkedWorkerProcedure) Run(ctx context.Context) (KeepaliveEffec
 	if decision.SessionID == "" {
 		return KeepaliveEffect{}, errors.New(ctx, "resume row names no session")
 	}
-	if actErr := p.Act(ctx, decision.Verdict, decision.SessionID); actErr != nil {
+	if actErr := p.Act(ctx, decision.Verdict, decision); actErr != nil {
 		return KeepaliveEffect{}, errors.Wrapf(ctx, actErr, "resume %s failed", decision.SessionID)
+	}
+	// Row 4 opens a task, so the session reads STARTING — an immediate `--record`
+	// would exit 1 and the cap would silently never arm. Enqueue a later-tick
+	// decision-park record instead.
+	if p.Pending != nil {
+		record := PendingRecord{
+			SessionID: decision.SessionID,
+			Task:      decision.Name,
+			Vault:     decision.Vault,
+			Kind:      "decision-park",
+			CreatedAt: p.now(),
+		}
+		if addErr := p.Pending.Add(ctx, record); addErr != nil {
+			return KeepaliveEffect{}, errors.Wrapf(ctx, addErr, "enqueue pending record %s failed", decision.SessionID)
+		}
 	}
 	effect.Result = KeepaliveResultResumed
 	return effect, nil
+}
+
+// now returns the clock's time, or wall-clock when no clock is wired.
+func (p *DecisionParkedWorkerProcedure) now() time.Time {
+	if p.Now != nil {
+		return p.Now.Now().Time()
+	}
+	return time.Now()
 }

@@ -102,8 +102,13 @@ func ParseDecisionParkRows(ctx context.Context, output string) ([]LapsedManagerD
 			if len(fields) < 4 {
 				return nil, errors.Errorf(ctx, "decision-park resume row has %d fields, want 4: %q", len(fields), trimmed)
 			}
+			// Row shape: `resume kind=<kind> <task> <sid> — <detail>`. fields[2] is
+			// the task name — the resume act opens the worker BY TASK, so a parser
+			// that drops it cannot resume. Vault is stamped by the per-vault caller,
+			// which is the only place that knows which vault it ran the script for.
 			decisions = append(decisions, LapsedManagerDecision{
 				Verdict:   "resume",
+				Name:      fields[2],
 				SessionID: fields[3],
 			})
 		case strings.Contains(trimmed, "WORKER CRASH-LOOP:"):

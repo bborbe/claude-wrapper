@@ -19,8 +19,8 @@ var _ = ginkgo.Describe("DecisionParkedWorkerProcedure", func() {
 		acts := &[]string{}
 		return &DecisionParkedWorkerProcedure{
 			Decide: func(context.Context) (LapsedManagerDecision, error) { return decision, nil },
-			Act: func(_ context.Context, verdict, sessionID string) error {
-				*acts = append(*acts, verdict+" "+sessionID)
+			Act: func(_ context.Context, verdict string, decision LapsedManagerDecision) error {
+				*acts = append(*acts, verdict+" "+decision.SessionID)
 				return nil
 			},
 		}, acts
@@ -73,7 +73,7 @@ var _ = ginkgo.Describe("DecisionParkedWorkerProcedure", func() {
 			Decide: func(context.Context) (LapsedManagerDecision, error) {
 				return LapsedManagerDecision{}, errors.New(ctx, "script crashed")
 			},
-			Act: func(context.Context, string, string) error { return nil },
+			Act: func(context.Context, string, LapsedManagerDecision) error { return nil },
 		}
 
 		_, err := procedure.Run(ctx)
@@ -86,7 +86,7 @@ var _ = ginkgo.Describe("DecisionParkedWorkerProcedure", func() {
 			Decide: func(context.Context) (LapsedManagerDecision, error) {
 				return LapsedManagerDecision{Verdict: "resume", SessionID: "w1"}, nil
 			},
-			Act: func(context.Context, string, string) error {
+			Act: func(context.Context, string, LapsedManagerDecision) error {
 				return errors.New(ctx, "spawn refused")
 			},
 		}
@@ -102,7 +102,7 @@ var _ = ginkgo.Describe("DecisionParkedWorkerProcedure", func() {
 			gomega.Expect(err).To(gomega.HaveOccurred())
 		},
 		ginkgo.Entry("no decision source", &DecisionParkedWorkerProcedure{
-			Act: func(context.Context, string, string) error { return nil },
+			Act: func(context.Context, string, LapsedManagerDecision) error { return nil },
 		}),
 		ginkgo.Entry("no act", &DecisionParkedWorkerProcedure{
 			Decide: func(context.Context) (LapsedManagerDecision, error) {

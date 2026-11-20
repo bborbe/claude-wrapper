@@ -15,14 +15,14 @@ import (
 var _ = ginkgo.Describe("ParkNudgeProcedure", func() {
 	ctx := context.Background()
 
-	type sent struct{ name, message string }
+	type sent struct{ sessionID, message string }
 
 	fixture := func(nudges []ParkNudge, sendErr error) (*ParkNudgeProcedure, *[]sent) {
 		sentTo := &[]sent{}
 		return &ParkNudgeProcedure{
 			Nudges: func(context.Context) ([]ParkNudge, error) { return nudges, nil },
-			Send: func(_ context.Context, name, message string) error {
-				*sentTo = append(*sentTo, sent{name: name, message: message})
+			Send: func(_ context.Context, sessionID, message string) error {
+				*sentTo = append(*sentTo, sent{sessionID: sessionID, message: message})
 				return sendErr
 			},
 		}, sentTo
@@ -42,7 +42,7 @@ var _ = ginkgo.Describe("ParkNudgeProcedure", func() {
 			SessionID: "s1",
 		}))
 		// One per tick: the script's ledger is what stops a repeat, not a batch.
-		gomega.Expect(*sentTo).To(gomega.Equal([]sent{{name: "worker-a", message: "still quiet"}}))
+		gomega.Expect(*sentTo).To(gomega.Equal([]sent{{sessionID: "s1", message: "still quiet"}}))
 	})
 
 	ginkgo.It("reports none when the script selected nothing", func() {
@@ -55,20 +55,19 @@ var _ = ginkgo.Describe("ParkNudgeProcedure", func() {
 		gomega.Expect(*sentTo).To(gomega.BeEmpty())
 	})
 
-	// ⚠️ A headless or pane-less session has no roster name to address. The
-	// script's ledger already counted the attempt, so this is reported as
-	// undelivered rather than retried or treated as a broken tick.
-	ginkgo.It("reports undelivered when the session has no roster name", func() {
+	// ⚠️ The nudge routes by SESSION ID, not roster name: a nudged watcher is a TAB
+	// reached through its pane, so Send receives the session id. A session id with
+	// no pane surfaces as a Send error → undelivered (covered by the next spec).
+	ginkgo.It("sends to the session id, not the roster name", func() {
 		procedure, sentTo := fixture([]ParkNudge{
-			{SessionID: "s1", Name: "", Message: "still quiet"},
+			{SessionID: "s1", Name: "worker-a", Message: "still quiet"},
 		}, nil)
 
 		effect, err := procedure.Run(ctx)
 
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-		gomega.Expect(effect.Result).To(gomega.Equal(KeepaliveResultSkipped))
-		gomega.Expect(effect.Reason).To(gomega.Equal("undelivered"))
-		gomega.Expect(*sentTo).To(gomega.BeEmpty())
+		gomega.Expect(effect.Result).To(gomega.Equal(KeepaliveResultNudged))
+		gomega.Expect(*sentTo).To(gomega.Equal([]sent{{sessionID: "s1", message: "still quiet"}}))
 	})
 
 	ginkgo.It("reports undelivered when the send fails, rather than erroring the tick", func() {

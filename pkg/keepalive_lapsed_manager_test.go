@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
@@ -24,8 +25,8 @@ var _ = ginkgo.Describe("LapsedManagerProcedure", func() {
 		return &LapsedManagerProcedure{
 			Decide: func(context.Context) (LapsedManagerDecision, error) { return decision, nil },
 			Claim:  func(context.Context, string) (bool, error) { return claimGranted, nil },
-			Act: func(_ context.Context, verdict, sessionID string) error {
-				*acts = append(*acts, act{verdict: verdict, sessionID: sessionID})
+			Act: func(_ context.Context, verdict string, decision LapsedManagerDecision) error {
+				*acts = append(*acts, act{verdict: verdict, sessionID: decision.SessionID})
 				return nil
 			},
 		}, acts
@@ -69,6 +70,78 @@ var _ = ginkgo.Describe("LapsedManagerProcedure", func() {
 		gomega.Expect(*acts).To(gomega.BeEmpty())
 	})
 
+	// hold → claim → act: a held session is skipped with reason=hold, an unknown one
+	// with reason=hold-unknown (distinct, per SC2), and the claim is NOT taken.
+	ginkgo.DescribeTable("skips a held session before the claim",
+		func(state HoldState, wantReason string) {
+			claimed := false
+			procedure := &LapsedManagerProcedure{
+				Decide: func(context.Context) (LapsedManagerDecision, error) {
+					return LapsedManagerDecision{Verdict: "resume", SessionID: "s1"}, nil
+				},
+				Claim: func(context.Context, string) (bool, error) {
+					claimed = true
+					return true, nil
+				},
+				Hold: func(context.Context, string) (HoldState, error) { return state, nil },
+				Act:  func(context.Context, string, LapsedManagerDecision) error { return nil },
+			}
+
+			effect, err := procedure.Run(ctx)
+
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(effect).To(gomega.Equal(KeepaliveEffect{
+				Result: KeepaliveResultSkipped, SessionID: "s1", Reason: wantReason,
+			}))
+			gomega.Expect(claimed).To(gomega.BeFalse())
+		},
+		ginkgo.Entry("held", HoldHeld, "hold"),
+		ginkgo.Entry("unknown", HoldUnknown, "hold-unknown"),
+	)
+
+	ginkgo.It("surfaces a hold-check failure rather than acting", func() {
+		procedure := &LapsedManagerProcedure{
+			Decide: func(context.Context) (LapsedManagerDecision, error) {
+				return LapsedManagerDecision{Verdict: "resume", SessionID: "s1"}, nil
+			},
+			Claim: func(context.Context, string) (bool, error) { return true, nil },
+			Hold: func(context.Context, string) (HoldState, error) {
+				return HoldNotHeld, errors.New(ctx, "hold store unreadable")
+			},
+			Act: func(context.Context, string, LapsedManagerDecision) error { return nil },
+		}
+
+		_, err := procedure.Run(ctx)
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
+	})
+
+	// ⚠️ A `resume` enqueues a later-tick record; a `restart` re-drives a live
+	// session and enqueues nothing.
+	ginkgo.DescribeTable("enqueues a pending record only on resume",
+		func(verdict string, wantRecords int) {
+			store := NewPendingRecordDir(ginkgo.GinkgoT().TempDir())
+			procedure := &LapsedManagerProcedure{
+				Decide: func(context.Context) (LapsedManagerDecision, error) {
+					return LapsedManagerDecision{Verdict: verdict, SessionID: "s1", Vault: "v", Name: "n"}, nil
+				},
+				Claim:   func(context.Context, string) (bool, error) { return true, nil },
+				Act:     func(context.Context, string, LapsedManagerDecision) error { return nil },
+				Pending: store,
+				Now:     libtime.NewCurrentDateTime(),
+			}
+
+			_, err := procedure.Run(ctx)
+
+			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+			records, listErr := store.List(ctx)
+			gomega.Expect(listErr).To(gomega.Not(gomega.HaveOccurred()))
+			gomega.Expect(records).To(gomega.HaveLen(wantRecords))
+		},
+		ginkgo.Entry("resume enqueues", "resume", 1),
+		ginkgo.Entry("restart enqueues nothing", "restart", 0),
+	)
+
 	ginkgo.It("acts on claim-taken, which means this writer won the claim", func() {
 		procedure, acts := fixture(LapsedManagerDecision{Verdict: "claim-taken", SessionID: "s1"}, true)
 
@@ -94,7 +167,7 @@ var _ = ginkgo.Describe("LapsedManagerProcedure", func() {
 				return LapsedManagerDecision{}, errors.New(ctx, "script crashed")
 			},
 			Claim: func(context.Context, string) (bool, error) { return true, nil },
-			Act:   func(context.Context, string, string) error { return nil },
+			Act:   func(context.Context, string, LapsedManagerDecision) error { return nil },
 		}
 
 		_, err := procedure.Run(ctx)
@@ -108,7 +181,7 @@ var _ = ginkgo.Describe("LapsedManagerProcedure", func() {
 				return LapsedManagerDecision{Verdict: "resume", SessionID: "s1"}, nil
 			},
 			Claim: func(context.Context, string) (bool, error) { return true, nil },
-			Act: func(context.Context, string, string) error {
+			Act: func(context.Context, string, LapsedManagerDecision) error {
 				return errors.New(ctx, "spawn refused")
 			},
 		}

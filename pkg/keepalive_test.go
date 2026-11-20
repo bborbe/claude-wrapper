@@ -65,6 +65,29 @@ var _ = ginkgo.Describe("KeepaliveJob", func() {
 			}))
 		})
 
+		// ⚠️ A pre-step runs BEFORE the procedures, and a failing pre-step is logged
+		// as result=error while the procedures STILL run — a failed drain must not
+		// stop the acts.
+		ginkgo.It("runs pre-steps first and continues past a pre-step failure", func() {
+			order := &[]string{}
+			j, lines := job(stubProcedure{
+				name:   "dead-worker",
+				effect: KeepaliveEffect{Result: KeepaliveResultResumed, SessionID: "abc123"},
+			})
+			j.PreSteps = []func(context.Context) error{
+				func(context.Context) error { *order = append(*order, "pre-1"); return nil },
+				func(context.Context) error { *order = append(*order, "pre-2"); return errors.New(ctx, "drain failed") },
+			}
+
+			j.TickAndLog(ctx)
+
+			gomega.Expect(*order).To(gomega.Equal([]string{"pre-1", "pre-2"}))
+			// The failing pre-step logged an error, and the procedure still ran.
+			gomega.Expect(*lines).To(gomega.HaveLen(2))
+			gomega.Expect((*lines)[0]).To(gomega.ContainSubstring("result=error"))
+			gomega.Expect((*lines)[1]).To(gomega.ContainSubstring("action=dead-worker result=resumed"))
+		})
+
 		ginkgo.It("renders a quiet procedure as result=none and no id", func() {
 			j, lines := job(stubProcedure{
 				name:   "due-park-watch",
