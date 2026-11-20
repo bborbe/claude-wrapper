@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.52.0
 
 - feat: **`sweepgate.Task` carries the row's spawn `Mode`, normalised to what the spawn layer accepts.** First slice of porting `flagged-rows.py` into Go: `FlaggedRow` needs a `mode` field, and `sweepgate.Task` already parses `Name`, `OperatorFlagged`, `Role`, `Session`, `SessionIDs`, `BlockedBy`, `Liveness` and `Mtime`, so this closes one of the three fields the projection was missing (`Vault` is config; `Branch` and `Refused` follow). The value is **normalised** to `interactive` / `headless` rather than copied through — `non_interactive` was live on eight pages, and the spawn layer accepts exactly two values, so copying a third would turn a page typo into a failed spawn. Absent and unrecognised both read `interactive`, the fleet default. Change set: `pkg/sweepgate/task.go`, `pkg/sweepgate/task_test.go`, `CHANGELOG.md`.
 
