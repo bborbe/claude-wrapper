@@ -5,11 +5,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bborbe/errors"
@@ -232,8 +235,8 @@ func newKeepaliveProcedures(
 		&pkg.StoodDownCloseProcedure{
 			Marker: newStoodDownMarker(registry, filtered),
 		},
-		&pkg.WakeMissProcedure{
-			Misses: newWakeMisses(filtered),
+		&pkg.StalledTabsProcedure{
+			Rows: newStalledTabRows(keepaliveScript("stalled-tab-restart.py")),
 		},
 	}
 }
@@ -481,13 +484,140 @@ func newStoodDownMarker(registry pkg.SessionRegistry, filtered []pkg.Vault) func
 	return pkg.NewStoodDownMarker(candidates, sessionFor, live)
 }
 
-// newWakeMisses reads wake-misses.py findings.
-func newWakeMisses(filtered []pkg.Vault) func(context.Context) ([]pkg.WakeMiss, error) {
-	return func(ctx context.Context) ([]pkg.WakeMiss, error) {
-		out, _, runErr := keepaliveScript("wake-misses.py")(ctx)
-		if runErr != nil {
-			return nil, runErr
+// newStalledTabRows builds the stalled-tab row source: the fleet snapshot's rows
+// with stall_count >= 2, goal/topic pages excluded by resolved page kind, each
+// driven through `stalled-tab-restart.py --dry-run`.
+//
+// ⚠️ **`--dry-run` is mandatory, not caution** — without it the script acts on any
+// row reading `idle` at call time, making the forbidden unattended restart
+// reachable through the snapshot-to-call window. ⚠️ **`--allow-busy-lapse` is NEVER
+// passed**: the operator ruled (2026-11-12) that it stays their own judgement, so
+// the script's answered path is the only call site that carries it.
+func newStalledTabRows(
+	run pkg.KeepaliveScriptRunner,
+) func(context.Context) ([]pkg.StalledTab, error) {
+	return func(ctx context.Context) ([]pkg.StalledTab, error) {
+		sessions, err := readFleetSnapshot(ctx, fleetSnapshotPath())
+		if err != nil {
+			return nil, err
 		}
-		return pkg.ParseWakeMisses(ctx, out)
+		rows := make([]pkg.StalledTab, 0, len(sessions))
+		for _, sessionID := range sortedKeys(sessions) {
+			rows = append(rows, stalledRowsForSession(ctx, run, sessionID, sessions[sessionID])...)
+		}
+		return rows, nil
 	}
+}
+
+// stalledTabMinStallCount is the step's whole population test within one page kind.
+const stalledTabMinStallCount = 2
+
+// fleetSnapshotRow is one fleet-snapshot session entry.
+type fleetSnapshotRow struct {
+	StallCount int    `json:"stall_count"`
+	TaskFile   string `json:"task_file"`
+}
+
+// fleetSnapshotPath is the snapshot the sweep writes and this leg reads.
+func fleetSnapshotPath() string {
+	if configured := os.Getenv("FLEET_SNAPSHOT_PATH"); configured != "" {
+		return configured
+	}
+	return filepath.Join(os.Getenv("HOME"), ".claude", "state", "fleet-snapshot.json")
+}
+
+// readFleetSnapshot reads the snapshot's sessions map.
+func readFleetSnapshot(ctx context.Context, path string) (map[string]fleetSnapshotRow, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "read fleet snapshot %s failed", path)
+	}
+	document := struct {
+		Sessions map[string]fleetSnapshotRow `json:"sessions"`
+	}{}
+	if unmarshalErr := json.Unmarshal(content, &document); unmarshalErr != nil {
+		return nil, errors.Wrapf(ctx, unmarshalErr, "parse fleet snapshot %s failed", path)
+	}
+	return document.Sessions, nil
+}
+
+// sortedKeys makes the row order deterministic — a map range would make the
+// reported "first row" change between ticks.
+func sortedKeys(sessions map[string]fleetSnapshotRow) []string {
+	keys := make([]string, 0, len(sessions))
+	for key := range sessions {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// isManagerPage reports whether path is a goal or topic page, which is never a
+// restart candidate: restart-worker.py refuses busy-target, so a card for one is
+// noise about a session nobody would restart.
+func isManagerPage(path string) bool {
+	switch pageTypeOf(path) {
+	case "goal", "topic":
+		return true
+	}
+	switch filepath.Base(filepath.Dir(path)) {
+	case "22 Topics", "23 Topics", "23 Goals", "24 Goals":
+		return true
+	}
+	return false
+}
+
+// pageTypeOf reads a page's `page_type` frontmatter, or "" when it carries none.
+func pageTypeOf(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
+		return ""
+	}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "---" {
+			return ""
+		}
+		if strings.HasPrefix(line, "page_type:") {
+			value := strings.TrimSpace(strings.TrimPrefix(line, "page_type:"))
+			return strings.ToLower(strings.Trim(value, "\"'"))
+		}
+	}
+	return ""
+}
+
+// stalledRowsForSession returns one row per verdict for a single snapshot entry, or
+// a single `cannot-tell` row when the script or its output could not be read.
+func stalledRowsForSession(
+	ctx context.Context,
+	run pkg.KeepaliveScriptRunner,
+	sessionID string,
+	row fleetSnapshotRow,
+) []pkg.StalledTab {
+	if row.StallCount < stalledTabMinStallCount || row.TaskFile == "" || isManagerPage(row.TaskFile) {
+		return nil
+	}
+	task := strings.TrimSuffix(filepath.Base(row.TaskFile), ".md")
+	undecidable := []pkg.StalledTab{{SessionID: sessionID, Task: task, Verdict: "cannot-tell"}}
+	out, _, runErr := run(ctx,
+		"--vault", "", "--task", task, "--dir", filepath.Dir(row.TaskFile),
+		"--session-id", sessionID, "--stall-count", strconv.Itoa(row.StallCount),
+		"--dry-run",
+	)
+	if runErr != nil {
+		return undecidable
+	}
+	parsed, parseErr := pkg.ParseStalledTabRows(ctx, out)
+	if parseErr != nil || len(parsed) == 0 {
+		return undecidable
+	}
+	for i := range parsed {
+		parsed[i].Task = task
+	}
+	return parsed
 }
