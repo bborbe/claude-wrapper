@@ -74,13 +74,46 @@ var _ = ginkgo.Describe("FleetSnapshot", func() {
 		// Its own subject's tick advances it; incrementing here would count the
 		// same round twice.
 		prev := fleetsnapshot.Snapshot{Sessions: map[string]fleetsnapshot.Entry{
-			"live": {Name: "Other Task", Status: "busy", StallCount: 4, TaskMtime: "t"},
+			"live": {Name: "Other Task", Status: "busy", StallCount: 4, TaskMtime: "t", TaskFile: "Other Task"},
 		}}
 		prepared := Prepared{Registry: map[string]RegistryRecord{"live": {Status: "busy"}}}
 
 		snap := FleetSnapshot(prepared, "x", prev)
 
 		gomega.Expect(snap.Sessions["live"].StallCount).To(gomega.Equal(4))
+	})
+
+	ginkgo.It("covers a live session whose task belongs to no configured subject", func() {
+		// The tracked-task projection is not the whole fleet. Measured 2026-11-20:
+		// 6 registry-live sessions were missing from a snapshot built by the task
+		// projection alone, and a session absent from the baseline reads as
+		// first-seen on the next round.
+		prepared := Prepared{
+			Tasks: []Task{{Name: "A Tracked Task", SessionIDs: []string{"tracked"}, Mtime: base}},
+			Registry: map[string]RegistryRecord{
+				"tracked": {Status: "busy"},
+				"orphan":  {Status: "idle"},
+			},
+		}
+
+		snap := FleetSnapshot(prepared, "x", fleetsnapshot.Snapshot{})
+
+		gomega.Expect(snap.Sessions).To(gomega.HaveKey("orphan"), "the untracked live session must be present")
+		gomega.Expect(snap.Sessions["orphan"].TaskFile).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("never accumulates a counter on a taskless session", func() {
+		// The stall test is "busy AND the task file did not move". A session with no
+		// task file has nothing that could move, so counting it would manufacture a
+		// stall every round for a session the round cannot judge.
+		prev := fleetsnapshot.Snapshot{Sessions: map[string]fleetsnapshot.Entry{
+			"orphan": {Status: "busy", StallCount: 7},
+		}}
+		prepared := Prepared{Registry: map[string]RegistryRecord{"orphan": {Status: "busy"}}}
+
+		snap := FleetSnapshot(prepared, "x", prev)
+
+		gomega.Expect(snap.Sessions["orphan"].StallCount).To(gomega.Equal(0))
 	})
 })
 

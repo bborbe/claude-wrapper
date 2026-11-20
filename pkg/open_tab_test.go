@@ -209,8 +209,8 @@ var _ = ginkgo.Describe("openTabOpener", func() {
 		gomega.Expect(scripts.calls[0][1]).To(gomega.Equal("/scripts/manager-launcher.py"))
 	})
 
-	ginkgo.It("AC7 opens a human create in window 12 with the claude sibling launcher", func() {
-		claudeScript, sibling := writeLauncherPair()
+	ginkgo.It("AC7 opens a human create in window 12 on the worker launcher", func() {
+		claudeScript, _ := writeLauncherPair()
 		tabs := &fakeTabClient{}
 		registry := &fakeRegistry{names: map[string][]string{}}
 		tabs.onSpawn = func() { registry.names["Task"] = []string{"sess-task"} }
@@ -235,7 +235,7 @@ var _ = ginkgo.Describe("openTabOpener", func() {
 		gomega.Expect(*spawn.WindowID).To(gomega.Equal(12))
 		gomega.Expect(spawn.TabName).To(gomega.Equal("Task"))
 		gomega.Expect(spawn.Prompt).To(gomega.Equal("/color cyan"))
-		gomega.Expect(spawn.Launcher).To(gomega.Equal(sibling))
+		gomega.Expect(spawn.Launcher).To(gomega.Equal(claudeScript))
 		gomega.Expect(tabs.texts).To(gomega.Equal([]string{`/vault-cli:work-on-task "Task"`}))
 		gomega.Expect(result.SessionID).To(gomega.Equal("sess-task"))
 		gomega.Expect(ledger.posts).To(gomega.HaveLen(1))
@@ -329,7 +329,7 @@ var _ = ginkgo.Describe("openTabOpener", func() {
 			Kind:    OpenKindTask,
 			Role:    RoleHuman,
 			Subject: "Task",
-			Vault:   Vault{Name: "private-personal", Path: "/vault", ManagerLauncher: "/scripts/mgr"},
+			Vault:   Vault{Name: "private-personal", Path: "/vault", ClaudeScript: "/scripts/cc-private"},
 		})
 
 		gomega.Expect(err).NotTo(gomega.BeNil())
@@ -466,14 +466,26 @@ var _ = ginkgo.Describe("humanLauncher", func() {
 		gomega.Expect(launcher).To(gomega.Equal("/scripts/task-launcher"))
 	})
 
-	ginkgo.It("falls back to manager_launcher when no claude sibling exists", func() {
+	ginkgo.It("ignores manager_launcher and falls back to claude_script", func() {
 		vault := Vault{
 			Name: "v", Path: "/nonexistent/open-tab-vault",
 			ClaudeScript: "/nonexistent/open-tab/cc-private", ManagerLauncher: "/scripts/mgr",
 		}
 		launcher, _, err := humanLauncher(ctx, &vault, "T")
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(launcher).To(gomega.Equal("/scripts/mgr"))
+		gomega.Expect(launcher).To(gomega.Equal("/nonexistent/open-tab/cc-private"))
+	})
+
+	ginkgo.It("prefers the worker default over claude_script", func() {
+		vault := Vault{
+			Name: "v", Path: "/nonexistent/open-tab-vault",
+			ClaudeScript:   "/nonexistent/open-tab/cc-private",
+			WorkerLauncher: "/scripts/cc-private-deepseek",
+		}
+		launcher, source, err := humanLauncher(ctx, &vault, "T")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(launcher).To(gomega.Equal("/scripts/cc-private-deepseek"))
+		gomega.Expect(source).To(gomega.Equal("worker-default"))
 	})
 
 	ginkgo.It("falls back to claude_script when no sibling and no manager launcher", func() {

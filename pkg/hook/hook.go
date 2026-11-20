@@ -202,6 +202,11 @@ func mayAllow(guard Guard) bool {
 	return ok && authority.MayAllow()
 }
 
+// Guards returns the guards in evaluation order.
+func (r *Registry) Guards() []Guard {
+	return append([]Guard(nil), r.guards...)
+}
+
 // Names returns the guard names in evaluation order.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.guards))

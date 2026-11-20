@@ -78,7 +78,18 @@ func FleetSnapshot(
 	// advances it, and incrementing here would count the same round twice.
 	for id, entry := range prev.Sessions {
 		carried := entry
-		if status := prepared.Registry[id].Status; status != "busy" && status != "shell" {
+		status := prepared.Registry[id].Status
+		// A taskless entry never accumulates: the stall test is "busy AND the task
+		// file did not move", and with no task file nothing could move. Checked
+		// BEFORE the busy test, because a taskless session is often `busy` and would
+		// otherwise keep whatever count it carried in.
+		if carried.TaskFile == "" {
+			carried.Status = status
+			carried.StallCount = 0
+			out.Sessions[id] = carried
+			continue
+		}
+		if status != "busy" && status != "shell" {
 			carried.Status = status
 			carried.StallCount = 0
 		}
@@ -100,6 +111,32 @@ func FleetSnapshot(
 			}
 			next.StallCount = nextStallCount(prev.Sessions[sid], next)
 			out.Sessions[sid] = next
+		}
+	}
+	// ⚠️ **ROSTER COVERAGE — the tracked-task projection above is NOT the whole
+	// fleet.** A session whose task belongs to no configured subject never appears
+	// in `prepared.Tasks`, so without this pass it would be missing from the
+	// baseline the round diffs against — and a session absent from the baseline
+	// reads as first-seen on the next round. Measured 2026-11-20 against the
+	// registry-live set: 6 live sessions were missing from a snapshot built by the
+	// task projection alone.
+	//
+	// These entries carry no task: `TaskFile` and `TaskMtime` stay empty, which is
+	// the same shape the Python writes for a session with no resolvable task.
+	// ⚠️ **Their counter is pinned at 0, never accumulated.** The stall test is
+	// "busy AND the task file did not move"; a session with no task file has
+	// nothing that could move, so counting it would manufacture a stall every
+	// round for a session the round cannot judge.
+	for id, record := range prepared.Registry {
+		if id == "" {
+			continue
+		}
+		if _, seen := out.Sessions[id]; seen {
+			continue
+		}
+		out.Sessions[id] = fleetsnapshot.Entry{
+			Status:     record.Status,
+			StallCount: 0,
 		}
 	}
 	return out

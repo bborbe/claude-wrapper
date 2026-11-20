@@ -64,11 +64,57 @@ func TmpTarget(path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		real = path
+	return TmpPath(path)
+}
+
+// TmpPath reports whether an absolute path with no `..` resolves inside /tmp. It
+// applies no shell rules, so a file tool's literal `$$` in a name is just a name.
+func TmpPath(path string) bool {
+	if !filepath.IsAbs(path) || hasDotDot(path) {
+		return false
 	}
+	real := ResolvePath(path)
 	return strings.HasPrefix(real, "/tmp/") || strings.HasPrefix(real, "/private/tmp/")
+}
+
+// WriteTargetUnderRoots reports whether a file a command writes lands under one of
+// roots. Unlike UnderRoots the file need not exist yet: its longest existing prefix
+// is resolved instead. A `..` component is refused, as in UnderRoots.
+func WriteTargetUnderRoots(path string, roots []string) bool {
+	if !filepath.IsAbs(path) || hasDotDot(path) {
+		return false
+	}
+	real := ResolvePath(path) + string(filepath.Separator)
+	for _, root := range roots {
+		resolved := root
+		if link, err := filepath.EvalSymlinks(root); err == nil {
+			resolved = link
+		}
+		if strings.HasPrefix(real, resolved+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolvePath returns the cleaned absolute path with every symlink in
+// its longest existing prefix resolved. A file that does not exist yet is written
+// through its parent, so the parent's real location is what decides where it lands;
+// falling back to the raw text let a not-yet-existing file under a symlinked
+// directory pass a `/tmp/` prefix test. Callers refuse `..` first: Clean folds
+// `<dir>/link/..` lexically while the kernel follows the link.
+func ResolvePath(path string) string {
+	clean := filepath.Clean(path)
+	rest := ""
+	for dir := clean; ; dir = filepath.Dir(dir) {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
+		}
+		if dir == filepath.Dir(dir) {
+			return clean
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+	}
 }
 
 // GhMergeAllows reports whether the invocation is the one approved merge shape:
@@ -216,4 +262,108 @@ func allDigits(text string) bool {
 		}
 	}
 	return true
+}
+
+// ghAPIMethods are the only methods the read shape accepts.
+var ghAPIMethods = map[string]bool{"GET": true, "HEAD": true}
+
+// ghAPIBool, ghAPIValue and ghAPIRefuse are the api read shape's flags. Every switch
+// in ghAPIRefuse writes (`-f`/`-F`/`--input` turn gh into a POST), re-targets
+// another host, or prints the request headers and with them the auth token.
+var (
+	ghAPIBool  = map[string]bool{"--paginate": true, "--slurp": true, "--silent": true, "-i": true, "--include": true}
+	ghAPIValue = map[string]bool{
+		"-q": true, "--jq": true, "-t": true, "--template": true, "--cache": true,
+		"-H": true, "--header": true,
+	}
+	ghAPIRefuse = map[string]bool{
+		"-f": true, "--raw-field": true, "-F": true, "--field": true, "--input": true,
+		"-v": true, "--verbose": true, "--debug": true, "--hostname": true, "--web": true,
+		"-p": true, "--preview": true,
+	}
+)
+
+// GhAPIAllows reports whether the invocation is a read of one REST path:
+// `gh api <endpoint>` with the default GET method or an explicit `-X GET|HEAD`.
+// The endpoint is a literal path: no `://` (a full URL is egress) and no `..`.
+func GhAPIAllows(values []string) bool {
+	if len(values) == 0 || values[0] != "api" {
+		return false
+	}
+	endpoint := ""
+	for i := 1; i < len(values); i++ {
+		next, ok := ghAPIStep(values, i, &endpoint)
+		if !ok {
+			return false
+		}
+		i = next
+	}
+	return endpoint != ""
+}
+
+// ghAPIStep validates the argument at i and returns the index of the last one it
+// consumed. The first plain operand becomes the endpoint.
+func ghAPIStep(values []string, i int, endpoint *string) (int, bool) {
+	value := values[i]
+	switch {
+	case ghAPIRefuse[value]:
+		return i, false
+	case value == "-X" || value == "--method":
+		return i + 1, i+1 < len(values) && ghAPIMethods[values[i+1]]
+	case ghAPIValue[value]:
+		return i + 1, i+1 < len(values)
+	case ghAPIBool[value]:
+		return i, true
+	case strings.HasPrefix(value, "--") && strings.Contains(value, "="):
+		name, flagValue, _ := strings.Cut(value, "=")
+		if name == "--method" {
+			return i, ghAPIMethods[flagValue]
+		}
+		return i, ghAPIValue[name]
+	case *endpoint == "" && !strings.HasPrefix(value, "-") &&
+		!strings.Contains(value, "://") && !strings.Contains(value, ".."):
+		*endpoint = value
+		return i, true
+	}
+	return i, false
+}
+
+// ghRuleReadVerbs are the gh subcommands that only read, so an allow rule naming
+// one cannot reach a write. Write verbs (`pr close`, `pr review`, `pr ready`, …)
+// are left to the shape guards and the permission prompt even when a rule names them.
+var ghRuleReadVerbs = map[string]map[string]bool{
+	"repo":     {"view": true, "list": true},
+	"run":      {"view": true, "list": true},
+	"release":  {"view": true, "list": true},
+	"issue":    {"view": true, "list": true},
+	"workflow": {"view": true, "list": true},
+	"pr":       {"view": true, "list": true, "checks": true, "diff": true, "status": true},
+}
+
+// GhRuleReadable reports whether a gh call is a read-only verb an allow rule may
+// approve: `gh [-R <owner>/<repo>] <group> <read verb> …` or `gh search …`, with no
+// `--web` (it opens a browser) and every repo value well-formed.
+func GhRuleReadable(words []string) bool {
+	if len(words) < 2 || words[0] != "gh" {
+		return false
+	}
+	rest := words[1:]
+	if len(rest) >= 2 && (rest[0] == "-R" || rest[0] == "--repo") {
+		if !ghRepoOK(rest[1]) {
+			return false
+		}
+		rest = rest[2:]
+	}
+	for i, word := range rest {
+		if word == "--web" || word == "-w" || strings.HasPrefix(word, "--web=") {
+			return false
+		}
+		if (word == "-R" || word == "--repo") && (i+1 >= len(rest) || !ghRepoOK(rest[i+1])) {
+			return false
+		}
+	}
+	if len(rest) >= 1 && rest[0] == "search" {
+		return true
+	}
+	return len(rest) >= 2 && ghRuleReadVerbs[rest[0]][rest[1]]
 }
