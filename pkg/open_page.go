@@ -13,6 +13,20 @@ import (
 	"github.com/bborbe/errors"
 )
 
+// ReadOpenPage is the exported seam for callers outside this package.
+//
+// ⚠️ **It exists because `main.go` is `package main`.** The stood-down join's
+// `sessionFor` closure lives there and cannot reach the unexported reader, so
+// without this wrapper the eighth keep-alive leg could not be wired at all.
+//
+// ⚠️ **A candidate slug carries no vault, so the caller must search EVERY
+// configured vault** — in the lister's own order, first hit wins. Searching one
+// vault would make the leg report `none` forever on any fleet whose managers live
+// in another, which is the silent-failure class this port keeps finding.
+func ReadOpenPage(ctx context.Context, vault Vault, kind, name string) OpenPage {
+	return readOpenPage(ctx, vault, kind, name)
+}
+
 // readOpenPage reads the page an open row names.
 //
 // Folders are looked up by kind, in the same order the rest of the package
