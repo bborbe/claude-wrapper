@@ -67,6 +67,11 @@ func (s *RosterToolServer) bindSpawnedTask(
 	if err != nil {
 		return "", errors.Wrapf(ctx, err, "read claude_session_id of task %q", task)
 	}
+	// ⚠️ Accepted last-write-wins race, the same one vault-cli's own work-on path
+	// documents (pkg/ops/workon.go persistSessionAndMetrics): two spawns onto the
+	// same unowned task can both read empty and both stamp, and the later write
+	// wins. vault-cli offers no compare-and-set, so a fix belongs there, not in a
+	// second implementation here — mirroring its rule is the whole point.
 	action := "appended"
 	if owner == "" {
 		if _, err := s.runVaultCLI(
@@ -143,5 +148,9 @@ func (s *RosterToolServer) runVaultCLI(
 	args ...string,
 ) ([]byte, error) {
 	argv := append([]string{"--vault", vault}, args...)
-	return s.Runner.Run(ctx, "vault-cli", argv...)
+	out, err := s.Runner.Run(ctx, "vault-cli", argv...)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "vault-cli %s", strings.Join(argv, " "))
+	}
+	return out, nil
 }
