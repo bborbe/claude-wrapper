@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.46.0
 
 - feat: **`list_agents` names the live sessions it cannot see, and a resume of one is refused instead of starting a second writer.** Both defects were the same blindness in different places: the roster answers from this daemon's children plus ledger-adopted rows, and the resume guard checks only `s.sessions`, so a session that is live on the heartbeat endpoint but held by neither — an ordinary interactive tab, a peer's worker — was invisible to the first and silently resumable by the second. Measured 2026-11-19: 13–14 such ids in one minute against an 85-row roster. The roster now appends one row per liveness-union id it does not already carry, marked `unlisted: true` with an `unlisted_reason`, so a short list can no longer read as "nothing is running"; and `reserve` probes the same `Liveness` union (outside `s.mutex` — the probe reads two stores and must not stall every spawn) and refuses with `ErrSessionLive` naming the state and the clearing action. A nil or unreadable probe is never folded into "nothing live": the roster degrades with its existing log and the resume proceeds as before. `stop_agent` refuses an unlisted row for the same ownership reason it refuses a rehydrated one. Change set: `pkg/roster.go`, `pkg/roster_test.go`, `pkg/roster_mcp.go`, `pkg/stale_holder.go`, `pkg/supervisor.go`, `pkg/supervisor_options.go`, `pkg/resume_test.go`, `main.go`, `CHANGELOG.md`.
 
