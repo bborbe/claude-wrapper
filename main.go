@@ -690,6 +690,7 @@ func startFleetFaces(
 		SpawnMode: pkg.NewSpawnModeSourcesReader("", nil),
 		Vaults:    vaults,
 		Tabs:      tabs,
+		PaneJoiner: pkg.NewWeztermPaneJoiner(""),
 		Now:       now,
 		// The fleet-wide caps; shared with the flagged tick so both read one limit.
 		Caps: caps,

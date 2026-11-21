@@ -132,6 +132,10 @@ type RosterToolServer struct {
 	// Tabs types into a tab worker's pane for send_agent_message. Nil means a tab
 	// worker cannot be messaged.
 	Tabs TabClient
+	// PaneJoiner joins a session's pid to its WezTerm pane, so a tab absent from
+	// the ledger can still be reached by run_slash_command. Nil disables the
+	// fallback, which is correct only for a daemon with no WezTerm.
+	PaneJoiner PaneJoiner
 	// Now bounds the pane-send readiness and confirmation polls. Nil falls back to
 	// the system clock, which is what a test wants to override.
 	Now libtime.CurrentDateTimeGetter
