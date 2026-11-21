@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -197,5 +198,67 @@ var _ = ginkgo.Describe("SC2 — follow the verdict", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(rows).To(gomega.HaveLen(1))
 		gomega.Expect(rows[0].Liveness).To(gomega.Equal("LIVE"))
+	})
+})
+
+// SC1 — the row source emits only work: `status: in_progress` and not deferred.
+//
+// Each excluded class gets its own case, so a filter that widened or narrowed to
+// the wrong status set fails one of them rather than passing on the included case
+// alone. The clock is fixed and the defer dates are far from it, so a local/UTC
+// day shift cannot flip the comparison.
+var _ = ginkgo.Describe("NativeFlaggedRowsSource eligibility", func() {
+	var dir string
+
+	ginkgo.BeforeEach(func() {
+		dir = ginkgo.GinkgoT().TempDir()
+	})
+
+	now := time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC)
+
+	source := func() NativeFlaggedRowsSource {
+		return NativeFlaggedRowsSource{
+			Vaults:     nativeVaults{vaults: []Vault{{Name: "private-personal", Path: dir}}},
+			Supervisor: nativeSupervisor{},
+			Registry:   &fakeFleetRegistry{},
+			Now:        fixedNow(now),
+		}
+	}
+
+	flagged := func(status string) string {
+		return "---\nstatus: " + status + "\nflag: true\nflag_set_by: operator\n---\n"
+	}
+
+	for _, status := range []string{"completed", "aborted", "hold", "next", "backlog"} {
+		ginkgo.It("excludes a flagged "+status+" page", func() {
+			writePage(dir, "25 Tasks", "Do It", flagged(status))
+			rows, err := source().Rows(context.Background())
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(rows).To(gomega.BeEmpty(), "status %q must not be emitted", status)
+		})
+	}
+
+	ginkgo.It("excludes a flagged page deferred to the future", func() {
+		writePage(dir, "25 Tasks", "Do It",
+			"---\nstatus: in_progress\ndefer_date: \"2030-01-01\"\nflag: true\nflag_set_by: operator\n---\n")
+		rows, err := source().Rows(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(rows).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("includes an in_progress flagged page due today", func() {
+		writePage(dir, "25 Tasks", "Do It",
+			"---\nstatus: in_progress\ndefer_date: \"2026-11-21\"\nflag: true\nflag_set_by: operator\n---\n")
+		rows, err := source().Rows(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Name).To(gomega.Equal("Do It"))
+	})
+
+	ginkgo.It("includes an in_progress flagged page with no defer_date", func() {
+		writePage(dir, "25 Tasks", "Do It", flagged("in_progress"))
+		rows, err := source().Rows(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
 	})
 })

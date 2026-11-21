@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 
 	"github.com/bborbe/claude-wrapper/pkg/sweepgate"
 )
@@ -62,6 +63,9 @@ type NativeFlaggedRowsSource struct {
 	// Parked reports a declared external wait on the row's own last closer. nil
 	// means "none declared", which is what a caller with no park store knows.
 	Parked func(sessionID string) bool
+	// Now supplies the clock the defer check reads. nil means wall-clock, which is
+	// what a caller with no injected clock (a test, a one-shot probe) expects.
+	Now libtime.CurrentDateTimeGetter
 }
 
 // subjectIndex is what one scan of a vault's subject pages yields: the goal →
@@ -167,6 +171,9 @@ func (s NativeFlaggedRowsSource) rowForFile(
 	name := strings.TrimSuffix(filename, ".md")
 	task, ok := sweepgate.ParseTask(name, text, modTime(path))
 	if !ok {
+		return FlaggedRow{}, false, nil
+	}
+	if !admissible(s.now(), task) {
 		return FlaggedRow{}, false, nil
 	}
 	role := normaliseRole(task.Role)
@@ -288,6 +295,30 @@ func indexVerdicts(verdicts []LivenessVerdict) (map[string]LivenessState, map[st
 		}
 	}
 	return byID, byName
+}
+
+// admissible reports whether a parsed page is work the tick may open: only a page
+// at status `in_progress` whose `defer_date` is not in the future.
+//
+// The rule matches `/supervisor:open --flagged`'s predicate for tasks; goals and
+// topics carry the same status/due rule. Every other status — `completed`,
+// `aborted`, `hold`, `backlog`, `next` — and any future `defer_date` is excluded
+// here, before the per-tick row budget is spent. Admitting them is the defect
+// measured 2026-11-21, where 50 terminal rows filled the 50-row budget and no due
+// row was reached. The task-terminal spawn guard downstream stays as a backstop.
+func admissible(now time.Time, task sweepgate.Task) bool {
+	if task.Status != "in_progress" {
+		return false
+	}
+	return !sweepgate.IsDeferred(now, task)
+}
+
+// now returns the injected clock's time, or wall-clock when none is wired.
+func (s NativeFlaggedRowsSource) now() time.Time {
+	if s.Now != nil {
+		return s.Now.Now().Time()
+	}
+	return time.Now()
 }
 
 // rowLiveness maps a row's own session onto the predicate's vocabulary.

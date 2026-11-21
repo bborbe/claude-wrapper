@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the flagged tick's row source emits only eligible work.** `NativeFlaggedRowsSource.Rows` admitted every `flag: true` page regardless of status, so on 2026-11-21 the 50-row-per-tick budget was spent on ~50 task-terminal rows (refused `spawn-refused`) and ~1120 more were refused `row budget` before any due row was reached — `opened=0 refused=1170 considered=1174` while ~28 flagged tasks were due. `rowForFile` now drops any page that is not at `status: in_progress`, or whose `defer_date` is in the future, matching `/supervisor:open --flagged`'s predicate (goals and topics carry the same status/due rule). The task-terminal spawn guard stays as a backstop. Change set: `pkg/flagged_rows_native.go`, `pkg/flagged_rows_native_test.go`, `main.go`, `CHANGELOG.md`.
+
 ## v0.58.1
 
 - fix: **the one-shot sweep-gate tick wakes a changed subject's manager too.** The wake was wired only into the daemon's `TickRunner.tickSubject`; the one-shot `-sweep-gate-mode=tick` calls `sweepgate.Tick` directly and so woke nothing — a gap versus the vault script, whose `tick` printed a `CHANGE` line a Monitor read, and versus the documented SC6 probe. `Wake` is now a package function invoked from both `tickSubject` and the one-shot tick on `ExitChange`. Change set: `pkg/sweepgate/runner.go`, `main.go`, `CHANGELOG.md`.
