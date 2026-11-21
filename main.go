@@ -153,6 +153,38 @@ func registerSweepGateFlags() sweepGateFlags {
 	}
 }
 
+// reloadFleetFlags are the one-shot reload-fleet client's flags, registered
+// together so main stays inside its funlen budget.
+type reloadFleetFlags struct {
+	enabled  *bool
+	daemon   *string
+	sessions *string
+}
+
+func registerReloadFleetFlags() reloadFleetFlags {
+	return reloadFleetFlags{
+		enabled: flag.Bool("reload-fleet", false,
+			"POST a fleet reload to the running daemon and exit (one-shot client)"),
+		daemon: flag.String("daemon-url", "http://localhost:18090",
+			"base URL of the running claude-wrapper daemon, for --reload-fleet"),
+		sessions: flag.String("reload-sessions", "",
+			"comma-separated session ids to scope --reload-fleet to; empty means every live session"),
+	}
+}
+
+// reloadFleetConfig registers the reload-fleet flags at package init, before
+// flag.Parse, so main needs no local for them.
+var reloadFleetConfig = registerReloadFleetFlags()
+
+// maybeRunReloadFleetCLI runs the reload-fleet client and exits when its flag is
+// set. It is a thin HTTP client: it POSTs to the running daemon and exits, so it
+// needs no supervisor and binds no listener.
+func maybeRunReloadFleetCLI(ctx context.Context, flags reloadFleetFlags) {
+	if *flags.enabled {
+		os.Exit(runReloadFleetCLI(ctx, *flags.daemon, *flags.sessions))
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -176,12 +208,6 @@ func main() {
 	open := registerOpenFlags()
 	fleetPusher := registerFleetPusherFlags()
 	sweepGate := registerSweepGateFlags()
-	reloadFleet := flag.Bool("reload-fleet", false,
-		"POST a fleet reload to the running daemon and exit (one-shot client)")
-	daemonURL := flag.String("daemon-url", "http://localhost:18090",
-		"base URL of the running claude-wrapper daemon, for --reload-fleet")
-	reloadSessions := flag.String("reload-sessions", "",
-		"comma-separated session ids to scope --reload-fleet to; empty means every live session")
 	stateDir := flag.String("state-dir", "",
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
 	keepalive := flag.Bool("keepalive", false, "run the keepalive tick; only :18090 sets this")
@@ -195,23 +221,12 @@ func main() {
 		return
 	}
 
-	warnIfDrainOverrunsExitTimeout(*drainBound)
-
-	// One signal context for the whole process.
-	//
-	// It replaces the poster-only NotifyContext this used to build: that one
-	// registered a handler, which suppressed Go's default SIGTERM termination, and
-	// then unregistered it — so the FIRST SIGTERM did nothing at all and the daemon
-	// only died on the second or on a SIGKILL. `launchctl kickstart -k` sends one
-	// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
+	// One signal context for the whole process. It replaces the poster-only
+	// NotifyContext this used to build: that one registered a handler (suppressing
+	// Go's default SIGTERM) then unregistered it, so the FIRST SIGTERM did nothing
+	// and the daemon only died on the second or a SIGKILL.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	// The reload-fleet client is a thin HTTP client: it POSTs to the running
-	// daemon and exits, so it needs no supervisor and binds no listener.
-	if *reloadFleet {
-		os.Exit(runReloadFleetCLI(ctx, *daemonURL, *reloadSessions))
-	}
 
 	// Both one-shot modes run before the supervisor is built, so they never bind
 	// the listener and can be invoked beside the live daemon.
@@ -276,6 +291,7 @@ func serveUntilStopped(
 	drainBound time.Duration,
 	stop func(),
 ) {
+	warnIfDrainOverrunsExitTimeout(drainBound)
 	server := &http.Server{
 		Addr:              listen,
 		Handler:           mux,
@@ -702,11 +718,11 @@ func startFleetFaces(
 		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in
 		// ~/.config/claude-supervisor/config.json. Without it every spawn that
 		// omits `interactive` opens a tab regardless of the configured mode.
-		SpawnMode: pkg.NewSpawnModeSourcesReader("", nil),
-		Vaults:    vaults,
-		Tabs:      tabs,
+		SpawnMode:  pkg.NewSpawnModeSourcesReader("", nil),
+		Vaults:     vaults,
+		Tabs:       tabs,
 		PaneJoiner: pkg.NewWeztermPaneJoiner(""),
-		Now:       now,
+		Now:        now,
 		// The fleet-wide caps; shared with the flagged tick so both read one limit.
 		Caps: caps,
 		// The id → name join send_agent_message needs: it holds the session id,
@@ -912,6 +928,7 @@ func runOneShotMode(
 	fleetPusher fleetPusherFlags,
 	attentionURL string,
 ) bool {
+	maybeRunReloadFleetCLI(ctx, reloadFleetConfig)
 	if *sweepGate.mode != "" {
 		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
 	}
