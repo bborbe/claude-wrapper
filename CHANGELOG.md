@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.59.0
+
+- feat: **add a vault-api client, the transport the flagged tick will read its rows from.** `List` answers which rows are eligible (the task query is `flag=true&status=in_progress&due=now`; goals and topics take `flag=true`) and `Page` returns one task record's full frontmatter, because the list projection carries no `role`, `mode`, `flag_set_by` or `blocked_by`. `ListAll` returns a kind unfiltered, which the subject index needs: owner resolution asks about goals and topics that are not themselves eligible to open. Every failure — transport, non-200, undecodable body, unknown kind — wraps `ErrVaultAPIUnavailable`, so a caller can tell an outage from an index that genuinely holds no rows; those are opposite answers and a tick that read the first as the second would silently drop every flagged row. Nothing consumes the client yet.
+
 ## v0.58.3
 
 - fix: **the flagged tick opens a never-opened goal or topic again — it never did.** `ResolveBranch` returns `open-manager` for a goal or topic whose chain is proven dead; it never returns `create` for those kinds. `neverOpenedManager` required `row.Branch == "create"`, so the branch never matched a real source row, `rowFreshness` returned `(false, "", false)`, and `classify` skipped every flagged goal and topic as `not-absent`. Measured 2026-11-21: two flagged never-opened rows (`branch: open-manager`, `liveness: none`, `session_id: null`) and the tick logged `opened=0 skipped=... not-absent:15` on every cycle for 24 h. The `manager_chain_test.go` entry that pinned this — "a proven-dead chain already reads open-manager, not create", expecting `false` — recorded the belief that another path opened those rows; that path was the fleet round's open leg, removed 2026-11-20. `neverOpenedManager` now admits `open-manager` too, and a row that already has a session stays excluded. Change set: `pkg/flagged_tick.go`, `pkg/manager_chain_test.go`, `CHANGELOG.md`.
