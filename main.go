@@ -961,7 +961,11 @@ func runSweepGateMode(ctx context.Context, cfg sweepgate.Config, mode string) in
 	case "render":
 		return sweepgate.Render(ctx, cfg, os.Stdout, os.Stderr)
 	case "tick":
-		return sweepgate.Tick(ctx, cfg, os.Stdout, os.Stderr, sweepgate.CardBuilder(cfg))
+		exit := sweepgate.Tick(ctx, cfg, os.Stdout, os.Stderr, sweepgate.CardBuilder(cfg))
+		if exit == sweepgate.ExitChange {
+			sweepgate.Wake(ctx, cfg, log.Printf)
+		}
+		return exit
 	case "invariant":
 		return sweepgate.Invariant(ctx, cfg, os.Stdout, os.Stderr)
 	default:
