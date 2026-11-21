@@ -27,9 +27,11 @@ var credentialGlobPaths = regexp.MustCompile(
 
 // freeTextFlags carry prose, never a path operand, so a credential literal inside
 // one is a mention rather than a read (`--reason 'the .netrc path is gone'`).
+// Deliberately no short flags: `-m` means a commit message to `git` but a merge file
+// to `sort`, so it cannot be classified by spelling alone.
 var freeTextFlags = map[string]bool{
 	"--reason": true, "--message": true, "--body": true, "--title": true,
-	"--description": true, "--comment": true, "-m": true,
+	"--description": true, "--comment": true,
 }
 
 // inertHeads cannot read a file, so a credential literal quoted into their
@@ -72,67 +74,93 @@ func CredentialRead(command string) bool {
 //     (`echo hi` newline `cat '~/.netrc'`). A newline ends a segment exactly as
 //     `;` does.
 func credentialScanText(command string) string {
-	var out strings.Builder
-	var head, prev, word strings.Builder
-	depth, inBacktick := 0, false
-	flush := func() {
-		w := word.String()
-		word.Reset()
-		if w == "" {
-			return
-		}
-		if head.Len() == 0 {
-			head.WriteString(w)
-		}
-		prev.Reset()
-		prev.WriteString(w)
-	}
-	reset := func() {
-		flush()
-		head.Reset()
-		prev.Reset()
-	}
+	s := &credScan{}
 	for i := 0; i < len(command); i++ {
 		c := command[i]
 		switch c {
 		case '\'', '"':
 			span, next := quotedSpanAt(command, i)
-			if depth == 0 && !inBacktick && isInertSpan(span, prev.String(), head.String()) {
-				out.WriteString(strings.Repeat(" ", len(span)))
-			} else {
-				out.WriteString(span)
-			}
-			prev.Reset()
-			prev.WriteString(span)
+			s.quoted(span)
 			i = next - 1
 		case ' ', '\t':
-			flush()
-			out.WriteByte(c)
+			s.flush()
+			s.out.WriteByte(c)
 		case '\n', '|', ';', '&', '(':
-			reset()
-			out.WriteByte(c)
+			s.reset()
+			s.out.WriteByte(c)
 		case ')':
-			if depth > 0 {
-				depth--
+			if s.depth > 0 {
+				s.depth--
 			}
-			reset()
-			out.WriteByte(c)
+			s.reset()
+			s.out.WriteByte(c)
 		case '`':
-			inBacktick = !inBacktick
-			reset()
-			out.WriteByte(c)
+			s.inBacktick = !s.inBacktick
+			s.reset()
+			s.out.WriteByte(c)
 		case '$':
 			if i+1 < len(command) && command[i+1] == '(' {
-				depth++
+				s.depth++
 			}
-			word.WriteByte(c)
-			out.WriteByte(c)
+			s.word.WriteByte(c)
+			s.out.WriteByte(c)
 		default:
-			word.WriteByte(c)
-			out.WriteByte(c)
+			s.word.WriteByte(c)
+			s.out.WriteByte(c)
 		}
 	}
-	return out.String()
+	return s.out.String()
+}
+
+// credScan accumulates the head, the previous word and the substitution depth while
+// credentialScanText walks a command.
+type credScan struct {
+	out              strings.Builder
+	head, prev, word strings.Builder
+	depth            int
+	inBacktick       bool
+}
+
+func (s *credScan) flush() {
+	w := s.word.String()
+	s.word.Reset()
+	if w == "" {
+		return
+	}
+	if s.head.Len() == 0 {
+		s.head.WriteString(w)
+	}
+	s.prev.Reset()
+	s.prev.WriteString(w)
+}
+
+func (s *credScan) reset() {
+	s.flush()
+	s.head.Reset()
+	s.prev.Reset()
+}
+
+func (s *credScan) quoted(span string) {
+	value := strings.Trim(span, `'"`)
+	// `--reason='…'` glues the flag to the quote, so the pending word is the flag and
+	// `prev` still holds the one before it.
+	flag := s.word.String()
+	if flag == "" {
+		flag = s.prev.String()
+	}
+	if s.depth == 0 && !s.inBacktick && isInertSpan(span, flag, s.head.String()) {
+		s.out.WriteString(strings.Repeat(" ", len(span)))
+	} else {
+		s.out.WriteString(span)
+	}
+	s.word.Reset()
+	// A quoted program name is still the head: `"cat" echo '<path>'` runs cat, so the
+	// span must set the head rather than leave it empty for `echo`.
+	if s.head.Len() == 0 {
+		s.head.WriteString(value)
+	}
+	s.prev.Reset()
+	s.prev.WriteString(value)
 }
 
 // quotedSpanAt returns the quoted span opening at i and the index just past it.
@@ -155,7 +183,8 @@ func isInertSpan(span, prev, head string) bool {
 	if strings.Contains(span, "$(") || strings.Contains(span, "`") {
 		return false
 	}
-	return freeTextFlags[prev] || inertHeads[head]
+	// `--reason='…'` arrives as one word ending in `=`, not as a flag and a value.
+	return freeTextFlags[strings.TrimSuffix(prev, "=")] || inertHeads[head]
 }
 
 // unquotedText blanks every single- and double-quoted span, so a pattern can be

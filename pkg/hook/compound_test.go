@@ -612,7 +612,8 @@ var _ = Describe("Credential reads", func() {
 		Entry("an echoed netrc path", "echo '.netrc'"),
 		Entry("a printf of an ssh path", "printf '%s' '.ssh/'"),
 		Entry("a free-text reason flag", "ls --reason '.netrc is gone' /tmp"),
-		Entry("a message flag", "ls -m 'rotated ~/.aws/credentials'"),
+		Entry("a free-text reason flag in equals form", "ls --reason='.netrc is gone' /tmp"),
+		Entry("a message flag", "ls --message 'rotated ~/.aws/credentials'"),
 	)
 	DescribeTable("still refuse a quoted or quote-split path",
 		func(command string) {
@@ -625,6 +626,8 @@ var _ = Describe("Credential reads", func() {
 		Entry("a quoted ssh key", `cat '~/.ssh/id_rsa'`),
 		Entry("a quoted path inside a substitution", `echo $(cat '~/.netrc')`),
 		Entry("a quoted path on a second line", "echo hi\ncat '~/.netrc'"),
+		Entry("a quoted program name", `"cat" echo '~/.netrc'`),
+		Entry("a short flag that is not free text", `sort -m '~/.netrc'`),
 	)
 })
 
