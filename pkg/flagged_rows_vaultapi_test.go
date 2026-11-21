@@ -6,9 +6,7 @@ package pkg
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"time"
+	stderrors "errors"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -21,244 +19,166 @@ type nativeSupervisor struct {
 
 func (n nativeSupervisor) List(context.Context) ([]Session, error) { return n.children, n.err }
 
-type nativeVaults struct {
-	vaults []Vault
-	err    error
+// fakeVaultAPI answers the two questions the source asks. It is the whole point
+// of the client interface: an outage, an empty set and a row are all producible
+// without a server or a vault on disk.
+type fakeVaultAPI struct {
+	eligible map[string][]VaultAPIRow
+	all      map[string][]VaultAPIRow
+	pages    map[string]VaultAPIPage
+	err      error
 }
 
-func (n nativeVaults) List(context.Context) ([]Vault, error) { return n.vaults, n.err }
-
-// writePage writes one vault page, creating its folder.
-func writePage(dir, folder, name, body string) {
-	gomega.Expect(os.MkdirAll(filepath.Join(dir, folder), 0o750)).To(gomega.Succeed())
-	gomega.Expect(os.WriteFile(filepath.Join(dir, folder, name+".md"), []byte(body), 0o600)).To(gomega.Succeed())
+func (f fakeVaultAPI) List(_ context.Context, kind string) ([]VaultAPIRow, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if rows, ok := f.eligible[kind]; ok {
+		return rows, nil
+	}
+	return []VaultAPIRow{}, nil
 }
 
-var _ = ginkgo.Describe("NativeFlaggedRowsSource", func() {
-	var dir string
+func (f fakeVaultAPI) ListAll(_ context.Context, kind string) ([]VaultAPIRow, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if rows, ok := f.all[kind]; ok {
+		return rows, nil
+	}
+	return []VaultAPIRow{}, nil
+}
 
-	ginkgo.BeforeEach(func() {
-		dir = ginkgo.GinkgoT().TempDir()
-	})
+func (f fakeVaultAPI) Page(_ context.Context, _, id string) (VaultAPIPage, error) {
+	if f.err != nil {
+		return VaultAPIPage{}, f.err
+	}
+	return f.pages[id], nil
+}
 
-	source := func(registry SessionRegistry) NativeFlaggedRowsSource {
-		return NativeFlaggedRowsSource{
-			Vaults:     nativeVaults{vaults: []Vault{{Name: "private-personal", Path: dir}}},
+func taskRow(id, title string) VaultAPIRow {
+	return VaultAPIRow{
+		ID:     id,
+		Title:  title,
+		Status: "in_progress",
+		Flag:   true,
+		Vault:  "private-personal",
+	}
+}
+
+func taskPage(fields map[string]any) VaultAPIPage {
+	return VaultAPIPage{Frontmatter: fields}
+}
+
+var _ = ginkgo.Describe("VaultAPIFlaggedRowsSource", func() {
+	var ctx context.Context
+
+	ginkgo.BeforeEach(func() { ctx = context.Background() })
+
+	source := func(client VaultAPIClient, registry SessionRegistry) VaultAPIFlaggedRowsSource {
+		return VaultAPIFlaggedRowsSource{
+			Client:     client,
 			Supervisor: nativeSupervisor{},
 			Registry:   registry,
 		}
 	}
 
-	ginkgo.It("reads an operator-flagged task as a row that would CREATE", func() {
-		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\nrole: agent\n---\n")
-		rows, err := source(&fakeFleetRegistry{}).Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	ginkgo.It("reads an operator-flagged task from the client, not from disk", func() {
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{"task": {taskRow("t1", "Alpha")}},
+			pages: map[string]VaultAPIPage{
+				"t1": taskPage(map[string]any{"role": "agent", "flag_set_by": "operator"}),
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Name).To(gomega.Equal("Do It"))
+		gomega.Expect(rows[0].Name).To(gomega.Equal("Alpha"))
 		gomega.Expect(rows[0].Kind).To(gomega.Equal("task"))
-		gomega.Expect(rows[0].Vault).To(gomega.Equal("private-personal"))
-		gomega.Expect(rows[0].Branch).To(gomega.Equal("create"))
+		gomega.Expect(rows[0].Role).To(gomega.Equal(RoleAgent))
 		gomega.Expect(rows[0].Refused).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("carries the provenance refusal for an agent-set flag", func() {
-		// The row is still a row — it is refused, not dropped. Dropping it would
-		// hide the write this rule exists to surface.
-		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: agent\n---\n")
-		rows, err := source(&fakeFleetRegistry{}).Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Refused).To(gomega.Equal([]string{RefusalAgentSetFlag}))
-	})
-
-	ginkgo.It("skips an unflagged page entirely", func() {
-		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\n---\n")
-		rows, err := source(&fakeFleetRegistry{}).Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.BeEmpty())
-	})
-
-	ginkgo.It("reads goals and topics from their own folders", func() {
-		writePage(dir, "24 Goals", "Ship It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\n---\n")
-		writePage(dir, "23 Topics", "Fleet Ops", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\n---\n")
-		rows, err := source(&fakeFleetRegistry{}).Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		kinds := map[string]bool{}
-		for _, row := range rows {
-			kinds[row.Kind] = true
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{"task": {taskRow("t1", "Alpha")}},
+			pages: map[string]VaultAPIPage{
+				"t1": taskPage(map[string]any{"flag_set_by": "agent"}),
+			},
 		}
-		gomega.Expect(kinds).To(gomega.HaveKey("goal"))
-		gomega.Expect(kinds).To(gomega.HaveKey("topic"))
-	})
 
-	ginkgo.It("reads a row whose session the registry lists as LIVE", func() {
-		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\nclaude_session_id: s1\n---\n")
-		rows, err := source(&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 42, Name: "Do It"}}}).Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Liveness).To(gomega.Equal("LIVE"))
-		gomega.Expect(rows[0].Branch).To(gomega.Equal("skip"))
+		gomega.Expect(rows[0].Refused).To(gomega.ContainElement(RefusalAgentSetFlag))
 	})
 
-	ginkgo.It("reads an unreadable registry as UNKNOWN, never ABSENT", func() {
-		// ABSENT is a positive claim that nothing is running; a failed probe is not.
-		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\nclaude_session_id: s1\n---\n")
-		rows, err := source(&fakeFleetRegistry{err: os.ErrPermission}).Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Liveness).To(gomega.Equal("UNKNOWN"))
-		gomega.Expect(rows[0].Branch).To(gomega.Equal("unknown"))
-	})
-
-	ginkgo.It("fails rather than reporting no rows when the vaults cannot be listed", func() {
-		s := NativeFlaggedRowsSource{
-			Vaults:     nativeVaults{err: os.ErrPermission},
-			Supervisor: nativeSupervisor{},
-			Registry:   &fakeFleetRegistry{},
+	ginkgo.It("reads goals and topics from their own lists", func() {
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{
+				"goal":  {{ID: "g1", Title: "A Goal", Status: "in_progress", Flag: true, Vault: "v"}},
+				"topic": {{ID: "p1", Title: "A Topic", Status: "in_progress", Flag: true, Vault: "v"}},
+			},
 		}
-		rows, err := s.Rows(context.Background())
-		gomega.Expect(err).To(gomega.HaveOccurred())
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(2))
+		kinds := []string{rows[0].Kind, rows[1].Kind}
+		gomega.Expect(kinds).To(gomega.ConsistOf("goal", "topic"))
+	})
+
+	ginkgo.It("reports an outage as ErrVaultAPIUnavailable, never as no rows", func() {
+		client := fakeVaultAPI{err: ErrVaultAPIUnavailable}
+
+		rows, err := source(client, nil).Rows(ctx)
 		gomega.Expect(rows).To(gomega.BeNil())
+		gomega.Expect(stderrors.Is(err, ErrVaultAPIUnavailable)).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("fails rather than reporting no rows when the child table cannot be read", func() {
+		client := fakeVaultAPI{}
+		s := VaultAPIFlaggedRowsSource{
+			Client:     client,
+			Supervisor: nativeSupervisor{err: stderrors.New("boom")},
+		}
+
+		_, err := s.Rows(ctx)
+		gomega.Expect(err).ToNot(gomega.BeNil())
+	})
+
+	ginkgo.It("excludes a flagged page deferred to the future", func() {
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{"task": {taskRow("t1", "Later")}},
+			pages: map[string]VaultAPIPage{
+				"t1": taskPage(map[string]any{"defer_date": "2999-01-01"}),
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("resolves a goal's owner through its declaring topic", func() {
-		// The topic page declares the goal under ## Goals, so an unmanaged goal is
-		// lifted to the topic rather than falling to the fleet.
-		writePage(dir, "23 Topics", "Fleet Ops", "---\nstatus: in_progress\n---\n\n## Goals\n\n- [[Ship It]]\n")
-		writePage(dir, "24 Goals", "Ship It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\n---\n")
-		rows, err := source(&fakeFleetRegistry{}).Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Branch).To(gomega.Equal("open-manager"))
-	})
-})
-
-// nativeHeartbeats is a fixed heartbeat store.
-type nativeHeartbeats struct {
-	rows []HeartbeatRow
-}
-
-func (n nativeHeartbeats) Rows(context.Context) ([]HeartbeatRow, error) { return n.rows, nil }
-
-// SC2 — the row's liveness follows the VERDICT SOURCE, never a self-derivation.
-//
-// The criterion asks for a stub of `/api/1.0/liveness`; the in-Go source makes no
-// HTTP call, it calls `LivenessVerdicts` in-process — the same function the
-// endpoint serves. So the stub is applied at that function's INPUTS (registry,
-// child table, heartbeat store), which is the same falsifier: a consumer that
-// derived liveness itself from `os.kill(pid, 0)` cannot pass either spec.
-var _ = ginkgo.Describe("SC2 — follow the verdict", func() {
-	var dir string
-
-	ginkgo.BeforeEach(func() {
-		dir = ginkgo.GinkgoT().TempDir()
-	})
-
-	ginkgo.It("flips with the verdict for a session whose heartbeat is stale", func() {
-		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\nclaude_session_id: s1\n---\n")
-		stale := []HeartbeatRow{{SessionID: "s1", Live: false}}
-
-		live := NativeFlaggedRowsSource{
-			Vaults:     nativeVaults{vaults: []Vault{{Name: "v", Path: dir}}},
-			Supervisor: nativeSupervisor{},
-			Heartbeats: nativeHeartbeats{rows: stale},
-			Registry:   &fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 42, Name: "Do It"}}},
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{
+				"goal": {{ID: "g1", Title: "A Goal", Status: "in_progress", Flag: true, Vault: "v"}},
+			},
+			all: map[string][]VaultAPIRow{
+				"topic": {{
+					ID: "p1", Title: "A Topic", Status: "in_progress", Vault: "v",
+					Goals: []string{"[[A Goal]]"},
+				}},
+			},
 		}
-		rows, err := live.Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
 		gomega.Expect(rows).To(gomega.HaveLen(1))
-		// The registry proves the process alive; the heartbeat is corroboration only
-		// and must not drag the verdict down.
-		gomega.Expect(rows[0].Liveness).To(gomega.Equal("LIVE"))
-
-		exited := 0
-		dead := NativeFlaggedRowsSource{
-			Vaults:     nativeVaults{vaults: []Vault{{Name: "v", Path: dir}}},
-			Supervisor: nativeSupervisor{children: []Session{{ID: "s1", ExitCode: &exited}}},
-			Heartbeats: nativeHeartbeats{rows: stale},
-			Registry:   &fakeFleetRegistry{},
-		}
-		rows, err = dead.Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Liveness).To(gomega.Equal("ABSENT"))
-	})
-
-	ginkgo.It("reads a session live whose verdict CONTRADICTS its pid", func() {
-		// The child row has no exit code, so the verdict is live — while the registry
-		// lists no pid at all for it. A consumer that self-derived from the pid would
-		// report ABSENT here, which is the whole point of the second session.
-		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\nclaude_session_id: s2\n---\n")
-		source := NativeFlaggedRowsSource{
-			Vaults:     nativeVaults{vaults: []Vault{{Name: "v", Path: dir}}},
-			Supervisor: nativeSupervisor{children: []Session{{ID: "s2"}}},
-			Registry:   &fakeFleetRegistry{},
-		}
-		rows, err := source.Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Liveness).To(gomega.Equal("LIVE"))
-	})
-})
-
-// SC1 — the row source emits only work: `status: in_progress` and not deferred.
-//
-// Each excluded class gets its own case, so a filter that widened or narrowed to
-// the wrong status set fails one of them rather than passing on the included case
-// alone. The clock is fixed and the defer dates are far from it, so a local/UTC
-// day shift cannot flip the comparison.
-var _ = ginkgo.Describe("NativeFlaggedRowsSource eligibility", func() {
-	var dir string
-
-	ginkgo.BeforeEach(func() {
-		dir = ginkgo.GinkgoT().TempDir()
-	})
-
-	now := time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC)
-
-	source := func() NativeFlaggedRowsSource {
-		return NativeFlaggedRowsSource{
-			Vaults:     nativeVaults{vaults: []Vault{{Name: "private-personal", Path: dir}}},
-			Supervisor: nativeSupervisor{},
-			Registry:   &fakeFleetRegistry{},
-			Now:        fixedNow(now),
-		}
-	}
-
-	flagged := func(status string) string {
-		return "---\nstatus: " + status + "\nflag: true\nflag_set_by: operator\n---\n"
-	}
-
-	for _, status := range []string{"completed", "aborted", "hold", "next", "backlog"} {
-		ginkgo.It("excludes a flagged "+status+" page", func() {
-			writePage(dir, "25 Tasks", "Do It", flagged(status))
-			rows, err := source().Rows(context.Background())
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(rows).To(gomega.BeEmpty(), "status %q must not be emitted", status)
-		})
-	}
-
-	ginkgo.It("excludes a flagged page deferred to the future", func() {
-		writePage(dir, "25 Tasks", "Do It",
-			"---\nstatus: in_progress\ndefer_date: \"2030-01-01\"\nflag: true\nflag_set_by: operator\n---\n")
-		rows, err := source().Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.BeEmpty())
-	})
-
-	ginkgo.It("includes an in_progress flagged page due today", func() {
-		writePage(dir, "25 Tasks", "Do It",
-			"---\nstatus: in_progress\ndefer_date: \"2026-11-21\"\nflag: true\nflag_set_by: operator\n---\n")
-		rows, err := source().Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.HaveLen(1))
-		gomega.Expect(rows[0].Name).To(gomega.Equal("Do It"))
-	})
-
-	ginkgo.It("includes an in_progress flagged page with no defer_date", func() {
-		writePage(dir, "25 Tasks", "Do It", flagged("in_progress"))
-		rows, err := source().Rows(context.Background())
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(rows).To(gomega.HaveLen(1))
+		// The goal is owned by the topic that declares it, so the branch is the
+		// manager route rather than a fleet-level create.
+		gomega.Expect(rows[0].Branch).ToNot(gomega.BeEmpty())
 	})
 })
