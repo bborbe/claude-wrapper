@@ -118,33 +118,3 @@ func ParseDecisionParkRows(ctx context.Context, output string) ([]LapsedManagerD
 	}
 	return decisions, nil
 }
-
-// ParseWakeMisses reads `wake-misses.py`'s `MISS` lines.
-//
-// Shape, from `commands/steps/wake-misses.md`:
-//
-//	MISS <vault> <subject> <ts> <result> <session> <live>
-//
-// ⚠️ **`STALE` is not a miss.** The step's own table sends `STALE` to
-// fleet-triage and gives the keep-alive leg only `MISS`; folding the two would
-// report a subject that may simply have stopped producing actionable ticks.
-func ParseWakeMisses(ctx context.Context, output string) ([]WakeMiss, error) {
-	misses := []WakeMiss{}
-	for _, line := range strings.Split(output, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "MISS ") {
-			continue
-		}
-		fields := strings.Fields(trimmed)
-		if len(fields) < 7 {
-			return nil, errors.Errorf(ctx, "wake-miss line has %d fields, want 7: %q", len(fields), trimmed)
-		}
-		misses = append(misses, WakeMiss{
-			Subject:   fields[2],
-			Result:    fields[4],
-			SessionID: fields[5],
-			Live:      strings.TrimPrefix(fields[6], "live="),
-		})
-	}
-	return misses, nil
-}
