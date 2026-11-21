@@ -5,6 +5,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"time"
@@ -109,6 +110,47 @@ func Sweep(base sweepgate.Config) http.Handler {
 		resp.Header().Set("Content-Type", "application/json")
 		resp.WriteHeader(http.StatusOK)
 		if _, err := resp.Write(data); err != nil { //nolint:gosec // served as application/json, not HTML
+			_ = err // the client went away; nothing useful to do with it
+		}
+	})
+}
+
+// SweepSubjects serves the subjects the gate is configured to tick.
+//
+// The per-subject route answers one tracked set at a time, and a consumer that
+// wants the whole fleet has no way to learn which sets exist — so it either
+// guesses names or falls back to deriving the classification itself, which is
+// the defect the per-subject route removes. This is that enumeration.
+//
+// It answers the CONFIGURED list, not the subjects that happen to have fresh
+// rows. A consumer needs to know what to ask about; whether each one has a
+// usable cache is the per-subject route's answer to give, and conflating the
+// two would make a subject whose tick is late look unconfigured.
+//
+// An empty list is a real answer: no subject is configured, so the tick is
+// disabled (startSweepGate announces the same condition). It is a 200 because
+// the question was answered, not refused.
+func SweepSubjects(base sweepgate.Config) http.Handler {
+	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			writeError(resp, http.StatusMethodNotAllowed,
+				errors.Errorf(req.Context(), "method %q not allowed", req.Method))
+			return
+		}
+		subjects := base.Subjects
+		if subjects == nil {
+			subjects = []string{}
+		}
+		body, err := json.Marshal(struct {
+			Subjects []string `json:"subjects"`
+		}{Subjects: subjects})
+		if err != nil {
+			writeError(resp, http.StatusInternalServerError, err)
+			return
+		}
+		resp.Header().Set("Content-Type", "application/json")
+		resp.WriteHeader(http.StatusOK)
+		if _, err := resp.Write(body); err != nil { //nolint:gosec // served as application/json, not HTML
 			_ = err // the client went away; nothing useful to do with it
 		}
 	})
