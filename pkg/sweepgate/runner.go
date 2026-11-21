@@ -8,11 +8,16 @@ import (
 	"context"
 	"io"
 	"log"
+	"os/exec"
 	"strings"
 	"time"
 
 	libtime "github.com/bborbe/time"
 )
+
+// wakeTimeout bounds one wake invocation. A pane wake types one prompt and
+// returns; a hung wake must not stall the tick, so it is abandoned at this bound.
+const wakeTimeout = 60 * time.Second
 
 // Runner ticks every configured subject on an interval until the context ends.
 type Runner interface {
@@ -81,7 +86,32 @@ func (r *TickRunner) tickSubject(ctx context.Context, cfg Config) {
 	}
 	if exit := Tick(ctx, cfg, io.Discard, stderr, CardBuilder(cfg)); exit == ExitChange {
 		logf("sweep-gate %s: VERDICT change (%s)", cfg.Subject, reason)
+		r.wake(ctx, cfg, logf)
 	}
+}
+
+// wake runs the configured wake command for a verdict change.
+//
+// It is the port of the vault script's stdout CHANGE line: the vault sweep-gate.py
+// woke a manager by printing a line a Monitor read; the Go tick has no Monitor, so
+// on ExitChange it invokes manager-wake.py directly, which resolves the subject's
+// manager pane and types the wake prompt. A no-op when no command is configured.
+func (r *TickRunner) wake(ctx context.Context, cfg Config, logf func(format string, args ...any)) {
+	if len(cfg.WakeCmd) == 0 {
+		return
+	}
+	wakeCtx, cancel := context.WithTimeout(ctx, wakeTimeout)
+	defer cancel()
+	args := append(append([]string{}, cfg.WakeCmd[1:]...),
+		"--vault", cfg.Vault, "--subject", cfg.Subject)
+	cmd := exec.CommandContext(wakeCtx, cfg.WakeCmd[0], args...) //nolint:gosec // argv is the operator-set --sweep-gate-wake-cmd flag plus the config's Vault/Subject, never user input
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		logf("sweep-gate %s: WAKE failed: %v (output: %s)",
+			cfg.Subject, err, strings.TrimSpace(string(out)))
+		return
+	}
+	logf("sweep-gate %s: WAKE ok (%s)", cfg.Subject, strings.TrimSpace(string(out)))
 }
 
 // logfFor prefers the per-subject logger and falls back to the runner's.

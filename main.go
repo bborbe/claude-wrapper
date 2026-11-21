@@ -130,6 +130,7 @@ type sweepGateFlags struct {
 	vault    *string
 	topics   *string
 	interval *time.Duration
+	wakeCmd  *string
 }
 
 func registerSweepGateFlags() sweepGateFlags {
@@ -144,6 +145,8 @@ func registerSweepGateFlags() sweepGateFlags {
 			"comma-separated subjects the daemon tick covers"),
 		interval: flag.Duration("sweep-gate-interval", sweepgate.DefaultInterval,
 			"how often the daemon tick runs; 0 disables it"),
+		wakeCmd: flag.String("sweep-gate-wake-cmd", "",
+			"command run on a verdict change (ExitChange), e.g. 'python3 /path/manager-wake.py'; empty disables the wake"),
 	}
 }
 
@@ -939,6 +942,7 @@ func sweepGateConfigFromFlags(flags sweepGateFlags) sweepgate.Config {
 		Subject:  *flags.topic,
 		Subjects: splitSessions(*flags.topics),
 		Interval: interval,
+		WakeCmd:  strings.Fields(*flags.wakeCmd),
 	}
 	resolved, err := cfg.WithDefaults(context.Background())
 	if err != nil {
