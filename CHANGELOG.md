@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the one-shot sweep-gate tick wakes a changed subject's manager too.** The wake was wired only into the daemon's `TickRunner.tickSubject`; the one-shot `-sweep-gate-mode=tick` calls `sweepgate.Tick` directly and so woke nothing — a gap versus the vault script, whose `tick` printed a `CHANGE` line a Monitor read, and versus the documented SC6 probe. `Wake` is now a package function invoked from both `tickSubject` and the one-shot tick on `ExitChange`. Change set: `pkg/sweepgate/runner.go`, `main.go`, `CHANGELOG.md`.
+
 ## v0.58.0
 
 - feat: **the daemon's sweep tick wakes a changed subject's manager.** The vault `sweep-gate.py` woke a manager by printing a `CHANGE` line a Monitor read; the Go port discarded stdout and only logged, so after the port nothing woke a manager — the gap this closes. On `ExitChange`, `tickSubject` now runs a configured wake command (e.g. `manager-wake.py`, which resolves the subject's manager pane and types the wake prompt itself, so the daemon needs no pane knowledge). New `--sweep-gate-wake-cmd` flag; **empty disables the wake**, so a daemon launched without it behaves exactly as before — additive, never a behavior change for a tick that never set it. The invocation is bounded (60 s) so a hung wake cannot stall the sequential tick, and a failure is logged with the command's output rather than swallowed. Change set: `pkg/sweepgate/config.go`, `pkg/sweepgate/runner.go`, `pkg/sweepgate/runner_test.go`, `main.go`, `CHANGELOG.md`.
