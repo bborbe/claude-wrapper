@@ -425,9 +425,6 @@ func (s VaultAPIFlaggedRowsSource) parked(sessionID string) bool {
 	return s.Parked(sessionID)
 }
 
-
-
-
 // blockerName reduces a blocker entry to the task name it refers to: wikilink
 // brackets, an alias or an anchor dropped, and case folded.
 func blockerName(raw string) string {
@@ -437,4 +434,3 @@ func blockerName(raw string) string {
 	}
 	return strings.ToLower(strings.Trim(name, `'"`))
 }
-

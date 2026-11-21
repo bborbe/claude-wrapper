@@ -6,8 +6,8 @@ package pkg
 
 import (
 	"context"
-	stderrors "errors"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,7 +46,7 @@ type VaultAPIRow struct {
 	Vault  string `json:"vault"`
 	// SessionID is the page's recorded claude_session_id. Empty on a never-opened
 	// row, which is the state the tick opens fresh.
-	SessionID string `json:"claude_session_id"`
+	SessionID string   `json:"claude_session_id"`
 	Goals     []string `json:"goals"`
 }
 
