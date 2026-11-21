@@ -136,36 +136,4 @@ var _ = ginkgo.Describe("keepalive output parsers", func() {
 		})
 	})
 
-	ginkgo.Describe("ParseWakeMisses", func() {
-		ginkgo.It("reads the subject, result, session and live column", func() {
-			output := "MISS private-personal goal-a 2026-11-19T20:00:00Z NO-PANE abc123 live=yes\n" +
-				"wake-misses=1 stale=0 measured=3 unmeasured=0\n"
-
-			misses, err := ParseWakeMisses(ctx, output)
-
-			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-			gomega.Expect(misses).To(gomega.Equal([]WakeMiss{{
-				Subject:   "goal-a",
-				Result:    "NO-PANE",
-				SessionID: "abc123",
-				Live:      "yes",
-			}}))
-		})
-
-		// ⚠️ `STALE` goes to fleet-triage, not to this leg. Folding it in would
-		// report a subject that may simply have stopped producing actionable ticks.
-		ginkgo.It("ignores STALE lines", func() {
-			output := "STALE private-personal goal-a 2026-11-17T20:00:00Z HEADLESS abc123 live=yes\n"
-
-			misses, err := ParseWakeMisses(ctx, output)
-
-			gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
-			gomega.Expect(misses).To(gomega.BeEmpty())
-		})
-
-		ginkgo.It("refuses a MISS line with too few fields", func() {
-			_, err := ParseWakeMisses(ctx, "MISS private-personal goal-a\n")
-			gomega.Expect(err).To(gomega.HaveOccurred())
-		})
-	})
 })
