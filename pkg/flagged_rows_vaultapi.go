@@ -158,7 +158,9 @@ func (s VaultAPIFlaggedRowsSource) subjectIndex(ctx context.Context) (subjectInd
 				continue
 			}
 			for _, goal := range item.Goals {
-				index.TopicOf[vaultSubjectKey(item.Vault, "goal", blockerName(goal))] = item.Title
+				// Case-preserving: ResolveOwner looks this up with the page's own
+				// title, so a folded key would never match.
+				index.TopicOf[vaultSubjectKey(item.Vault, "goal", wikilinkTitle(goal))] = item.Title
 			}
 		}
 	}
@@ -561,9 +563,21 @@ func (s VaultAPIFlaggedRowsSource) parked(sessionID string) bool {
 // blockerName reduces a blocker entry to the task name it refers to: wikilink
 // brackets, an alias or an anchor dropped, and case folded.
 func blockerName(raw string) string {
+	return strings.ToLower(wikilinkTitle(raw))
+}
+
+// wikilinkTitle reduces a wikilink entry to the page title it names, PRESERVING
+// case.
+//
+// It is the shape a map keyed by subject name must use: `blockerName` folds case
+// because a blocker lookup is a case-insensitive file match, but a goal→topic key
+// is read back with the page's own Title-Case title. Lowercasing the key while the
+// reader looks up the raw title made the declaring-topic rung unreachable for every
+// Title-Case page, so the owner silently fell through to the fleet.
+func wikilinkTitle(raw string) string {
 	name := strings.TrimSpace(raw)
 	if links := wikilinkNameRe.FindStringSubmatch(name); links != nil {
 		name = links[1]
 	}
-	return strings.ToLower(strings.Trim(name, `'"`))
+	return strings.Trim(name, `'"`)
 }

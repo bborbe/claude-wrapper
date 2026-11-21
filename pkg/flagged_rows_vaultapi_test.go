@@ -133,6 +133,32 @@ var _ = ginkgo.Describe("VaultAPIFlaggedRowsSource", func() {
 		}
 	})
 
+	ginkgo.It("keys the goal→topic map by the case-preserving title", func() {
+		// ResolveOwner looks the goal up with the page's own Title-Case title, so a
+		// folded key made the declaring-topic rung unreachable for every Title-Case
+		// page and the owner silently fell through to the fleet.
+		client := fakeVaultAPI{
+			all: map[string][]VaultAPIRow{
+				"topic": {{
+					ID: "p1", Title: "A Topic", Vault: "v",
+					Goals: []string{"[[A Goal]]"},
+				}},
+			},
+		}
+
+		idx, err := source(client, nil).subjectIndex(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(topicOfForVault(idx, "v")).To(gomega.HaveKey("A Goal"))
+		gomega.Expect(wikilinkTitle("[[A Goal|alias]]")).To(gomega.Equal("A Goal"))
+	})
+
+	ginkgo.It("emits rows_source only when the source names one", func() {
+		gomega.Expect(FlaggedTickResult{RowsSource: "vault-api"}.Line()).
+			To(gomega.ContainSubstring("rows_source=vault-api"))
+		gomega.Expect(FlaggedTickResult{}.Line()).
+			ToNot(gomega.ContainSubstring("rows_source="))
+	})
+
 	ginkgo.It("drops a blocker the index reports as completed", func() {
 		client := fakeVaultAPI{
 			eligible: map[string][]VaultAPIRow{
