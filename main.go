@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -939,47 +940,53 @@ func runFleetPusherOnce(
 // report as JSON-lines, a summary, and the population diff. It returns the exit
 // code: 0 when every session reloaded, 1 otherwise, 2 on a transport error.
 func runReloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string) int {
+	return reloadFleetCLI(ctx, daemonURL, sessionsCSV, os.Stdout, os.Stderr)
+}
+
+// reloadFleetCLI is runReloadFleetCLI with injectable writers, so the JSON-lines
+// rendering and the exit-code mapping are testable.
+func reloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string, stdout, stderr io.Writer) int {
 	body, err := json.Marshal(map[string][]string{"sessions": splitSessions(sessionsCSV)})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "reload-fleet: marshal failed: %v\n", err)
+		fmt.Fprintf(stderr, "reload-fleet: marshal failed: %v\n", err)
 		return 2
 	}
 	url := strings.TrimRight(daemonURL, "/") + "/api/1.0/reload-fleet"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "reload-fleet: request failed: %v\n", err)
+		fmt.Fprintf(stderr, "reload-fleet: request failed: %v\n", err)
 		return 2
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "reload-fleet: daemon unreachable: %v\n", err)
+		fmt.Fprintf(stderr, "reload-fleet: daemon unreachable: %v\n", err)
 		return 2
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "reload-fleet: daemon returned %d\n", resp.StatusCode)
+		fmt.Fprintf(stderr, "reload-fleet: daemon returned %d\n", resp.StatusCode)
 		return 2
 	}
 	var report pkg.ReloadReport
 	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
-		fmt.Fprintf(os.Stderr, "reload-fleet: decode failed: %v\n", err)
+		fmt.Fprintf(stderr, "reload-fleet: decode failed: %v\n", err)
 		return 2
 	}
 	counts := map[pkg.ReloadOutcome]int{}
 	for _, result := range report.Results {
 		line, _ := json.Marshal(result)
-		fmt.Println(string(line))
+		fmt.Fprintln(stdout, string(line))
 		counts[result.Outcome]++
 	}
-	fmt.Fprintf(os.Stderr, "reloaded=%d refused=%d busy=%d no-pane=%d unverified=%d\n",
+	fmt.Fprintf(stderr, "reloaded=%d refused=%d busy=%d no-pane=%d unverified=%d\n",
 		counts[pkg.OutcomeReloaded], counts[pkg.OutcomeRefused], counts[pkg.OutcomeBusy],
 		counts[pkg.OutcomeNoPane], counts[pkg.OutcomeUnverified])
 	for _, id := range report.Missing {
-		fmt.Printf("missing: %s\n", id)
+		fmt.Fprintf(stdout, "missing: %s\n", id)
 	}
 	for _, id := range report.Extra {
-		fmt.Printf("extra: %s\n", id)
+		fmt.Fprintf(stdout, "extra: %s\n", id)
 	}
 	if len(report.Results) > 0 && counts[pkg.OutcomeReloaded] == len(report.Results) {
 		return 0
