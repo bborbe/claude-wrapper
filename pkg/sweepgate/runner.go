@@ -90,13 +90,15 @@ func (r *TickRunner) tickSubject(ctx context.Context, cfg Config) {
 	}
 }
 
-// wake runs the configured wake command for a verdict change.
+// Wake runs the configured wake command for a verdict change.
 //
 // It is the port of the vault script's stdout CHANGE line: the vault sweep-gate.py
 // woke a manager by printing a line a Monitor read; the Go tick has no Monitor, so
 // on ExitChange it invokes manager-wake.py directly, which resolves the subject's
 // manager pane and types the wake prompt. A no-op when no command is configured.
-func (r *TickRunner) wake(ctx context.Context, cfg Config, logf func(format string, args ...any)) {
+// Exported as a function (not only a method) so the one-shot tick mode in main can
+// invoke it too — that mode calls Tick directly and bypasses TickRunner.
+func Wake(ctx context.Context, cfg Config, logf func(format string, args ...any)) {
 	if len(cfg.WakeCmd) == 0 {
 		return
 	}
@@ -112,6 +114,11 @@ func (r *TickRunner) wake(ctx context.Context, cfg Config, logf func(format stri
 		return
 	}
 	logf("sweep-gate %s: WAKE ok (%s)", cfg.Subject, strings.TrimSpace(string(out)))
+}
+
+// wake is the TickRunner's call site; it delegates to the exported Wake.
+func (r *TickRunner) wake(ctx context.Context, cfg Config, logf func(format string, args ...any)) {
+	Wake(ctx, cfg, logf)
 }
 
 // logfFor prefers the per-subject logger and falls back to the runner's.
