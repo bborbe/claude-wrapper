@@ -72,6 +72,9 @@ type VaultAPIClient interface {
 	// List returns the eligible rows of one kind, already filtered by vault-api.
 	// An outage is ErrVaultAPIUnavailable, never an empty slice.
 	List(ctx context.Context, kind string) ([]VaultAPIRow, error)
+	// ListAll returns every row of one kind, unfiltered — the subject index needs
+	// the goals and topics that are not themselves eligible to open.
+	ListAll(ctx context.Context, kind string) ([]VaultAPIRow, error)
 	// Page returns one record's frontmatter and body.
 	Page(ctx context.Context, kind, id string) (VaultAPIPage, error)
 }
@@ -118,6 +121,33 @@ const DefaultVaultAPITimeout = 5 * time.Second
 // now. The difference is that the index owns it, so the tick and every other
 // consumer of "which rows are eligible" cannot disagree.
 const DefaultVaultAPITaskQuery = "flag=true&status=in_progress&due=now"
+
+// ListAll returns every row of one kind, unfiltered.
+//
+// The subject index needs every goal and topic, not only the flagged ones: owner
+// resolution asks "which topic declares this goal" and "what session does this
+// subject record", and both questions are about subjects that are not themselves
+// eligible to open. Asking the eligibility query here would build a half index
+// and resolve owners wrongly, silently.
+func (c HTTPVaultAPIClient) ListAll(
+	ctx context.Context,
+	kind string,
+) ([]VaultAPIRow, error) {
+	segment, ok := vaultAPIKindPath(kind)
+	if !ok {
+		return nil, errors.Wrapf(ctx, ErrVaultAPIUnavailable, "unknown kind %q", kind)
+	}
+	var payload struct {
+		Items []VaultAPIRow `json:"items"`
+	}
+	if err := c.get(ctx, segment, &payload); err != nil {
+		return nil, err
+	}
+	if payload.Items == nil {
+		return []VaultAPIRow{}, nil
+	}
+	return payload.Items, nil
+}
 
 // List returns the eligible rows of one kind.
 func (c HTTPVaultAPIClient) List(ctx context.Context, kind string) ([]VaultAPIRow, error) {

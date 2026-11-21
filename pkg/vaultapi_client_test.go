@@ -75,6 +75,16 @@ var _ = ginkgo.Describe("HTTPVaultAPIClient", func() {
 		}))
 	})
 
+	ginkgo.It("lists every row unfiltered for the subject index", func() {
+		serve(http.StatusOK, `{"items":[{"id":"g1","title":"Some Goal","status":"completed"}]}`)
+
+		rows, err := client.ListAll(ctx, "goal")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Title).To(gomega.Equal("Some Goal"))
+		gomega.Expect(requests).To(gomega.Equal([]string{"/api/v1/goals?"}))
+	})
+
 	ginkgo.It("answers an empty slice, never nil, when the index holds no rows", func() {
 		serve(http.StatusOK, `{"items":[]}`)
 
