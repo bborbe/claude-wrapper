@@ -1061,6 +1061,7 @@ func startFlaggedTick(
 			Supervisor: supervisor,
 			Heartbeats: heartbeats,
 			Registry:   registry,
+			Now:        now,
 		},
 		Open:     open,
 		Reopener: reopener,
