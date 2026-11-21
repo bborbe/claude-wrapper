@@ -114,6 +114,48 @@ var _ = ginkgo.Describe("VaultAPIFlaggedRowsSource", func() {
 		gomega.Expect(rows[0].Refused).To(gomega.ContainElement(RefusalAgentSetFlag))
 	})
 
+	ginkgo.It("does not refuse an operator-flagged goal or topic whose provenance is unknown", func() {
+		// The index serves no flag_set_by for goals or topics. Treating that
+		// unknown as "agent-set" would stamp every flagged goal and topic with a
+		// refusal, and the tick never opens a refused row.
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{
+				"goal":  {{ID: "g1", Title: "A Goal", Status: "in_progress", Flag: true, Vault: "v"}},
+				"topic": {{ID: "p1", Title: "A Topic", Status: "in_progress", Flag: true, Vault: "v"}},
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(2))
+		for _, row := range rows {
+			gomega.Expect(row.Refused).To(gomega.BeEmpty(), row.Kind+" must not be refused")
+		}
+	})
+
+	ginkgo.It("drops a blocker the index reports as completed", func() {
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{
+				"task": {{ID: "t1", Title: "Blocked", Status: "in_progress", Flag: true, Vault: "v"}},
+			},
+			all: map[string][]VaultAPIRow{
+				"task": {{ID: "t2", Title: "Done Already", Status: "completed", Vault: "v"}},
+			},
+			pages: map[string]VaultAPIPage{
+				"t1": taskPage(map[string]any{
+					"flag_set_by": "operator",
+					"blocked_by":  []any{"[[Done Already]]"},
+				}),
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].BlockedBy).To(gomega.BeEmpty(),
+			"a blocker that already completed must not keep the row blocked")
+	})
+
 	ginkgo.It("reads goals and topics from their own lists", func() {
 		client := fakeVaultAPI{
 			eligible: map[string][]VaultAPIRow{

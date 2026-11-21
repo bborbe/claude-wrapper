@@ -48,6 +48,12 @@ type VaultAPIRow struct {
 	// row, which is the state the tick opens fresh.
 	SessionID string   `json:"claude_session_id"`
 	Goals     []string `json:"goals"`
+	// FlagSetBy is the page's `flag_set_by`, empty when the index does not serve
+	// it or the page lacks it. The two are indistinguishable here, which is why
+	// the caller must treat an empty value as UNKNOWN for a kind whose projection
+	// does not carry the field — refusing on unknown would refuse every flagged
+	// goal and topic, and the tick never opens a refused row.
+	FlagSetBy string `json:"flag_set_by"`
 }
 
 // VaultAPIPage is one record's full frontmatter and body, as the record endpoint

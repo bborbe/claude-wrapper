@@ -77,8 +77,6 @@ type subjectIndex struct {
 	Sessions map[string]string
 }
 
-func subjectKey(kind, name string) string { return kind + "/" + name }
-
 // Rows asks vault-api which rows are eligible and enriches each answer.
 //
 // A vault-api outage returns ErrVaultAPIUnavailable, never an empty slice. The two
@@ -107,6 +105,13 @@ func (s VaultAPIFlaggedRowsSource) Rows(ctx context.Context) ([]FlaggedRow, erro
 	if err != nil {
 		return nil, err
 	}
+	// One unfiltered task read serves every blocker check this tick: the old scan
+	// resolved each blocker by reading its file, and a completed blocker must still
+	// be dropped or its row stays blocked forever.
+	statuses, err := s.taskStatuses(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	rows := make([]FlaggedRow, 0)
 	for _, kind := range kindDirs {
@@ -115,7 +120,9 @@ func (s VaultAPIFlaggedRowsSource) Rows(ctx context.Context) ([]FlaggedRow, erro
 			return nil, listErr
 		}
 		for _, item := range eligible {
-			row, ok, rowErr := s.rowForItem(ctx, kind.Kind, item, index, liveByID, liveByName, verdictErr)
+			row, ok, rowErr := s.rowForItem(
+				ctx, kind.Kind, item, index, statuses, liveByID, liveByName, verdictErr,
+			)
 			if rowErr != nil {
 				return nil, rowErr
 			}
@@ -140,18 +147,100 @@ func (s VaultAPIFlaggedRowsSource) subjectIndex(ctx context.Context) (subjectInd
 			return subjectIndex{}, err
 		}
 		for _, item := range items {
+			// Keyed by vault. The scan this replaced was per-vault, so the same
+			// subject name in two vaults never collided; a single global map would
+			// let one vault's goal resolve the other's manager session, and the
+			// collision is silent.
 			if item.SessionID != "" {
-				index.Sessions[subjectKey(kind, item.Title)] = item.SessionID
+				index.Sessions[vaultSubjectKey(item.Vault, kind, item.Title)] = item.SessionID
 			}
 			if kind != "topic" {
 				continue
 			}
 			for _, goal := range item.Goals {
-				index.TopicOf[blockerName(goal)] = item.Title
+				index.TopicOf[vaultSubjectKey(item.Vault, "goal", blockerName(goal))] = item.Title
 			}
 		}
 	}
 	return index, nil
+}
+
+// vaultSubjectKey namespaces a subject by its vault, so two vaults that both have
+// a goal called `Fleet Health` resolve to their own manager.
+func vaultSubjectKey(vault, kind, name string) string {
+	return vault + "\x00" + kind + "/" + name
+}
+
+// topicOfForVault projects the goal → topic map down to one vault's view, which is
+// the shape ResolveOwner reads.
+func topicOfForVault(index subjectIndex, vault string) map[string]string {
+	prefix := vault + "\x00goal/"
+	out := make(map[string]string, len(index.TopicOf))
+	for key, topic := range index.TopicOf {
+		if strings.HasPrefix(key, prefix) {
+			out[strings.TrimPrefix(key, prefix)] = topic
+		}
+	}
+	return out
+}
+
+// subjectLivenessInVault answers "is the session this subject's page records
+// alive?" within one vault. A subject with no recorded manager is a proven false;
+// an unanswerable probe is not.
+func subjectLivenessInVault(
+	index subjectIndex,
+	vault, kind, name string,
+	liveByID map[string]LivenessState,
+	verdictErr error,
+) *bool {
+	sid := index.Sessions[vaultSubjectKey(vault, kind, name)]
+	if sid == "" {
+		live := false
+		return &live
+	}
+	if verdictErr != nil {
+		return nil
+	}
+	live := liveByID[sid] == LivenessLive
+	return &live
+}
+
+// taskStatuses maps a vault-qualified task title to its status, so a blocker that
+// has already completed is dropped rather than keeping its row blocked forever.
+//
+// The old scan resolved this by reading the blocker's file. The index knows the
+// same fact, and reading it from the unfiltered task list is exact — a slug guess
+// would not be, and a miss there silently keeps a row blocked.
+func (s VaultAPIFlaggedRowsSource) taskStatuses(ctx context.Context) (map[string]string, error) {
+	items, err := s.Client.ListAll(ctx, "task")
+	if err != nil {
+		return nil, err
+	}
+	statuses := make(map[string]string, len(items))
+	for _, item := range items {
+		statuses[vaultSubjectKey(item.Vault, "task", strings.ToLower(item.Title))] = item.Status
+	}
+	return statuses, nil
+}
+
+// openBlockersOf drops the blockers the index reports as completed. "Cannot verify
+// it is done" stays blocked, and only a task's own blockers are resolved — the
+// same rule the page-reading version applied.
+func openBlockersOf(blockers []string, vault, kind string, statuses map[string]string) []string {
+	if len(blockers) == 0 {
+		return nil
+	}
+	if kind != "task" {
+		return blockers
+	}
+	out := make([]string, 0, len(blockers))
+	for _, name := range blockers {
+		if statuses[vaultSubjectKey(vault, "task", blockerName(name))] == "completed" {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // rowForItem projects one eligible row into the tick's vocabulary.
@@ -166,12 +255,19 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	kind string,
 	item VaultAPIRow,
 	index subjectIndex,
+	statuses map[string]string,
 	liveByID map[string]LivenessState,
 	liveByName map[string]bool,
 	verdictErr error,
 ) (FlaggedRow, bool, error) {
-	var role, mode, flagSetBy, deferDate string
+	var role, mode, flagSetBy, deferDate, block string
 	var blockedBy []string
+	// flagSetByKnown is what separates "this page carries no flag_set_by" from
+	// "this kind's projection does not serve the field". Only the first is a
+	// refusal; refusing on the second would stamp every flagged goal and topic
+	// `agent-set-flag`, and the tick never opens a refused row — the exact
+	// regression the 2026-11-10 provenance ruling fixed.
+	flagSetByKnown := false
 	if kind == "task" {
 		page, err := s.Client.Page(ctx, kind, item.ID)
 		if err != nil {
@@ -182,7 +278,19 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		flagSetBy = frontmatterString(page.Frontmatter, "flag_set_by")
 		deferDate = frontmatterString(page.Frontmatter, "defer_date")
 		blockedBy = frontmatterStrings(page.Frontmatter, "blocked_by")
+		flagSetByKnown = true
+		// The owner ladder reads managed_by and goals off this block; passing it
+		// empty dropped both rungs, so a task whose goal manager is live fell to
+		// the fleet and could be opened twice.
+		block = ownerBlock(
+			frontmatterString(page.Frontmatter, "managed_by"),
+			frontmatterStrings(page.Frontmatter, "goals"),
+		)
+	} else if item.FlagSetBy != "" {
+		flagSetBy = item.FlagSetBy
+		flagSetByKnown = true
 	}
+	blockedBy = openBlockersOf(blockedBy, item.Vault, kind, statuses)
 
 	task := sweepgate.Task{
 		Name:      item.Title,
@@ -204,35 +312,11 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	normalisedRole := normaliseRole(task.Role)
 	live := rowLiveness(task.Session, liveByID, verdictErr)
 
-	ownerCtx := OwnerContext{
-		TopicOf: index.TopicOf,
-		SubjectLive: func(_, name string) *bool {
-			return subjectLive(name, liveByName, verdictErr)
-		},
-		SubjectLiveness: func(kind, name string) *bool {
-			return subjectLiveness(index, kind, name, liveByID, verdictErr)
-		},
-		FleetLive: fleetLive(liveByName, verdictErr),
-	}
-	// The frontmatter block is passed empty: the owner ladder reads only the
-	// subject name and the goal→topic map, and the page's raw YAML is no longer
-	// available here.
-	owner := ResolveOwner(kind, item.Title, "", ownerCtx)
-	ownerLive, chainLive := OwnerLiveness(owner, kind, item.Title, ownerCtx)
-
-	branch, branchRefused := ResolveBranch(BranchInput{
-		Kind:       kind,
-		Role:       normalisedRole,
-		SessionID:  task.Session,
-		Live:       live,
-		ChainLive:  chainLive,
-		BlockRole:  role,
-		Owner:      ownerName(owner),
-		OwnerLive:  ownerLive,
-		RegistryOK: verdictErr == nil,
-		Parked:     s.parked(task.Session),
-	})
-	refused := append(refusalsForFlagSetBy(flagSetBy), branchRefused...)
+	branch, branchRefused := s.resolveBranch(
+		kind, item, task, block, role, normalisedRole, live,
+		index, liveByID, liveByName, verdictErr,
+	)
+	refused := append(refusalsFor(flagSetBy, flagSetByKnown), branchRefused...)
 
 	return FlaggedRow{
 		Kind:      kind,
@@ -246,6 +330,48 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		BlockedBy: blockedBy,
 		Refused:   refused,
 	}, true, nil
+}
+
+// resolveBranch runs the owner ladder and the branch partition for one row.
+//
+// It is a method rather than inline code so rowForItem stays inside the length
+// budget; the two steps are inseparable in meaning — the branch is chosen from the
+// owner the ladder selected and that owner's liveness.
+func (s VaultAPIFlaggedRowsSource) resolveBranch(
+	kind string,
+	item VaultAPIRow,
+	task sweepgate.Task,
+	block, rawRole, role, live string,
+	index subjectIndex,
+	liveByID map[string]LivenessState,
+	liveByName map[string]bool,
+	verdictErr error,
+) (string, []string) {
+	ownerCtx := OwnerContext{
+		TopicOf: topicOfForVault(index, item.Vault),
+		SubjectLive: func(_, name string) *bool {
+			return subjectLive(name, liveByName, verdictErr)
+		},
+		SubjectLiveness: func(kind, name string) *bool {
+			return subjectLivenessInVault(index, item.Vault, kind, name, liveByID, verdictErr)
+		},
+		FleetLive: fleetLive(liveByName, verdictErr),
+	}
+	owner := ResolveOwner(kind, item.Title, block, ownerCtx)
+	ownerLive, chainLive := OwnerLiveness(owner, kind, item.Title, ownerCtx)
+
+	return ResolveBranch(BranchInput{
+		Kind:       kind,
+		Role:       role,
+		SessionID:  task.Session,
+		Live:       live,
+		ChainLive:  chainLive,
+		BlockRole:  rawRole,
+		Owner:      ownerName(owner),
+		OwnerLive:  ownerLive,
+		RegistryOK: verdictErr == nil,
+		Parked:     s.parked(task.Session),
+	})
 }
 
 // indexVerdicts splits the verdicts into the two indexes the projection reads:
@@ -307,29 +433,6 @@ func subjectLive(name string, liveByName map[string]bool, verdictErr error) *boo
 		return nil
 	}
 	live := liveByName[name]
-	return &live
-}
-
-// subjectLiveness answers "is the session this subject's page records alive?".
-//
-// A subject with NO recorded manager session is a proven false — absence is a
-// fact, while an unanswerable probe is not, and collapsing the second into false
-// is the fold `branch: unknown` exists to reject.
-func subjectLiveness(
-	index subjectIndex,
-	kind, name string,
-	liveByID map[string]LivenessState,
-	verdictErr error,
-) *bool {
-	sid := index.Sessions[subjectKey(kind, name)]
-	if sid == "" {
-		live := false
-		return &live
-	}
-	if verdictErr != nil {
-		return nil
-	}
-	live := liveByID[sid] == LivenessLive
 	return &live
 }
 
@@ -410,11 +513,41 @@ func frontmatterStrings(frontmatter map[string]any, key string) []string {
 // already known flagged (the eligibility query selected it), so only the
 // provenance half remains. An absent value admits nothing, exactly as
 // flagSetByOf's empty string does.
-func refusalsForFlagSetBy(flagSetBy string) []string {
+func refusalsFor(flagSetBy string, known bool) []string {
+	// An unknown provenance is not a refusal. A goal or topic whose flag_set_by
+	// the index does not serve would otherwise be stamped agent-set-flag, and the
+	// tick never opens a refused row — which would refuse every flagged goal and
+	// topic and re-break the goal/topic opening fix.
+	if !known {
+		return []string{}
+	}
 	if slices.Contains(OpeningActors, strings.TrimSpace(flagSetBy)) {
 		return []string{}
 	}
 	return []string{RefusalAgentSetFlag}
+}
+
+// ownerBlock renders the two frontmatter fields ResolveOwner's task branch reads,
+// in the YAML shape its line regexes expect.
+//
+// Passing an empty block dropped both rungs, so a task whose goal manager was live
+// resolved to the fleet instead and could be opened a second time.
+func ownerBlock(managedBy string, goals []string) string {
+	var builder strings.Builder
+	if strings.TrimSpace(managedBy) != "" {
+		builder.WriteString("managed_by: ")
+		builder.WriteString(managedBy)
+		builder.WriteString("\n")
+	}
+	if len(goals) > 0 {
+		builder.WriteString("goals:\n")
+		for _, goal := range goals {
+			builder.WriteString("  - ")
+			builder.WriteString(goal)
+			builder.WriteString("\n")
+		}
+	}
+	return builder.String()
 }
 
 // parked reports the declared wait on the row's own last closer.
