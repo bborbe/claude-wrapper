@@ -17,7 +17,7 @@ import (
 )
 
 // ReloadOutcome is the per-session result of a fleet reload. Exactly five
-// values, each with a single source (see docs/reload-fleet.md).
+// values, each with a single source.
 type ReloadOutcome string
 
 const (
@@ -42,7 +42,7 @@ const (
 type ReloadResult struct {
 	SessionID string        `json:"session_id"`
 	Outcome   ReloadOutcome `json:"outcome"`
-	Detail    string        `json:"detail,omitempty"`
+	Detail    string        `json:"detail"`
 }
 
 // ReloadReport is the whole run: per-session results plus the SC3 population
