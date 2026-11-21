@@ -109,3 +109,33 @@ var _ = Describe("Sweep", func() {
 		Expect(rec.Body.String()).To(Equal(body))
 	})
 })
+
+// serveSweepSubjects runs one request through the enumeration handler.
+func serveSweepSubjects(method string, cfg sweepgate.Config) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, "/api/1.0/sweep/subjects", nil)
+	rec := httptest.NewRecorder()
+	handler.SweepSubjects(cfg).ServeHTTP(rec, req)
+	return rec
+}
+
+var _ = Describe("SweepSubjects", func() {
+	It("answers 405 for a method other than GET", func() {
+		rec := serveSweepSubjects(http.MethodPost, sweepgate.Config{Subjects: []string{"S"}})
+		Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
+	})
+
+	It("serves the configured subjects in order", func() {
+		rec := serveSweepSubjects(http.MethodGet, sweepgate.Config{Subjects: []string{"Deploy", "Fleet"}})
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Header().Get("Content-Type")).To(Equal("application/json"))
+		Expect(rec.Body.String()).To(Equal(`{"subjects":["Deploy","Fleet"]}`))
+	})
+
+	It("answers an empty list, not an error, when nothing is configured", func() {
+		// Empty means the tick is disabled — a real answer, so a consumer can tell
+		// "no subjects" from "could not ask".
+		rec := serveSweepSubjects(http.MethodGet, sweepgate.Config{})
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Body.String()).To(Equal(`{"subjects":[]}`))
+	})
+})

@@ -559,6 +559,10 @@ func newMux(
 	// The gate's classified rows as data, so a consumer reads buckets instead of
 	// parsing the rendered frame. Subject is a query parameter; see handler.Sweep.
 	mux.Handle("/api/1.0/sweep", handler.Sweep(sweepCfg))
+	// Which subjects exist, so a fleet-wide consumer can enumerate them instead of
+	// guessing names or deriving the classification itself. Registered on the
+	// longer path, so the per-subject route above keeps answering `/api/1.0/sweep`.
+	mux.Handle("/api/1.0/sweep/subjects", handler.SweepSubjects(sweepCfg))
 	// The client-facing MCP face: Codex → wrapper, over streamable HTTP on this
 	// same listener. Not to be confused with --mcp-stdio, which is child-facing
 	// (the wrapper giving its own child a permission tool) and runs in a
