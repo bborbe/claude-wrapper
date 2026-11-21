@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.56.2
 
 - test: **SC2's follow-the-verdict probe, on the native source.** Two sessions, not one. The first is stubbed `live` while its heartbeat row is stale — the heartbeat is corroboration and must not drag the verdict down — and then flipped to `ABSENT`. The second reads `live` from a child row with no exit code while the registry lists NO pid for it, so a consumer that self-derived from `os.kill(pid, 0)` would report it absent and fails the spec; that is the falsifier the criterion exists for. The criterion names `/api/1.0/liveness`, and this source makes no HTTP call — it calls `LivenessVerdicts` in-process, the same function the endpoint serves — so the stub is applied at that function's inputs. Recorded as a deviation from the criterion's letter rather than passed off as an endpoint stub. Change set: `pkg/flagged_rows_native_test.go`, `CHANGELOG.md`.
 
