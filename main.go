@@ -5,7 +5,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -173,6 +175,12 @@ func main() {
 	open := registerOpenFlags()
 	fleetPusher := registerFleetPusherFlags()
 	sweepGate := registerSweepGateFlags()
+	reloadFleet := flag.Bool("reload-fleet", false,
+		"POST a fleet reload to the running daemon and exit (one-shot client)")
+	daemonURL := flag.String("daemon-url", "http://localhost:18090",
+		"base URL of the running claude-wrapper daemon, for --reload-fleet")
+	reloadSessions := flag.String("reload-sessions", "",
+		"comma-separated session ids to scope --reload-fleet to; empty means every live session")
 	stateDir := flag.String("state-dir", "",
 		"directory holding session state; defaults to ~/.claude/state/claude-wrapper/sessions")
 	keepalive := flag.Bool("keepalive", false, "run the keepalive tick; only :18090 sets this")
@@ -197,6 +205,12 @@ func main() {
 	// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The reload-fleet client is a thin HTTP client: it POSTs to the running
+	// daemon and exits, so it needs no supervisor and binds no listener.
+	if *reloadFleet {
+		os.Exit(runReloadFleetCLI(ctx, *daemonURL, *reloadSessions))
+	}
 
 	// Both one-shot modes run before the supervisor is built, so they never bind
 	// the listener and can be invoked beside the live daemon.
@@ -713,6 +727,7 @@ func startFleetFaces(
 	// the executor is shared with the flagged tick so both route one way.
 	openExecutor := mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
 	mux.Handle("/supervisor/mcp", rosterServer)
+	mux.Handle("/api/1.0/reload-fleet", handler.ReloadFleet(rosterServer))
 
 	go startFlaggedTick(
 		ctx, flaggedTickInterval,
@@ -918,6 +933,58 @@ func runFleetPusherOnce(
 	pusher.Sessions = splitSessions(sessions)
 	pusher.Send = send
 	pusher.TickOnce(ctx)
+}
+
+// runReloadFleetCLI POSTs a fleet reload to the running daemon and prints the
+// report as JSON-lines, a summary, and the population diff. It returns the exit
+// code: 0 when every session reloaded, 1 otherwise, 2 on a transport error.
+func runReloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string) int {
+	body, err := json.Marshal(map[string][]string{"sessions": splitSessions(sessionsCSV)})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reload-fleet: marshal failed: %v\n", err)
+		return 2
+	}
+	url := strings.TrimRight(daemonURL, "/") + "/api/1.0/reload-fleet"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reload-fleet: request failed: %v\n", err)
+		return 2
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reload-fleet: daemon unreachable: %v\n", err)
+		return 2
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "reload-fleet: daemon returned %d\n", resp.StatusCode)
+		return 2
+	}
+	var report pkg.ReloadReport
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		fmt.Fprintf(os.Stderr, "reload-fleet: decode failed: %v\n", err)
+		return 2
+	}
+	counts := map[pkg.ReloadOutcome]int{}
+	for _, result := range report.Results {
+		line, _ := json.Marshal(result)
+		fmt.Println(string(line))
+		counts[result.Outcome]++
+	}
+	fmt.Fprintf(os.Stderr, "reloaded=%d refused=%d busy=%d no-pane=%d unverified=%d\n",
+		counts[pkg.OutcomeReloaded], counts[pkg.OutcomeRefused], counts[pkg.OutcomeBusy],
+		counts[pkg.OutcomeNoPane], counts[pkg.OutcomeUnverified])
+	for _, id := range report.Missing {
+		fmt.Printf("missing: %s\n", id)
+	}
+	for _, id := range report.Extra {
+		fmt.Printf("extra: %s\n", id)
+	}
+	if len(report.Results) > 0 && counts[pkg.OutcomeReloaded] == len(report.Results) {
+		return 0
+	}
+	return 1
 }
 
 // splitSessions parses the `--sessions` comma list, dropping empties.

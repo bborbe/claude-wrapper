@@ -318,3 +318,50 @@ func (r *rosterSlashRunner) Run(ctx context.Context, agentID string, command str
 	_, err = r.Server.runSlashCommand(ctx, args)
 	return err
 }
+
+// ReloadFleetReport runs the fleet reload over this server's live sessions. Both
+// the MCP tool and the REST route call it, so the two surfaces cannot drift.
+func (s *RosterToolServer) ReloadFleetReport(
+	ctx context.Context,
+	only []string,
+) (ReloadReport, error) {
+	return ReloadFleet(ctx, ReloadFleetDeps{
+		Registry: s.Registry,
+		Roster:   s.Roster,
+		Slash:    NewRosterSlashRunner(s),
+		Markers:  NewCacheMarkerReader(""),
+	}, only)
+}
+
+// reloadFleet is the reload_fleet MCP tool. Optional `sessions` scopes the run.
+func (s *RosterToolServer) reloadFleet(ctx context.Context, args json.RawMessage) (string, error) {
+	var body struct {
+		Sessions []string `json:"sessions"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &body); err != nil {
+			return "", errors.Wrapf(ctx, err, "decode arguments failed")
+		}
+	}
+	report, err := s.ReloadFleetReport(ctx, body.Sessions)
+	if err != nil {
+		return "", err
+	}
+	return marshalJSON(ctx, report)
+}
+
+// reloadFleetToolDefinition is the MCP schema for reload_fleet.
+func reloadFleetToolDefinition() any {
+	return toolDef(ToolReloadFleet,
+		"Reload plugins in every live local session (headless and tab) and report one "+
+			"outcome per session. Optional `sessions` scopes the run to named ids. Outcomes: "+
+			"`reloaded` / `refused` / `busy` / `no-pane` / `unverified`. Busy and parked "+
+			"sessions are skipped, never interrupted; a non-empty composer is refused.",
+		map[string]any{
+			"sessions": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "session ids to scope the run to; empty means every live session",
+			},
+		})
+}

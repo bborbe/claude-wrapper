@@ -48,6 +48,7 @@ const (
 	ToolPendingPermissions     ToolName = "pending_permissions"
 	ToolReadPushConfig         ToolName = "read_push_config"
 	ToolOpenRows               ToolName = "open_rows"
+	ToolReloadFleet            ToolName = "reload_fleet"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
@@ -71,6 +72,7 @@ func RosterToolNames() []ToolName {
 		ToolPendingPermissions,
 		ToolReadPushConfig,
 		ToolOpenRows,
+		ToolReloadFleet,
 	}
 }
 
@@ -349,6 +351,8 @@ func (s *RosterToolServer) invoke(
 		return s.readPushConfig(ctx, args)
 	case ToolOpenRows:
 		return s.openRows(ctx, args, sessionID)
+	case ToolReloadFleet:
+		return s.reloadFleet(ctx, args)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -1807,6 +1811,7 @@ func (s *RosterToolServer) recordStop(ctx context.Context, row *AgentRow, caller
 func rosterToolDefinitions() []any {
 	definitions := append(spawnToolDefinitions(), parkToolDefinitions()...)
 	definitions = append(definitions, runSlashCommandToolDefinition())
+	definitions = append(definitions, reloadFleetToolDefinition())
 	definitions = append(definitions, modeToolDefinitions()...)
 	return append(definitions, openToolDefinitions()...)
 }
