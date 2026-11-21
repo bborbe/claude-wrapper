@@ -148,3 +148,49 @@ var _ = ginkgo.Describe("cancels a hanging read", func() {
 		gomega.Expect(collector.count("sweep-gate")).To(gomega.BeNumerically(">=", 2))
 	})
 })
+
+var _ = ginkgo.Describe("wake on a verdict change", func() {
+	ginkgo.It("is a no-op when no WakeCmd is configured", func() {
+		collector := &lineCollector{}
+		runner := &TickRunner{}
+		runner.wake(context.Background(), Config{Vault: "/v", Subject: "s"}, collector.logf)
+		gomega.Expect(collector.count("WAKE")).To(gomega.Equal(0))
+	})
+
+	ginkgo.It("invokes the command with --vault and --subject, and logs success", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		argsFile := filepath.Join(dir, "args")
+		script := filepath.Join(dir, "wake.sh")
+		body := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\n"
+		gomega.Expect(os.WriteFile(script, []byte(body), 0o755)).To(gomega.Succeed())
+
+		collector := &lineCollector{}
+		runner := &TickRunner{}
+		runner.wake(context.Background(), Config{
+			Vault:   "/the/vault",
+			Subject: "Deploy",
+			WakeCmd: []string{script},
+		}, collector.logf)
+
+		got, err := os.ReadFile(argsFile)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(string(got)).To(gomega.Equal("--vault\n/the/vault\n--subject\nDeploy\n"))
+		gomega.Expect(collector.count("WAKE ok")).To(gomega.Equal(1))
+	})
+
+	ginkgo.It("logs a failure when the command exits non-zero", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		script := filepath.Join(dir, "wake.sh")
+		gomega.Expect(os.WriteFile(script, []byte("#!/bin/sh\necho boom >&2\nexit 3\n"), 0o755)).
+			To(gomega.Succeed())
+
+		collector := &lineCollector{}
+		runner := &TickRunner{}
+		runner.wake(context.Background(), Config{
+			Vault:   "/v",
+			Subject: "s",
+			WakeCmd: []string{script},
+		}, collector.logf)
+		gomega.Expect(collector.count("WAKE failed")).To(gomega.Equal(1))
+	})
+})

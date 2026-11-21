@@ -63,6 +63,10 @@ type Config struct {
 	Interval         time.Duration
 	ReadTimeout      time.Duration
 	Logf             func(format string, args ...any)
+	// WakeCmd is the command the daemon runs on a verdict change (ExitChange) —
+	// manager-wake.py, which types a wake prompt into the subject's manager pane.
+	// Empty disables the wake: the tick then only logs the change, as before.
+	WakeCmd []string
 }
 
 // Validate reports whether the required fields are set.
