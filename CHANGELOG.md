@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.58.1
 
 - fix: **the one-shot sweep-gate tick wakes a changed subject's manager too.** The wake was wired only into the daemon's `TickRunner.tickSubject`; the one-shot `-sweep-gate-mode=tick` calls `sweepgate.Tick` directly and so woke nothing — a gap versus the vault script, whose `tick` printed a `CHANGE` line a Monitor read, and versus the documented SC6 probe. `Wake` is now a package function invoked from both `tickSubject` and the one-shot tick on `ExitChange`. Change set: `pkg/sweepgate/runner.go`, `main.go`, `CHANGELOG.md`.
 
