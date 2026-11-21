@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.59.0
 
 - feat: **add a vault-api client, the transport the flagged tick will read its rows from.** `List` answers which rows are eligible (the task query is `flag=true&status=in_progress&due=now`; goals and topics take `flag=true`) and `Page` returns one task record's full frontmatter, because the list projection carries no `role`, `mode`, `flag_set_by` or `blocked_by`. `ListAll` returns a kind unfiltered, which the subject index needs: owner resolution asks about goals and topics that are not themselves eligible to open. Every failure — transport, non-200, undecodable body, unknown kind — wraps `ErrVaultAPIUnavailable`, so a caller can tell an outage from an index that genuinely holds no rows; those are opposite answers and a tick that read the first as the second would silently drop every flagged row. Nothing consumes the client yet.
 
