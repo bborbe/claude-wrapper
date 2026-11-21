@@ -1378,7 +1378,17 @@ func neverOpenedManager(row FlaggedRow) bool {
 	if row.Kind != "goal" && row.Kind != "topic" {
 		return false
 	}
-	return row.Liveness == "none" && row.SessionID == "" && row.Branch == "create"
+	if row.Liveness != "none" || row.SessionID != "" {
+		return false
+	}
+	// ⚠️ `ResolveBranch` returns `open-manager` for a goal or topic whose chain is
+	// PROVEN dead — it never returns `create` for these kinds. Requiring `create`
+	// alone meant this branch never matched a real source row, so every flagged
+	// goal and topic was skipped as `not-absent` and the feature opened nothing.
+	// Measured 2026-11-21: two flagged never-opened rows, `branch: open-manager`,
+	// `liveness: none`, `session_id: null` — the tick logged `opened=0` and
+	// `not-absent:15` on every cycle.
+	return row.Branch == "create" || row.Branch == "open-manager"
 }
 
 func (t *FlaggedTick) now() time.Time {
