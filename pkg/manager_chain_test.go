@@ -42,8 +42,19 @@ var _ = ginkgo.Describe("neverOpenedManager", func() {
 		ginkgo.Entry("a row that already has a session", FlaggedRow{
 			Kind: "goal", Liveness: "none", Branch: "create", SessionID: "s1",
 		}, false),
-		ginkgo.Entry("a proven-dead chain already reads open-manager, not create", FlaggedRow{
-			Kind: "goal", Liveness: "none", Branch: "open-manager",
+		// ⚠️ This entry used to expect FALSE, on the belief that another path opened
+		// an `open-manager` row. That path was the fleet round's open leg, removed
+		// 2026-11-20. `ResolveBranch` never returns `create` for a goal or topic
+		// whose chain is proven dead, so excluding this branch left the wrapper
+		// opening no goal or topic at all — measured 2026-11-21: two flagged rows,
+		// `branch: open-manager`, `liveness: none`, `session_id: null`, and the tick
+		// logged `opened=0 skipped=... not-absent:15` on every cycle.
+		ginkgo.Entry("a proven-dead chain reads open-manager, and that IS the never-opened case",
+			FlaggedRow{
+				Kind: "goal", Liveness: "none", Branch: "open-manager",
+			}, true),
+		ginkgo.Entry("open-manager with a session is not never-opened", FlaggedRow{
+			Kind: "goal", Liveness: "none", Branch: "open-manager", SessionID: "s1",
 		}, false),
 		ginkgo.Entry("a row the predicate could classify is not never-opened", FlaggedRow{
 			Kind: "goal", Liveness: "ABSENT", Branch: "create",

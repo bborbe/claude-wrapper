@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the flagged tick opens a never-opened goal or topic again — it never did.** `ResolveBranch` returns `open-manager` for a goal or topic whose chain is proven dead; it never returns `create` for those kinds. `neverOpenedManager` required `row.Branch == "create"`, so the branch never matched a real source row, `rowFreshness` returned `(false, "", false)`, and `classify` skipped every flagged goal and topic as `not-absent`. Measured 2026-11-21: two flagged never-opened rows (`branch: open-manager`, `liveness: none`, `session_id: null`) and the tick logged `opened=0 skipped=... not-absent:15` on every cycle for 24 h. The `manager_chain_test.go` entry that pinned this — "a proven-dead chain already reads open-manager, not create", expecting `false` — recorded the belief that another path opened those rows; that path was the fleet round's open leg, removed 2026-11-20. `neverOpenedManager` now admits `open-manager` too, and a row that already has a session stays excluded. Change set: `pkg/flagged_tick.go`, `pkg/manager_chain_test.go`, `CHANGELOG.md`.
+
 ## v0.58.2
 
 - fix: **the flagged tick's row source emits only eligible work.** `NativeFlaggedRowsSource.Rows` admitted every `flag: true` page regardless of status, so on 2026-11-21 the 50-row-per-tick budget was spent on ~50 task-terminal rows (refused `spawn-refused`) and ~1120 more were refused `row budget` before any due row was reached — `opened=0 refused=1170 considered=1174` while ~28 flagged tasks were due. `rowForFile` now drops any page that is not at `status: in_progress`, or whose `defer_date` is in the future, matching `/supervisor:open --flagged`'s predicate (goals and topics carry the same status/due rule). The task-terminal spawn guard stays as a backstop. Change set: `pkg/flagged_rows_native.go`, `pkg/flagged_rows_native_test.go`, `main.go`, `CHANGELOG.md`.
