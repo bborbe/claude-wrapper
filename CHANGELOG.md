@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.58.3
 
 - fix: **the flagged tick opens a never-opened goal or topic again — it never did.** `ResolveBranch` returns `open-manager` for a goal or topic whose chain is proven dead; it never returns `create` for those kinds. `neverOpenedManager` required `row.Branch == "create"`, so the branch never matched a real source row, `rowFreshness` returned `(false, "", false)`, and `classify` skipped every flagged goal and topic as `not-absent`. Measured 2026-11-21: two flagged never-opened rows (`branch: open-manager`, `liveness: none`, `session_id: null`) and the tick logged `opened=0 skipped=... not-absent:15` on every cycle for 24 h. The `manager_chain_test.go` entry that pinned this — "a proven-dead chain already reads open-manager, not create", expecting `false` — recorded the belief that another path opened those rows; that path was the fleet round's open leg, removed 2026-11-20. `neverOpenedManager` now admits `open-manager` too, and a row that already has a session stays excluded. Change set: `pkg/flagged_tick.go`, `pkg/manager_chain_test.go`, `CHANGELOG.md`.
 
