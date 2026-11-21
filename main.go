@@ -36,25 +36,16 @@ const shutdownGrace = 500 * time.Millisecond
 // process. The drain bound and the shutdown grace together must fit inside it.
 const launchdExitTimeout = 5 * time.Second
 
-// defaultFlaggedRowsScript is the deployed copy of the fleet's eligibility
-// predicate. The marketplace copy is the one the running fleet uses, so it is
-// the default rather than the source checkout — a tick reading a stale source
-// tree would disagree with `/supervisor:open --flagged` about what is eligible.
-const defaultFlaggedRowsScript = "~/.claude/plugins/marketplaces/claude-supervisor/scripts/flagged-rows.py"
-
-// flaggedTickFlags are the reopen tick's two flags, registered together so
-// main stays inside its length budget.
+// flaggedTickFlags are the reopen tick's flags, registered together so main
+// stays inside its length budget.
 type flaggedTickFlags struct {
 	interval *time.Duration
-	script   *string
 }
 
 func registerFlaggedTickFlags() flaggedTickFlags {
 	return flaggedTickFlags{
 		interval: flag.Duration("flagged-tick-interval", pkg.DefaultFlaggedTickInterval,
 			"how often to reopen flagged rows that have gone dark; 0 disables the tick"),
-		script: flag.String("flagged-rows-script", defaultFlaggedRowsScript,
-			"path to claude-supervisor's flagged-rows.py, which decides which rows are eligible"),
 	}
 }
 
@@ -244,7 +235,7 @@ func main() {
 
 	startFleetFaces(
 		ctx, mux, supervisor, decider, ledger, locks, *attentionURL, *heartbeatInterval,
-		*flagged.interval, *flagged.script,
+		*flagged.interval,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
 		*fleetPusher.heartbeat, parkedGate, *stateDir, *keepalive,
 		openPathsFromFlags(open),
@@ -644,7 +635,6 @@ func startFleetFaces(
 	attentionURL string,
 	heartbeatInterval time.Duration,
 	flaggedTickInterval time.Duration,
-	flaggedRowsScript string,
 	fleetPusherInterval time.Duration,
 	fleetPusherWatchInterval time.Duration,
 	fleetPusherWatchMaxAge time.Duration,
@@ -717,7 +707,8 @@ func startFleetFaces(
 	mux.Handle("/supervisor/mcp", rosterServer)
 
 	go startFlaggedTick(
-		ctx, flaggedTickInterval, flaggedRowsScript,
+		ctx, flaggedTickInterval,
+		vaults, supervisor, heartbeats,
 		openExecutor,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
 		caps,
@@ -1033,7 +1024,9 @@ func startBoardDelivery(
 func startFlaggedTick(
 	ctx context.Context,
 	interval time.Duration,
-	script string,
+	vaults pkg.VaultLister,
+	supervisor pkg.ChildLister,
+	heartbeats pkg.HeartbeatReader,
 	open pkg.OpenExecutor,
 	reopener pkg.FlaggedReopener,
 	caps pkg.SpawnCaps,
@@ -1048,7 +1041,15 @@ func startFlaggedTick(
 		return
 	}
 	tick := &pkg.FlaggedTick{
-		Source:   pkg.ExecFlaggedRowsSource{Script: expandHome(script)},
+		// The native source, not the exec: every predicate it applies is this
+		// repo's own, so the tick and `/supervisor:open --flagged` cannot disagree
+		// about which rows are eligible.
+		Source: pkg.NativeFlaggedRowsSource{
+			Vaults:     vaults,
+			Supervisor: supervisor,
+			Heartbeats: heartbeats,
+			Registry:   registry,
+		},
 		Open:     open,
 		Reopener: reopener,
 		Caps:     caps,
