@@ -173,6 +173,9 @@ type FlaggedTickResult struct {
 	// controller outages, every one reading "the live-worker count could not be
 	// taken" with no way to tell whether a fallback was even attempted.
 	LiveCountSource string
+	// RowsSource names where this tick's eligible rows came from — `vault-api`
+	// since the source swap. A tick that scans pages cannot emit it.
+	RowsSource string
 }
 
 // liveCountSourceReporter is the narrow half of SpawnCaps the tick logs.
@@ -219,6 +222,12 @@ func (r FlaggedTickResult) Line() string {
 	}
 	if r.LiveCountSource != "" {
 		line += " live_count_source=" + r.LiveCountSource
+	}
+	// `rows_source=` names where this tick's eligible rows came from. It is the
+	// provenance marker for the source swap: a tick that still scans pages cannot
+	// emit it, so a no-op build is distinguishable from a real one in the log.
+	if r.RowsSource != "" {
+		line += " rows_source=" + r.RowsSource
 	}
 	// `resume_delay=` is the per-resume measurement, and it sits on the summary
 	// line for the same reason `rows=` does: a row's dead time has to be readable
@@ -296,6 +305,9 @@ func reasonClass(entry string) string {
 // row stays dark whenever the model leg does not run.
 type FlaggedTick struct {
 	Source FlaggedRowSource
+	// RowsSource names the source in the tick line (`vault-api`), so a reader can
+	// tell a tick that asked the index from one that scanned pages.
+	RowsSource string
 	// Open is the open decision and executor. When set, every row that passes the
 	// tick's gates is handed to OpenTick as one batch, so the tick and
 	// POST /api/1.0/open cannot route the same row two ways. The daemon always
@@ -922,6 +934,7 @@ func (t *FlaggedTick) tickFromRows(
 	if reporter, ok := t.Caps.(liveCountSourceReporter); ok {
 		result.LiveCountSource = reporter.LiveCountSource(ctx)
 	}
+	result.RowsSource = t.RowsSource
 	// One ledger read serves both the recently-spawned guard and the resume-delay
 	// measurement: two reads of the same store in one tick could disagree, and the
 	// measurement would then describe a fleet state the decision never saw.

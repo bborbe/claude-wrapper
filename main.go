@@ -42,6 +42,13 @@ type flaggedTickFlags struct {
 	interval *time.Duration
 }
 
+// flaggedTickVaultAPIURL points at the local vault-api, which now owns the
+// flagged predicate. It is a package-level flag because the tick's wiring is
+// several call frames below where the flags are parsed; a tick with no reachable
+// index skips rather than falling back to reading pages.
+var flaggedTickVaultAPIURL = flag.String("vault-api-url", "http://localhost:9091/api/v1",
+	"base URL of the local vault-api the flagged tick reads its rows from")
+
 func registerFlaggedTickFlags() flaggedTickFlags {
 	return flaggedTickFlags{
 		interval: flag.Duration("flagged-tick-interval", pkg.DefaultFlaggedTickInterval,
@@ -715,7 +722,7 @@ func startFleetFaces(
 
 	go startFlaggedTick(
 		ctx, flaggedTickInterval,
-		vaults, supervisor, heartbeats,
+		supervisor, heartbeats,
 		openExecutor,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
 		caps,
@@ -1036,7 +1043,6 @@ func startBoardDelivery(
 func startFlaggedTick(
 	ctx context.Context,
 	interval time.Duration,
-	vaults pkg.VaultLister,
 	supervisor pkg.ChildLister,
 	heartbeats pkg.HeartbeatReader,
 	open pkg.OpenExecutor,
@@ -1053,25 +1059,28 @@ func startFlaggedTick(
 		return
 	}
 	tick := &pkg.FlaggedTick{
-		// The native source, not the exec: every predicate it applies is this
-		// repo's own, so the tick and `/supervisor:open --flagged` cannot disagree
-		// about which rows are eligible.
-		Source: pkg.NativeFlaggedRowsSource{
-			Vaults:     vaults,
+		// The index owns the predicate now: the tick asks vault-api which rows are
+		// eligible instead of walking three vault directories, so the tick and every
+		// other consumer of "which rows are eligible" cannot disagree. The liveness,
+		// owner and branch enrichment stays here — vault-api answers "which rows are
+		// eligible", not "may this row open now".
+		Source: pkg.VaultAPIFlaggedRowsSource{
+			Client:     pkg.HTTPVaultAPIClient{BaseURL: *flaggedTickVaultAPIURL},
 			Supervisor: supervisor,
 			Heartbeats: heartbeats,
 			Registry:   registry,
 			Now:        now,
 		},
-		Open:     open,
-		Reopener: reopener,
-		Caps:     caps,
-		Chain:    pkg.NewRegistryChainProbe(registry),
-		Ledger:   ledger,
-		Parked:   parked,
-		CacheDir: stateDir,
-		Now:      now,
-		Interval: interval,
+		RowsSource: "vault-api",
+		Open:       open,
+		Reopener:   reopener,
+		Caps:       caps,
+		Chain:      pkg.NewRegistryChainProbe(registry),
+		Ledger:     ledger,
+		Parked:     parked,
+		CacheDir:   stateDir,
+		Now:        now,
+		Interval:   interval,
 	}
 	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
 		tick.Idle = nudger
