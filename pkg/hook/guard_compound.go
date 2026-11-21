@@ -25,21 +25,166 @@ var credentialGlobPaths = regexp.MustCompile(
 	`[~/]\.[A-Za-z0-9_.-]*[*?\[]|/(Users|home)/[^/\s]+/\.[A-Za-z0-9_.-]*[*?\[]`,
 )
 
+// freeTextFlags carry prose, never a path operand, so a credential literal inside
+// one is a mention rather than a read (`--reason 'the .netrc path is gone'`).
+// Deliberately no short flags: `-m` means a commit message to `git` but a merge file
+// to `sort`, so it cannot be classified by spelling alone.
+var freeTextFlags = map[string]bool{
+	"--reason": true, "--message": true, "--body": true, "--title": true,
+	"--description": true, "--comment": true,
+}
+
+// inertHeads cannot read a file, so a credential literal quoted into their
+// arguments is printed text, not a credential read (`echo 'teamvault'`).
+var inertHeads = map[string]bool{"echo": true, "printf": true}
+
 // CredentialRead reports whether the command names a credential store or a
 // secret-printing CLI.
+//
+// The literal patterns run on the text with quoted spans removed AND on a copy that
+// keeps every quoted span except the inert ones. That split is what separates a read
+// from a mention: `cat "~/.netrc"` keeps its span and refuses, while
+// `echo 'teamvault'` and `--reason '.netrc'` have theirs blanked and pass through.
+// Quote-splitting needs neither: `~/.a""ws/credentials` rejoins to
+// `~/.aws/credentials` once the spans are blanked.
 //
 // The glob rule is tested against the command with its quoted spans blanked: the
 // shell expands a glob only unquoted, so `gh api "repos/o/r/contents/x.yml?ref=master"`
 // reads a file and never selects a directory, while `cat ~/.a?s/credentials` does.
 func CredentialRead(command string) bool {
-	// Both rules run on the raw text AND on the text with quoted spans removed: a
-	// quote split hides a literal path from the raw scan (`cat ~/.a""ws/credentials`
-	// spells `.aws/credentials` to the shell) while a glob is the reverse case.
 	unquoted := unquotedText(command)
-	if credentialPaths.MatchString(command) || credentialPaths.MatchString(unquoted) {
+	if credentialPaths.MatchString(unquoted) {
+		return true
+	}
+	if credentialPaths.MatchString(credentialScanText(command)) {
 		return true
 	}
 	return credentialGlobPaths.MatchString(unquoted)
+}
+
+// credentialScanText returns command with every inert quoted span blanked: a span
+// that is the value of a free-text flag, or any argument to a head that cannot read
+// a file. Every other span is kept verbatim, so a real credential read still matches.
+//
+// Two shapes are deliberately never inert, because both RUN what they name:
+//   - a span inside a command substitution or backtick group
+//     (`echo $(cat '~/.netrc')`), tracked by depth rather than by looking at the
+//     span's own text — the substitution opens OUTSIDE the quotes there;
+//   - a span on a later LINE of a multi-line command, where the head has changed
+//     (`echo hi` newline `cat '~/.netrc'`). A newline ends a segment exactly as
+//     `;` does.
+func credentialScanText(command string) string {
+	s := &credScan{}
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch c {
+		case '\'', '"':
+			span, next := quotedSpanAt(command, i)
+			s.quoted(span)
+			i = next - 1
+		case ' ', '\t':
+			s.flush()
+			s.out.WriteByte(c)
+		case '\n', '|', ';', '&', '(':
+			s.reset()
+			s.out.WriteByte(c)
+		case ')':
+			if s.depth > 0 {
+				s.depth--
+			}
+			s.reset()
+			s.out.WriteByte(c)
+		case '`':
+			s.inBacktick = !s.inBacktick
+			s.reset()
+			s.out.WriteByte(c)
+		case '$':
+			if i+1 < len(command) && command[i+1] == '(' {
+				s.depth++
+			}
+			s.word.WriteByte(c)
+			s.out.WriteByte(c)
+		default:
+			s.word.WriteByte(c)
+			s.out.WriteByte(c)
+		}
+	}
+	return s.out.String()
+}
+
+// credScan accumulates the head, the previous word and the substitution depth while
+// credentialScanText walks a command.
+type credScan struct {
+	out              strings.Builder
+	head, prev, word strings.Builder
+	depth            int
+	inBacktick       bool
+}
+
+func (s *credScan) flush() {
+	w := s.word.String()
+	s.word.Reset()
+	if w == "" {
+		return
+	}
+	if s.head.Len() == 0 {
+		s.head.WriteString(w)
+	}
+	s.prev.Reset()
+	s.prev.WriteString(w)
+}
+
+func (s *credScan) reset() {
+	s.flush()
+	s.head.Reset()
+	s.prev.Reset()
+}
+
+func (s *credScan) quoted(span string) {
+	value := strings.Trim(span, `'"`)
+	// `--reason='…'` glues the flag to the quote, so the pending word is the flag and
+	// `prev` still holds the one before it.
+	flag := s.word.String()
+	if flag == "" {
+		flag = s.prev.String()
+	}
+	if s.depth == 0 && !s.inBacktick && isInertSpan(span, flag, s.head.String()) {
+		s.out.WriteString(strings.Repeat(" ", len(span)))
+	} else {
+		s.out.WriteString(span)
+	}
+	s.word.Reset()
+	// A quoted program name is still the head: `"cat" echo '<path>'` runs cat, so the
+	// span must set the head rather than leave it empty for `echo`.
+	if s.head.Len() == 0 {
+		s.head.WriteString(value)
+	}
+	s.prev.Reset()
+	s.prev.WriteString(value)
+}
+
+// quotedSpanAt returns the quoted span opening at i and the index just past it.
+func quotedSpanAt(command string, i int) (string, int) {
+	quote := command[i]
+	j := i + 1
+	for j < len(command) && command[j] != quote {
+		j++
+	}
+	if j < len(command) {
+		j++
+	}
+	return command[i:j], j
+}
+
+// isInertSpan reports whether a quoted span is printed text rather than a read. A
+// span carrying a command substitution is never inert: `echo "$(teamvault-cli
+// password x)"` prints the secret even though the head is echo.
+func isInertSpan(span, prev, head string) bool {
+	if strings.Contains(span, "$(") || strings.Contains(span, "`") {
+		return false
+	}
+	// `--reason='…'` arrives as one word ending in `=`, not as a flag and a value.
+	return freeTextFlags[strings.TrimSuffix(prev, "=")] || inertHeads[head]
 }
 
 // unquotedText blanks every single- and double-quoted span, so a pattern can be

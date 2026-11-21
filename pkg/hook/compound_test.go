@@ -576,7 +576,7 @@ var _ = Describe("CompoundBashGuard rule fallbacks", func() {
 
 var _ = Describe("Credential reads", func() {
 	tv := "team" + "vault-cli"
-	rules := hook.CompoundRules{Allow: []string{"cat:*", "head:*", "grep:*", "ls:*", "echo:*", tv + ":*"}}
+	rules := hook.CompoundRules{Allow: []string{"cat:*", "head:*", "grep:*", "ls:*", "echo:*", "printf:*", tv + ":*"}}
 	guard := hook.NewCompoundBashGuardWithRules(
 		func(string) (hook.CompoundRules, error) { return rules, nil },
 	)
@@ -602,6 +602,33 @@ var _ = Describe("Credential reads", func() {
 		input.HookEventName = hook.EventPreToolUse
 		Expect(guard.Evaluate(input).Allow).To(BeTrue())
 	})
+	DescribeTable("are approved when the literal is only mentioned, never read",
+		func(command string) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			Expect(guard.Evaluate(input).Allow).To(BeTrue())
+		},
+		Entry("an echoed credential CLI name", "echo '"+tv+"'"),
+		Entry("an echoed netrc path", "echo '.netrc'"),
+		Entry("a printf of an ssh path", "printf '%s' '.ssh/'"),
+		Entry("a free-text reason flag", "ls --reason '.netrc is gone' /tmp"),
+		Entry("a free-text reason flag in equals form", "ls --reason='.netrc is gone' /tmp"),
+		Entry("a message flag", "ls --message 'rotated ~/.aws/credentials'"),
+	)
+	DescribeTable("still refuse a quoted or quote-split path",
+		func(command string) {
+			input := bashInput(command)
+			input.HookEventName = hook.EventPreToolUse
+			Expect(guard.Evaluate(input).Allow).To(BeFalse())
+		},
+		Entry("a quoted netrc path", `cat "~/.netrc"`),
+		Entry("a quote-split aws path", `cat ~/.a""ws/credentials`),
+		Entry("a quoted ssh key", `cat '~/.ssh/id_rsa'`),
+		Entry("a quoted path inside a substitution", `echo $(cat '~/.netrc')`),
+		Entry("a quoted path on a second line", "echo hi\ncat '~/.netrc'"),
+		Entry("a quoted program name", `"cat" echo '~/.netrc'`),
+		Entry("a short flag that is not free text", `sort -m '~/.netrc'`),
+	)
 })
 
 var _ = Describe("Deny precedence over the compound allow", func() {
