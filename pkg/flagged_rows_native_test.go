@@ -131,3 +131,71 @@ var _ = ginkgo.Describe("NativeFlaggedRowsSource", func() {
 		gomega.Expect(rows[0].Branch).To(gomega.Equal("open-manager"))
 	})
 })
+
+// nativeHeartbeats is a fixed heartbeat store.
+type nativeHeartbeats struct {
+	rows []HeartbeatRow
+}
+
+func (n nativeHeartbeats) Rows(context.Context) ([]HeartbeatRow, error) { return n.rows, nil }
+
+// SC2 — the row's liveness follows the VERDICT SOURCE, never a self-derivation.
+//
+// The criterion asks for a stub of `/api/1.0/liveness`; the in-Go source makes no
+// HTTP call, it calls `LivenessVerdicts` in-process — the same function the
+// endpoint serves. So the stub is applied at that function's INPUTS (registry,
+// child table, heartbeat store), which is the same falsifier: a consumer that
+// derived liveness itself from `os.kill(pid, 0)` cannot pass either spec.
+var _ = ginkgo.Describe("SC2 — follow the verdict", func() {
+	var dir string
+
+	ginkgo.BeforeEach(func() {
+		dir = ginkgo.GinkgoT().TempDir()
+	})
+
+	ginkgo.It("flips with the verdict for a session whose heartbeat is stale", func() {
+		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\nclaude_session_id: s1\n---\n")
+		stale := []HeartbeatRow{{SessionID: "s1", Live: false}}
+
+		live := NativeFlaggedRowsSource{
+			Vaults:     nativeVaults{vaults: []Vault{{Name: "v", Path: dir}}},
+			Supervisor: nativeSupervisor{},
+			Heartbeats: nativeHeartbeats{rows: stale},
+			Registry:   &fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 42, Name: "Do It"}}},
+		}
+		rows, err := live.Rows(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		// The registry proves the process alive; the heartbeat is corroboration only
+		// and must not drag the verdict down.
+		gomega.Expect(rows[0].Liveness).To(gomega.Equal("LIVE"))
+
+		exited := 0
+		dead := NativeFlaggedRowsSource{
+			Vaults:     nativeVaults{vaults: []Vault{{Name: "v", Path: dir}}},
+			Supervisor: nativeSupervisor{children: []Session{{ID: "s1", ExitCode: &exited}}},
+			Heartbeats: nativeHeartbeats{rows: stale},
+			Registry:   &fakeFleetRegistry{},
+		}
+		rows, err = dead.Rows(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Liveness).To(gomega.Equal("ABSENT"))
+	})
+
+	ginkgo.It("reads a session live whose verdict CONTRADICTS its pid", func() {
+		// The child row has no exit code, so the verdict is live — while the registry
+		// lists no pid at all for it. A consumer that self-derived from the pid would
+		// report ABSENT here, which is the whole point of the second session.
+		writePage(dir, "25 Tasks", "Do It", "---\nstatus: in_progress\nflag: true\nflag_set_by: operator\nclaude_session_id: s2\n---\n")
+		source := NativeFlaggedRowsSource{
+			Vaults:     nativeVaults{vaults: []Vault{{Name: "v", Path: dir}}},
+			Supervisor: nativeSupervisor{children: []Session{{ID: "s2"}}},
+			Registry:   &fakeFleetRegistry{},
+		}
+		rows, err := source.Rows(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Liveness).To(gomega.Equal("LIVE"))
+	})
+})
