@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.57.0
 
 - feat: **`GET /api/1.0/sweep/subjects` serves the subjects the gate ticks.** The per-subject route answers one tracked set at a time, so a consumer that wants the whole fleet had no way to learn which sets exist — it either guessed names or fell back to deriving the classification itself, which is the defect the per-subject route removes. This is that enumeration. It answers the **configured** list, not the subjects that happen to have fresh rows: a consumer needs to know what to ask about, and whether each one has a usable cache is the per-subject route's answer to give — conflating the two would make a subject whose tick is late look unconfigured. An empty list is a real answer (no subject configured, so the tick is disabled, the same condition `startSweepGate` announces) and is a 200, because the question was answered rather than refused. Registered on the longer path, so `/api/1.0/sweep` keeps its documented 400 for a missing `subject` — guessing one would silently answer about the wrong tracked set. Change set: `pkg/handler/sweep.go`, `pkg/handler/sweep_test.go`, `main.go`, `CHANGELOG.md`.
 
