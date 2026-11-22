@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **a credential word used as a URL host is a service, not a store.** `CredentialRead` tested `credentialPaths` against the whole command, so `\bteamvault[-a-z]*\b` matched the host in `curl … https://teamvault.example/health` and refused an ordinary API call. Both scans now blank every URL scheme+host (`urlAuthority`) before matching, while the path and query survive — `curl https://x/.netrc` still refuses, and `teamvault-cli password x` is untouched. This was the only remaining non-credential regression in the anchor task's second SC4 read: 2 of 875 commands, both kubectl-to-webhook alert checks. Re-read of that same window with this binary: **0 regressions, 235 newly allowed**. Change set: `pkg/hook/guard_compound.go`, `pkg/hook/compound_test.go`, `CHANGELOG.md`.
+
 ## v0.59.0
 
 - feat: **add a vault-api client, the transport the flagged tick will read its rows from.** `List` answers which rows are eligible (the task query is `flag=true&status=in_progress&due=now`; goals and topics take `flag=true`) and `Page` returns one task record's full frontmatter, because the list projection carries no `role`, `mode`, `flag_set_by` or `blocked_by`. `ListAll` returns a kind unfiltered, which the subject index needs: owner resolution asks about goals and topics that are not themselves eligible to open. Every failure — transport, non-200, undecodable body, unknown kind — wraps `ErrVaultAPIUnavailable`, so a caller can tell an outage from an index that genuinely holds no rows; those are opposite answers and a tick that read the first as the second would silently drop every flagged row. Nothing consumes the client yet.

@@ -38,6 +38,20 @@ var freeTextFlags = map[string]bool{
 // arguments is printed text, not a credential read (`echo 'teamvault'`).
 var inertHeads = map[string]bool{"echo": true, "printf": true}
 
+// urlAuthority matches a URL scheme plus host. A credential word used as a HOSTNAME
+// is a service, not a store: `curl https://teamvault.example/health` is an ordinary
+// API call, while `teamvault-cli password x` still reads a secret.
+var urlAuthority = regexp.MustCompile("(?i)[a-z][a-z0-9+.\\-]*://[^/\\s'\"`]+")
+
+// withoutURLAuthority blanks every URL scheme+host so the literal patterns below
+// cannot match inside one. The path and query survive, so `curl https://x/.netrc`
+// still refuses.
+func withoutURLAuthority(s string) string {
+	return urlAuthority.ReplaceAllStringFunc(s, func(m string) string {
+		return strings.Repeat(" ", len(m))
+	})
+}
+
 // CredentialRead reports whether the command names a credential store or a
 // secret-printing CLI.
 //
@@ -46,17 +60,18 @@ var inertHeads = map[string]bool{"echo": true, "printf": true}
 // from a mention: `cat "~/.netrc"` keeps its span and refuses, while
 // `echo 'teamvault'` and `--reason '.netrc'` have theirs blanked and pass through.
 // Quote-splitting needs neither: `~/.a""ws/credentials` rejoins to
-// `~/.aws/credentials` once the spans are blanked.
+// `~/.aws/credentials` once the spans are blanked. Both copies are also stripped of
+// URL authorities, so a hostname is never read as a credential store.
 //
 // The glob rule is tested against the command with its quoted spans blanked: the
 // shell expands a glob only unquoted, so `gh api "repos/o/r/contents/x.yml?ref=master"`
 // reads a file and never selects a directory, while `cat ~/.a?s/credentials` does.
 func CredentialRead(command string) bool {
 	unquoted := unquotedText(command)
-	if credentialPaths.MatchString(unquoted) {
+	if credentialPaths.MatchString(withoutURLAuthority(unquoted)) {
 		return true
 	}
-	if credentialPaths.MatchString(credentialScanText(command)) {
+	if credentialPaths.MatchString(withoutURLAuthority(credentialScanText(command))) {
 		return true
 	}
 	return credentialGlobPaths.MatchString(unquoted)
