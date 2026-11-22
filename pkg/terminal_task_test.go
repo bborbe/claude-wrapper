@@ -38,6 +38,29 @@ func (b *syncBuffer) String() string {
 	return b.buffer.String()
 }
 
+// recordWriter is a stdin stand-in that keeps what send wrote, so a spec can
+// assert the retry really re-sent the prompt instead of only logging that it
+// would have.
+type recordWriter struct {
+	mutex  sync.Mutex
+	writes []string
+}
+
+func (w *recordWriter) Write(p []byte) (int, error) {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	w.writes = append(w.writes, string(p))
+	return len(p), nil
+}
+
+func (w *recordWriter) Close() error { return nil }
+
+func (w *recordWriter) count() int {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	return len(w.writes)
+}
+
 type fakeAnchoredTaskResolver struct {
 	result AnchoredTask
 	err    error
@@ -374,8 +397,46 @@ var _ = ginkgo.Describe("headless turn end", func() {
 	}
 
 	ginkgo.It("stops a headless agent whose turn closed with nothing pending", func() {
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing", turns: 3}
 		checkTurnEnd()
 		expectKilled()
+	})
+	// The defect this change exists for: a resumed worker's first turn came back
+	// with no assistant message at all (the child's stream died mid-flight), and
+	// the daemon read the resulting `result` as a normal turn end. The task file
+	// was never touched and the work looked like a session that ran and produced
+	// nothing. The turn is re-sent once instead.
+	ginkgo.It("re-sends a turn that closed with no assistant message", func() {
+		sink := captureLog()
+		stdin := &recordWriter{}
+		c.stdin = stdin
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing"}
+		checkTurnEnd()
+		expectAlive()
+		gomega.Eventually(stdin.count, "2s").Should(gomega.Equal(1))
+		gomega.Eventually(sink.String, "2s").Should(gomega.And(
+			gomega.ContainSubstring("turn closed after 0 assistant turns"),
+			gomega.ContainSubstring("re-sending the same turn"),
+		))
+	})
+	ginkgo.It("does not re-send a turn that produced an assistant message", func() {
+		stdin := &recordWriter{}
+		c.stdin = stdin
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing", turns: 2}
+		checkTurnEnd()
+		expectKilled()
+		gomega.Consistently(stdin.count, 200*time.Millisecond).Should(gomega.Equal(0))
+	})
+	ginkgo.It("stops and names the zero-turn close once the retry budget is spent", func() {
+		sink := captureLog()
+		c.stdin = &recordWriter{}
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing"}
+		c.zeroTurns.retries = zeroTurnRetryBudget
+		checkTurnEnd()
+		expectKilled()
+		// "nothing pending" is true of both closes and reads as a normal end —
+		// which is how a worker that produced nothing stayed invisible.
+		gomega.Eventually(sink.String, "2s").Should(gomega.ContainSubstring("ZERO assistant turns"))
 	})
 	ginkgo.It("stops a headless agent with no role (the default role)", func() {
 		c.session.Role = ""
@@ -441,6 +502,9 @@ var _ = ginkgo.Describe("headless turn end", func() {
 		c.mutex.Lock()
 		c.cardRetries = headlessCardRetryBudget
 		c.mutex.Unlock()
+		// A real turn produced output, so this is not the zero-turn path: the
+		// store-budget stop is what this spec is measuring.
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing", turns: 2}
 		checkTurnEnd()
 		expectKilled()
 		// The bound being applied is the fix's whole point, and both halves of it

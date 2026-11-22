@@ -218,6 +218,13 @@ type Session struct {
 	// that event the child still reads idle while a turn is on its way. A
 	// caller that must not write mid-turn reads this instead.
 	PendingTurns int `json:"pending_turns"`
+	// AssistantTurns counts the assistant messages the child emitted for the most
+	// recent turn, reset when that turn was written.
+	//
+	// It is the discriminator PendingTurns cannot give: both a completed turn and
+	// a turn whose stream died report zero pending, and only this value tells them
+	// apart. A zero-turn close is a failed turn, not a finished one.
+	AssistantTurns int `json:"assistant_turns"`
 	// Interrupted names the reason a drain could not reach this session's turn
 	// boundary before its bound expired.
 	//

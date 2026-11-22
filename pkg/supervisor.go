@@ -1258,6 +1258,16 @@ type child struct {
 	// child's own message_start: State still reads idle in that window, so a
 	// caller that wrote a turn would be invisible to anything reading State.
 	pendingTurns int
+	// zeroTurns tracks the turn in flight, so a close that produced nothing can be
+	// told apart from a finished turn — see retryZeroTurn.
+	zeroTurns zeroTurnGuard
+	// retrying is set while a zero-turn re-send has been decided but not yet
+	// written. It is a reservation, not a status: the retry spends its budget
+	// under this mutex and then releases it to write, so without the flag a
+	// duplicate turn end arriving in that window would read the child idle and
+	// SIGKILL it before the re-send's own pendingTurns++ landed — losing the one
+	// attempt the budget allows. keepReasonLocked reads it as an open turn.
+	retrying bool
 	// procGone reports that the child's process is no longer running. The tailer
 	// reads it to decide whether an empty read means "wait" or "finished", which is
 	// what lets it drain the last events before the session is settled.
@@ -1349,6 +1359,7 @@ func (c *child) snapshot() *Session {
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
 	clone.PendingTurns = c.pendingTurns
+	clone.AssistantTurns = c.zeroTurns.turns()
 	if c.session.Stall != nil {
 		stall := *c.session.Stall
 		stall.PendingHooks = append([]string{}, c.session.Stall.PendingHooks...)
@@ -1478,6 +1489,7 @@ func (c *child) send(ctx context.Context, text string) error {
 		return errors.Wrapf(ctx, ErrSessionExited, "session %q is ending", c.id)
 	}
 	c.pendingTurns++
+	c.zeroTurns.begin(text)
 	// The turn's own sequence, taken here so it precedes any result that can close
 	// it: the row's writes are ordered by this number, and a turn that has not been
 	// numbered yet cannot be superseded.
@@ -1515,6 +1527,9 @@ func (c *child) send(ctx context.Context, text string) error {
 	if writeErr != nil {
 		c.mutex.Lock()
 		c.pendingTurns--
+		// The queue must stay in step with pendingTurns, or the turn this failed
+		// write never delivered would be the one a later close is judged against.
+		c.zeroTurns.dropLast()
 		c.mutex.Unlock()
 		// The row was re-opened to `running` a moment ago, and rolling the counter
 		// back is not enough: `reap` only writes an abandoned verdict for an open
@@ -1733,19 +1748,7 @@ func (c *child) reap(exitCode *int) {
 	// Recorded here rather than from a poller: this is the only place that holds
 	// both the settled session and the wait status, and a poller would have to
 	// reconstruct the second from the first.
-	if c.exitRecorder != nil {
-		// The live counter is c.pendingTurns; c.session.PendingTurns is only
-		// filled by snapshot(), so passing c.session raw would record zero for a
-		// child that was given work and never started — the exact case the field
-		// exists to separate from "was never given any".
-		recorded := c.session
-		recorded.PendingTurns = c.pendingTurns
-		c.exitRecorder.Record(recorded, c.pid, ExitStatus{
-			Code:   exitCode,
-			Signal: c.exitSignal,
-			Sender: c.lastKillSender,
-		})
-	}
+	c.recordExitLocked(exitCode)
 	// A child killed mid-turn closes nothing, so the counter would otherwise
 	// stay positive for the life of the process and misreport the field.
 	c.pendingTurns = 0
@@ -1795,12 +1798,7 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 			c.applyInit(event)
 		}
 	case "assistant":
-		if message, ok := event["message"].(map[string]any); ok {
-			if model, ok := message["model"].(string); ok && model != "" && model != syntheticModel {
-				c.session.Model = model
-				c.session.ModelSource = "assistant"
-			}
-		}
+		c.applyAssistant(event)
 	case "stream_event":
 		c.applyStreamEvent(event)
 	case "control_response":
@@ -1810,6 +1808,9 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 		if c.pendingTurns > 0 {
 			c.pendingTurns--
 		}
+		// Pop the turn this result closes, so the retry decision below and the exit
+		// record are both about THAT turn rather than the newest one written.
+		c.zeroTurns.close()
 		if !replayed {
 			c.recordTurnVerdict(event, c.closedTurnLocked())
 			c.checkTerminalTask()
