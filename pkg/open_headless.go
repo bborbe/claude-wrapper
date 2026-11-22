@@ -85,6 +85,15 @@ func (s *RosterToolServer) startHeadless(
 		MCPConfigs:     s.headlessMCPConfigs(ctx, body, cwd),
 	})
 	if err != nil {
+		// A resume that fails HERE reached the row and could not start it — the row
+		// itself is unreachable, not the guard. Code it so the caller can tell this
+		// apart from ResumeCodePathBroken, which never touches the row.
+		if strings.TrimSpace(body.Resume) != "" {
+			return nil, "", "", resumeFailure(
+				ResumeCodeRowUnreachable,
+				errors.Wrapf(ctx, err, "spawn agent failed"),
+			)
+		}
 		return nil, "", "", errors.Wrapf(ctx, err, "spawn agent failed")
 	}
 	if body.Prompt != "" {
