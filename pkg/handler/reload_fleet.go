@@ -7,9 +7,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
-	"time"
 
 	"github.com/bborbe/errors"
 
@@ -29,43 +27,12 @@ type ReloadFleetSurface interface {
 func ReloadFleet(surface ReloadFleetSurface) http.Handler {
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
-		if !pkg.LoopbackRequest(req) {
-			resp.WriteHeader(http.StatusForbidden)
-			return
-		}
-		if req.Method != http.MethodPost {
-			resp.Header().Set("Allow", "POST")
-			writeError(resp, http.StatusMethodNotAllowed,
-				errors.Errorf(ctx, "method %q not allowed", req.Method))
-			return
-		}
-		if !pkg.IsJSONRequest(req) {
-			resp.WriteHeader(http.StatusUnsupportedMediaType)
-			return
-		}
-		// The serial fleet reload can outlast the server's 60s WriteTimeout: a
-		// 10s settle per unverified session plus ~8-16s SendWhenReady per busy or
-		// refusing session. Without clearing the deadline the report is written
-		// after it and the CLI reads a broken connection despite the reload having
-		// run. Same call as handler.Open and clearRosterWriteDeadline.
-		if err := http.NewResponseController(resp).SetWriteDeadline(time.Time{}); err != nil &&
-			!errors.Is(err, http.ErrNotSupported) {
-			writeError(resp, http.StatusInternalServerError,
-				errors.Wrapf(ctx, err, "clear write deadline failed"))
+		raw, ok := prepareFleetRequest(ctx, resp, req)
+		if !ok {
 			return
 		}
 		var body struct {
 			Sessions []string `json:"sessions"`
-		}
-		raw, err := io.ReadAll(io.LimitReader(req.Body, pkg.MaxOpenBody+1))
-		if err != nil {
-			writeError(resp, http.StatusBadRequest,
-				errors.Wrapf(ctx, err, "read body failed"))
-			return
-		}
-		if len(raw) > pkg.MaxOpenBody {
-			writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "body exceeds 1 MiB"))
-			return
 		}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &body); err != nil {

@@ -49,6 +49,7 @@ const (
 	ToolReadPushConfig         ToolName = "read_push_config"
 	ToolOpenRows               ToolName = "open_rows"
 	ToolReloadFleet            ToolName = "reload_fleet"
+	ToolFleetSlashCommand      ToolName = "fleet_slash_command"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
@@ -73,6 +74,7 @@ func RosterToolNames() []ToolName {
 		ToolReadPushConfig,
 		ToolOpenRows,
 		ToolReloadFleet,
+		ToolFleetSlashCommand,
 	}
 }
 
@@ -353,6 +355,8 @@ func (s *RosterToolServer) invoke(
 		return s.openRows(ctx, args, sessionID)
 	case ToolReloadFleet:
 		return s.reloadFleet(ctx, args)
+	case ToolFleetSlashCommand:
+		return s.fleetSlashCommand(ctx, args)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -1812,6 +1816,7 @@ func rosterToolDefinitions() []any {
 	definitions := append(spawnToolDefinitions(), parkToolDefinitions()...)
 	definitions = append(definitions, runSlashCommandToolDefinition())
 	definitions = append(definitions, reloadFleetToolDefinition())
+	definitions = append(definitions, fleetSlashCommandToolDefinition())
 	definitions = append(definitions, modeToolDefinitions()...)
 	return append(definitions, openToolDefinitions()...)
 }

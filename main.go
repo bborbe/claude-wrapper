@@ -192,6 +192,36 @@ func maybeRunReloadFleetCLI(ctx context.Context, flags reloadFleetFlags) {
 	}
 }
 
+// fleetSlashCommandFlags are the one-shot fleet-slash-command client's flags. The
+// daemon URL is shared with --reload-fleet: one daemon, one address.
+type fleetSlashCommandFlags struct {
+	command  *string
+	sessions *string
+}
+
+func registerFleetSlashCommandFlags() fleetSlashCommandFlags {
+	return fleetSlashCommandFlags{
+		command: flag.String("fleet-slash-command", "",
+			"POST one allowlisted slash command to every live session and exit (one-shot client)"),
+		sessions: flag.String("fleet-sessions", "",
+			"comma-separated session ids to scope --fleet-slash-command to; empty means every live session"),
+	}
+}
+
+// fleetSlashCommandConfig registers the flags at package init, before flag.Parse.
+var fleetSlashCommandConfig = registerFleetSlashCommandFlags()
+
+// maybeRunFleetSlashCommandCLI runs the fleet-slash-command client and exits when
+// its flag is set. Like --reload-fleet it is a thin HTTP client: it POSTs to the
+// running daemon and exits, so it needs no supervisor and binds no listener.
+func maybeRunFleetSlashCommandCLI(ctx context.Context, flags fleetSlashCommandFlags) {
+	if *flags.command != "" {
+		os.Exit(runFleetSlashCommandCLI(
+			ctx, *reloadFleetConfig.daemon, *flags.command, *flags.sessions,
+		))
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -752,6 +782,7 @@ func startFleetFaces(
 	openExecutor := mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
 	mux.Handle("/supervisor/mcp", rosterServer)
 	mux.Handle("/api/1.0/reload-fleet", handler.ReloadFleet(rosterServer))
+	mux.Handle("/api/1.0/fleet-slash-command", handler.FleetSlashCommand(rosterServer))
 
 	go startFlaggedTick(
 		ctx, flaggedTickInterval,
@@ -936,6 +967,7 @@ func runOneShotMode(
 	attentionURL string,
 ) bool {
 	maybeRunReloadFleetCLI(ctx, reloadFleetConfig)
+	maybeRunFleetSlashCommandCLI(ctx, fleetSlashCommandConfig)
 	if *sweepGate.mode != "" {
 		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
 	}
@@ -970,32 +1002,15 @@ func runReloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string) int {
 // reloadFleetCLI is runReloadFleetCLI with injectable writers, so the JSON-lines
 // rendering and the exit-code mapping are testable.
 func reloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string, stdout, stderr io.Writer) int {
-	body, err := json.Marshal(map[string][]string{"sessions": splitSessions(sessionsCSV)})
-	if err != nil {
-		fmt.Fprintf(stderr, "reload-fleet: marshal failed: %v\n", err)
-		return 2
-	}
-	url := strings.TrimRight(daemonURL, "/") + "/api/1.0/reload-fleet"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		fmt.Fprintf(stderr, "reload-fleet: request failed: %v\n", err)
-		return 2
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(stderr, "reload-fleet: daemon unreachable: %v\n", err)
-		return 2
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(stderr, "reload-fleet: daemon returned %d\n", resp.StatusCode)
+	raw, ok := postFleetRoute(
+		ctx, daemonURL, "/api/1.0/reload-fleet", "reload-fleet",
+		map[string][]string{"sessions": splitSessions(sessionsCSV)}, stderr,
+	)
+	if !ok {
 		return 2
 	}
 	var report pkg.ReloadReport
-	const maxReloadResponseBytes = 1 << 20
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReloadResponseBytes)).Decode(&report); err != nil {
+	if err := json.Unmarshal(raw, &report); err != nil {
 		fmt.Fprintf(stderr, "reload-fleet: decode failed: %v\n", err)
 		return 2
 	}
@@ -1008,16 +1023,108 @@ func reloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string, stdout, 
 	fmt.Fprintf(stderr, "reloaded=%d refused=%d busy=%d no-pane=%d unverified=%d\n",
 		counts[pkg.OutcomeReloaded], counts[pkg.OutcomeRefused], counts[pkg.OutcomeBusy],
 		counts[pkg.OutcomeNoPane], counts[pkg.OutcomeUnverified])
-	for _, id := range report.Missing {
-		fmt.Fprintf(stdout, "missing: %s\n", id)
-	}
-	for _, id := range report.Extra {
-		fmt.Fprintf(stdout, "extra: %s\n", id)
-	}
+	writeFleetPopulation(stdout, report.Missing, report.Extra)
 	if len(report.Results) > 0 && counts[pkg.OutcomeReloaded] == len(report.Results) {
 		return 0
 	}
 	return 1
+}
+
+// runFleetSlashCommandCLI delivers one allowlisted slash command to every live
+// session and prints the report. It returns the exit code: 0 when every session
+// was delivered to, 1 otherwise, 2 on a transport error.
+func runFleetSlashCommandCLI(
+	ctx context.Context,
+	daemonURL, command, sessionsCSV string,
+) int {
+	return fleetSlashCommandCLI(ctx, daemonURL, command, sessionsCSV, os.Stdout, os.Stderr)
+}
+
+// fleetSlashCommandCLI is runFleetSlashCommandCLI with injectable writers, so the
+// JSON-lines rendering and the exit-code mapping are testable.
+func fleetSlashCommandCLI(
+	ctx context.Context,
+	daemonURL, command, sessionsCSV string,
+	stdout, stderr io.Writer,
+) int {
+	raw, ok := postFleetRoute(
+		ctx, daemonURL, "/api/1.0/fleet-slash-command", "fleet-slash-command",
+		map[string]any{"command": command, "sessions": splitSessions(sessionsCSV)}, stderr,
+	)
+	if !ok {
+		return 2
+	}
+	var report pkg.FleetCommandReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		fmt.Fprintf(stderr, "fleet-slash-command: decode failed: %v\n", err)
+		return 2
+	}
+	counts := map[pkg.FleetOutcome]int{}
+	for _, result := range report.Results {
+		line, _ := json.Marshal(result)
+		fmt.Fprintln(stdout, string(line))
+		counts[result.Outcome]++
+	}
+	fmt.Fprintf(stderr, "delivered=%d refused=%d busy=%d no-pane=%d failed=%d\n",
+		counts[pkg.FleetDelivered], counts[pkg.FleetRefused], counts[pkg.FleetBusy],
+		counts[pkg.FleetNoPane], counts[pkg.FleetFailed])
+	writeFleetPopulation(stdout, report.Missing, report.Extra)
+	if len(report.Results) > 0 && counts[pkg.FleetDelivered] == len(report.Results) {
+		return 0
+	}
+	return 1
+}
+
+// postFleetRoute POSTs body to one fleet route on the running daemon and returns
+// the response body. Transport and status failures are written to stderr under
+// the given label and reported as ok=false, so both one-shot clients share the
+// plumbing without sharing a report shape.
+func postFleetRoute(
+	ctx context.Context,
+	daemonURL, path, label string,
+	body any,
+	stderr io.Writer,
+) ([]byte, bool) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: marshal failed: %v\n", label, err)
+		return nil, false
+	}
+	url := strings.TrimRight(daemonURL, "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: request failed: %v\n", label, err)
+		return nil, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: daemon unreachable: %v\n", label, err)
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(stderr, "%s: daemon returned %d\n", label, resp.StatusCode)
+		return nil, false
+	}
+	const maxFleetResponseBytes = 1 << 20
+	response, err := io.ReadAll(io.LimitReader(resp.Body, maxFleetResponseBytes))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: read response failed: %v\n", label, err)
+		return nil, false
+	}
+	return response, true
+}
+
+// writeFleetPopulation prints the registry-vs-roster diff both fleet verbs report.
+func writeFleetPopulation(stdout io.Writer, missing, extra []string) {
+	for _, id := range missing {
+		fmt.Fprintf(stdout, "missing: %s\n", id)
+	}
+	for _, id := range extra {
+		fmt.Fprintf(stdout, "extra: %s\n", id)
+	}
 }
 
 // splitSessions parses the `--sessions` comma list, dropping empties.
