@@ -149,12 +149,21 @@ type OpenHeadlessRequest struct {
 	CallerSessionID string
 }
 
+// OpenBind action tokens. They are part of the verdict contract documented in
+// docs/open-endpoint.md § Verdict, so both bind call sites read them from here
+// rather than spelling the literals twice.
+const (
+	OpenBindStamped  = "stamped"
+	OpenBindAppended = "appended"
+	OpenBindFailed   = "failed"
+)
+
 // OpenBind is the open endpoint's own record of the task bind it performed:
 // which task, which session, and whether the task was stamped (no prior owner)
-// or the session only appended to metrics_sessions (another live session owned
-// it). It is returned to the caller so the endpoint's write is OBSERVABLE —
-// without it, a task file cannot distinguish the endpoint's bind from a spawned
-// child that runs /vault-cli:work-on-task and stamps itself minutes later.
+// or the session only appended to metrics_sessions (a claude_session_id was
+// already there). It is returned to the caller so the endpoint's write is
+// OBSERVABLE — without it, a task file cannot distinguish the endpoint's bind
+// from a spawned child that runs /vault-cli:work-on-task and stamps itself.
 type OpenBind struct {
 	Task      string `json:"task"`
 	SessionID string `json:"session_id"`
@@ -212,22 +221,25 @@ func (s *RosterToolServer) bindOpenSession(
 	request OpenHeadlessRequest,
 	sessionID string,
 ) *OpenBind {
-	if strings.TrimSpace(request.Task) == "" {
+	// Trim once and use it for both the guard and the report, so the name
+	// reported is the name the bind actually touched.
+	task := strings.TrimSpace(request.Task)
+	if task == "" {
 		return nil
 	}
-	bind := &OpenBind{Task: request.Task, SessionID: sessionID}
+	bind := &OpenBind{Task: task, SessionID: sessionID}
 	action, err := s.bindSpawnedTask(ctx, spawnAgentArgs{
 		Vault: request.Vault,
-		Task:  request.Task,
+		Task:  task,
 	}, sessionID)
 	if err != nil {
 		log.Printf(
 			"WARNING: open bind of task %q to session %s failed: %v",
-			request.Task,
+			task,
 			sessionID,
 			err,
 		)
-		bind.Action = "failed"
+		bind.Action = OpenBindFailed
 		bind.Error = err.Error()
 		return bind
 	}

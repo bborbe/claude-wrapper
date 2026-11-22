@@ -72,14 +72,14 @@ func (s *RosterToolServer) bindSpawnedTask(
 	// same unowned task can both read empty and both stamp, and the later write
 	// wins. vault-cli offers no compare-and-set, so a fix belongs there, not in a
 	// second implementation here — mirroring its rule is the whole point.
-	action := "appended"
+	action := OpenBindAppended
 	if owner == "" {
 		if _, err := s.runVaultCLI(
 			ctx, vault, "task", "set", task, "claude_session_id", sessionID,
 		); err != nil {
 			return "", errors.Wrapf(ctx, err, "stamp claude_session_id of task %q", task)
 		}
-		action = "stamped"
+		action = OpenBindStamped
 	}
 	if _, err := s.runVaultCLI(
 		ctx, vault, "task", "append-metrics-session", task, sessionID,
@@ -113,7 +113,7 @@ func (s *RosterToolServer) bindForReply(
 			err,
 		)
 		return map[string]any{
-			"action":     "failed",
+			"action":     OpenBindFailed,
 			"task":       body.Task,
 			"session_id": sessionID,
 			"error":      err.Error(),

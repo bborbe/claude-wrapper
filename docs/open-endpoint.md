@@ -45,17 +45,27 @@ wrapper executes those rules. It does not re-decide them.
 
 A field that is not decided for a row (a row refused at the page read has no role yet) is the empty string; `window_id` is null unless the row opened a tab.
 
-`bind` is an object `{task, session_id, action, error}` — or `null` when the row bound nothing
-(a tab row, a refused row, or an open that named no task). `action` is `stamped` (the task had no
-`claude_session_id`, so the endpoint wrote it), `appended` (another live session already owned the
-task, so the endpoint only appended to `metrics_sessions`) or `failed` (with `error` set; the child
-is already live, so a bind failure never fails the open).
+`bind` is an object `{task, session_id, action}` — plus `error` when `action` is `failed` — or
+`null` when the row bound nothing (a tab row, a refused row, or an open that named no task).
+`action` is `stamped` (the task had no `claude_session_id`, so the endpoint wrote it), `appended`
+(the task already carried a `claude_session_id` — this session's own child, or another session's —
+so the endpoint only appended to `metrics_sessions`) or `failed` (with `error` set; the child is
+already live, so a bind failure never fails the open).
 
-It exists because a task file cannot answer the question. A spawned child runs
-`/vault-cli:work-on-task "<task>"` as its opening turn, and that path stamps `claude_session_id` and
-appends `metrics_sessions` itself — measured 2026-11-22, a fixture read empty at open time and
-carried a stamp minutes later with the endpoint never binding. `bind` is the endpoint's own record,
-so a caller can tell the endpoint's write from the child's.
+⚠️ **`appended` does not mean "someone else owned it".** The opening turn is sent inside the spawn,
+before the bind reads the owner, and that turn is `/vault-cli:work-on-task "<task>"` — which stamps
+the task itself when its transcript title matches. So on a fresh task the endpoint's read can
+already see this session's own id and report `appended` rather than `stamped`. The action records
+what the endpoint did, truthfully, but it is not a statement about who owned the task beforehand.
+
+It exists because a task file cannot answer the question. That same child stamp is why a file-level
+read cannot distinguish the endpoint's write from the child's: measured 2026-11-22, a fixture read
+empty at open time and carried a stamp minutes later with the endpoint never binding. `bind` is the
+endpoint's own record, so a caller can tell the endpoint's write from the child's.
+
+A resume-open therefore appends a second `metrics_sessions` row for a session id the child's own
+`work-on-task` also appends. That duplicate-id append is accepted by `bindSpawnedTask`'s contract
+and is not new — `spawn_agent`'s resume path already produced it.
 
 `reason` tokens: `missing-row`, `row-unreadable`, `undecidable-role`, `manager-mode-headless`,
 `truncated-id`, `liveness-unreadable`, `answer-path`, `role-map-key-missing`, `hold-window`,

@@ -109,6 +109,13 @@ var _ = ginkgo.Describe("RosterToolServer.SpawnOpenHeadless binds the opened ses
 		}
 	})
 
+	ginkgo.It("reports no bind and writes nothing when no task is named", func() {
+		_, bind, err := server.SpawnOpenHeadless(ctx, OpenHeadlessRequest{Vault: "test-vault"})
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(bind).To(gomega.BeNil(), "a task-less open binds nothing")
+		gomega.Expect(runner.calls).To(gomega.BeEmpty(), "a task-less open writes nothing")
+	})
+
 	ginkgo.It("reports a failed bind without failing the open", func() {
 		runner.owner = ""
 		runner.errOn = map[string]error{"get": errors.New("vault-cli exploded")}

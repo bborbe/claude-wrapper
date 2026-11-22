@@ -482,5 +482,16 @@ var _ = Describe("Open verdict shape", func() {
 		Expect(body.Verdicts[0]["branch"]).To(Equal("resume"))
 		Expect(body.Verdicts[1]["branch"]).To(Equal("create"))
 		Expect(body.Verdicts[2]["reason"]).To(Equal("missing-row"))
+
+		// The bind the executor computed must actually reach the response. A
+		// verdict that binds the task but drops the record is the exact
+		// regression the `bind` field exists to prevent, and the key-presence
+		// loop above cannot see it (a nil bind still serialises as `bind: null`).
+		headlessBind, ok := body.Verdicts[0]["bind"].(map[string]any)
+		Expect(ok).To(BeTrue(), "the headless verdict must carry a bind object")
+		Expect(headlessBind["action"]).To(Equal("stamped"))
+		Expect(headlessBind["task"]).To(Equal("Agent"))
+		Expect(headlessBind["session_id"]).To(Equal(openTestUUID(1)))
+		Expect(body.Verdicts[1]["bind"]).To(BeNil(), "a tab row binds nothing")
 	})
 })
