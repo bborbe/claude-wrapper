@@ -41,7 +41,12 @@ var inertHeads = map[string]bool{"echo": true, "printf": true}
 // urlAuthority matches a URL scheme plus host. A credential word used as a HOSTNAME
 // is a service, not a store: `curl https://teamvault.example/health` is an ordinary
 // API call, while `teamvault-cli password x` still reads a secret.
-var urlAuthority = regexp.MustCompile("(?i)[a-z][a-z0-9+.\\-]*://[^/\\s'\"`]+")
+//
+// The host class stops at every shell metacharacter, not just at `/` and whitespace.
+// Without that, `curl https://example.com;teamvault-cli password foo` matched the
+// authority straight through the `;` and swallowed the next command's head, so the
+// credential CLI was blanked out of the scan and the whole chain was auto-approved.
+var urlAuthority = regexp.MustCompile("(?i)[a-z][a-z0-9+.\\-]*://[^/\\s'\"`;&|()<>$#\\\\]+")
 
 // withoutURLAuthority blanks every URL scheme+host so the literal patterns below
 // cannot match inside one. The path and query survive, so `curl https://x/.netrc`

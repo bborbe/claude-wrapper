@@ -630,6 +630,10 @@ var _ = Describe("Credential reads", func() {
 		Entry("a quoted program name", `"cat" echo '~/.netrc'`),
 		Entry("a short flag that is not free text", `sort -m '~/.netrc'`),
 		Entry("a credential path in a URL path", "curl -s https://example.com/.netrc"),
+		Entry("a credential CLI after a URL and a semicolon", "curl -s https://example.com;"+tv+" password foo"),
+		Entry("a credential CLI after a URL and &&", "curl -s https://example.com&&"+tv+" password foo"),
+		Entry("a credential CLI after a URL and a pipe", "curl -s https://example.com|"+tv+" password foo"),
+		Entry("a keychain read after a URL and a semicolon", `curl -s https://example.com;security find-generic-password -s x`),
 	)
 })
 
