@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.61.0
 
 - feat: **the flagged tick reads its rows from the local vault-api instead of walking every vault page on every two-minute cycle.** The eligibility predicate — flagged, open, due — now lives in the index, so the tick and every other consumer of "which rows are eligible" cannot disagree, and a tick no longer costs three directory walks. The liveness/owner/branch enrichment and the spawn decision stay in the wrapper. An unreachable index returns `ErrVaultAPIUnavailable` rather than an empty slice, so an outage can never be read as "nothing to do" — the direction that silently drops every flagged row. Four rules the page-reading source had are preserved explicitly: a task's `managed_by`/`goals` still feed the owner ladder (an empty block let `held-owner-live` fall through and could spawn a duplicate worker); a blocker the index reports completed is dropped; the subject index is vault-keyed so same-named goals in two vaults do not collide; and goal/topic provenance is refused when absent exactly as a task's is — which requires **vault-api >= v0.31.0**, the first release that serves `flag_set_by` on the goal/topic list projections, so vault-api must be deployed **before** this binary or every flagged goal and topic is refused. The page scan is gone: no `os.ReadFile`, `os.ReadDir` or `filepath.Walk` remains in the flagged-rows source. New flag: `--vault-api-url` (default `http://localhost:9091/api/v1`). The tick line carries `rows_source=vault-api`.
 
