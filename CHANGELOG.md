@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.63.1
 
 - fix: **a live session idle at the prompt no longer ages out of the fleet's liveness population.** `heartbeatPoster.round` skips any session the spawn ledger records as terminal, and it skipped on the status alone — but an interactive session's turn end is written terminal too (`NewTerminalLedgerPatch`), and nothing re-opens the row until the next turn starts, so a tab session sitting idle carried a terminal row for as long as its operator was away and was never stamped again. The skip is now **mode-aware**: only a terminal row whose `mode` is `headless` counts as ended. An interactive terminal row is a finished TURN, not a finished session, so the poster keeps stamping it; a headless worker is unchanged, because its turn end is also when its supervisor cleared the stamp. A terminal row carrying no `mode` does not skip either — it cannot prove `headless`, and the asymmetry resolves toward not dropping a live session. Measured 2026-11-22 against 6,759 ledger rows: 2,415 had a terminal last row — 2,414 `headless`, exactly 1 `interactive`, none empty — so the change moves exactly the population it targets. `endedSessions` also clears an earlier headless terminal row when a later row for the same id is interactive, matching its existing last-row-wins rule. Change set: `pkg/heartbeat.go`, `pkg/heartbeat_test.go`, `CHANGELOG.md`.
 
