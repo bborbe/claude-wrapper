@@ -102,7 +102,7 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 		gomega.Expect(body.Result.Content[0].Text).To(gomega.ContainSubstring("missing_session_header"))
 	})
 
-	ginkgo.It("lists exactly the twelve roster tools", func() {
+	ginkgo.It("lists exactly the thirteen roster tools", func() {
 		recorder := postRPC(
 			rosterForServer(),
 			`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
@@ -126,7 +126,7 @@ var _ = ginkgo.Describe("RosterToolServer", func() {
 			"list_agents", "agent_status", "stop_agent",
 			"spawn_agent", "send_agent_message", "set_agent_permission_mode",
 			"answer_permission", "await_permission", "pending_permissions",
-			"read_push_config", "run_slash_command", "open_rows",
+			"read_push_config", "run_slash_command", "open_rows", "reload_fleet",
 		))
 	})
 

@@ -5,10 +5,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -157,6 +160,38 @@ func registerSweepGateFlags() sweepGateFlags {
 	}
 }
 
+// reloadFleetFlags are the one-shot reload-fleet client's flags, registered
+// together so main stays inside its funlen budget.
+type reloadFleetFlags struct {
+	enabled  *bool
+	daemon   *string
+	sessions *string
+}
+
+func registerReloadFleetFlags() reloadFleetFlags {
+	return reloadFleetFlags{
+		enabled: flag.Bool("reload-fleet", false,
+			"POST a fleet reload to the running daemon and exit (one-shot client)"),
+		daemon: flag.String("daemon-url", "http://localhost:18090",
+			"base URL of the running claude-wrapper daemon, for --reload-fleet"),
+		sessions: flag.String("reload-sessions", "",
+			"comma-separated session ids to scope --reload-fleet to; empty means every live session"),
+	}
+}
+
+// reloadFleetConfig registers the reload-fleet flags at package init, before
+// flag.Parse, so main needs no local for them.
+var reloadFleetConfig = registerReloadFleetFlags()
+
+// maybeRunReloadFleetCLI runs the reload-fleet client and exits when its flag is
+// set. It is a thin HTTP client: it POSTs to the running daemon and exits, so it
+// needs no supervisor and binds no listener.
+func maybeRunReloadFleetCLI(ctx context.Context, flags reloadFleetFlags) {
+	if *flags.enabled {
+		os.Exit(runReloadFleetCLI(ctx, *flags.daemon, *flags.sessions))
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "localhost:18090", "HTTP listen address")
 	claudeBin := flag.String("claude-bin", "claude", "path to the claude binary")
@@ -193,15 +228,10 @@ func main() {
 		return
 	}
 
-	warnIfDrainOverrunsExitTimeout(*drainBound)
-
-	// One signal context for the whole process.
-	//
-	// It replaces the poster-only NotifyContext this used to build: that one
-	// registered a handler, which suppressed Go's default SIGTERM termination, and
-	// then unregistered it — so the FIRST SIGTERM did nothing at all and the daemon
-	// only died on the second or on a SIGKILL. `launchctl kickstart -k` sends one
-	// SIGTERM, waits, then SIGKILLs, so no shutdown path could ever run.
+	// One signal context for the whole process. It replaces the poster-only
+	// NotifyContext this used to build: that one registered a handler (suppressing
+	// Go's default SIGTERM) then unregistered it, so the FIRST SIGTERM did nothing
+	// and the daemon only died on the second or a SIGKILL.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -268,6 +298,7 @@ func serveUntilStopped(
 	drainBound time.Duration,
 	stop func(),
 ) {
+	warnIfDrainOverrunsExitTimeout(drainBound)
 	server := &http.Server{
 		Addr:              listen,
 		Handler:           mux,
@@ -694,10 +725,11 @@ func startFleetFaces(
 		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in
 		// ~/.config/claude-supervisor/config.json. Without it every spawn that
 		// omits `interactive` opens a tab regardless of the configured mode.
-		SpawnMode: pkg.NewSpawnModeSourcesReader("", nil),
-		Vaults:    vaults,
-		Tabs:      tabs,
-		Now:       now,
+		SpawnMode:  pkg.NewSpawnModeSourcesReader("", nil),
+		Vaults:     vaults,
+		Tabs:       tabs,
+		PaneJoiner: pkg.NewWeztermPaneJoiner(""),
+		Now:        now,
 		// The fleet-wide caps; shared with the flagged tick so both read one limit.
 		Caps: caps,
 		// The id → name join send_agent_message needs: it holds the session id,
@@ -719,6 +751,7 @@ func startFleetFaces(
 	// the executor is shared with the flagged tick so both route one way.
 	openExecutor := mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
 	mux.Handle("/supervisor/mcp", rosterServer)
+	mux.Handle("/api/1.0/reload-fleet", handler.ReloadFleet(rosterServer))
 
 	go startFlaggedTick(
 		ctx, flaggedTickInterval,
@@ -902,6 +935,7 @@ func runOneShotMode(
 	fleetPusher fleetPusherFlags,
 	attentionURL string,
 ) bool {
+	maybeRunReloadFleetCLI(ctx, reloadFleetConfig)
 	if *sweepGate.mode != "" {
 		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
 	}
@@ -924,6 +958,66 @@ func runFleetPusherOnce(
 	pusher.Sessions = splitSessions(sessions)
 	pusher.Send = send
 	pusher.TickOnce(ctx)
+}
+
+// runReloadFleetCLI POSTs a fleet reload to the running daemon and prints the
+// report as JSON-lines, a summary, and the population diff. It returns the exit
+// code: 0 when every session reloaded, 1 otherwise, 2 on a transport error.
+func runReloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string) int {
+	return reloadFleetCLI(ctx, daemonURL, sessionsCSV, os.Stdout, os.Stderr)
+}
+
+// reloadFleetCLI is runReloadFleetCLI with injectable writers, so the JSON-lines
+// rendering and the exit-code mapping are testable.
+func reloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string, stdout, stderr io.Writer) int {
+	body, err := json.Marshal(map[string][]string{"sessions": splitSessions(sessionsCSV)})
+	if err != nil {
+		fmt.Fprintf(stderr, "reload-fleet: marshal failed: %v\n", err)
+		return 2
+	}
+	url := strings.TrimRight(daemonURL, "/") + "/api/1.0/reload-fleet"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(stderr, "reload-fleet: request failed: %v\n", err)
+		return 2
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(stderr, "reload-fleet: daemon unreachable: %v\n", err)
+		return 2
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(stderr, "reload-fleet: daemon returned %d\n", resp.StatusCode)
+		return 2
+	}
+	var report pkg.ReloadReport
+	const maxReloadResponseBytes = 1 << 20
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReloadResponseBytes)).Decode(&report); err != nil {
+		fmt.Fprintf(stderr, "reload-fleet: decode failed: %v\n", err)
+		return 2
+	}
+	counts := map[pkg.ReloadOutcome]int{}
+	for _, result := range report.Results {
+		line, _ := json.Marshal(result)
+		fmt.Fprintln(stdout, string(line))
+		counts[result.Outcome]++
+	}
+	fmt.Fprintf(stderr, "reloaded=%d refused=%d busy=%d no-pane=%d unverified=%d\n",
+		counts[pkg.OutcomeReloaded], counts[pkg.OutcomeRefused], counts[pkg.OutcomeBusy],
+		counts[pkg.OutcomeNoPane], counts[pkg.OutcomeUnverified])
+	for _, id := range report.Missing {
+		fmt.Fprintf(stdout, "missing: %s\n", id)
+	}
+	for _, id := range report.Extra {
+		fmt.Fprintf(stdout, "extra: %s\n", id)
+	}
+	if len(report.Results) > 0 && counts[pkg.OutcomeReloaded] == len(report.Results) {
+		return 0
+	}
+	return 1
 }
 
 // splitSessions parses the `--sessions` comma list, dropping empties.
