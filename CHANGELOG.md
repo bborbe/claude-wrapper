@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.60.0
 
 - feat: **reload every live session's plugins in one call, with a per-session outcome.** `reload_fleet` (MCP tool + `POST /api/1.0/reload-fleet` + the `--reload-fleet` CLI) enumerates live sessions, delivers `/reload-plugins` through the existing `run_slash_command` — with a `PanesForPIDs` fallback for a tab absent from the ledger — and reports `reloaded` / `refused` / `busy` / `no-pane` / `unverified` per session, plus a registry-vs-roster population diff. Busy and parked sessions are skipped, never interrupted; a non-empty composer is refused. Change set: `pkg/reload_fleet.go`, `pkg/handler/reload_fleet.go`, `pkg/roster_mcp.go`, `pkg/run_slash_command.go`, `main.go`, `CHANGELOG.md`.
 
