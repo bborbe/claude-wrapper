@@ -104,6 +104,11 @@ func ReloadFleet(
 	}
 	report := ReloadReport{Results: make([]ReloadResult, 0, len(sessions))}
 	for _, session := range sessions {
+		// One delivery can block for the settle poll, so a whole run can take
+		// minutes: stop between sessions when the caller has gone away.
+		if err := ctx.Err(); err != nil {
+			return report, errors.Wrapf(ctx, err, "fleet reload cancelled")
+		}
 		report.Results = append(report.Results, reloadOne(ctx, deps, session))
 	}
 	missing, extra, err := crossCheck(ctx, deps.Registry, deps.Roster)

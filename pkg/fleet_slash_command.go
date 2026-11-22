@@ -84,6 +84,11 @@ func RunFleetCommand(
 		Results: make([]FleetCommandResult, 0, len(sessions)),
 	}
 	for _, session := range sessions {
+		// One delivery can block for the composer deadline, so a whole run can take
+		// minutes: stop between sessions when the caller has gone away.
+		if err := ctx.Err(); err != nil {
+			return report, errors.Wrapf(ctx, err, "fleet command cancelled")
+		}
 		report.Results = append(report.Results, runFleetCommandOne(ctx, deps, session, command))
 	}
 	missing, extra, err := crossCheck(ctx, deps.Registry, deps.Roster)

@@ -52,6 +52,11 @@ func liveSessions(
 	onlySet := toSet(only)
 	sessions := make([]fleetSession, 0, len(live))
 	for _, entry := range live {
+		// A fleet run types into panes, so it can outlast the caller's interest:
+		// stop enumerating rather than delivering to a fleet nobody is waiting on.
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Wrapf(ctx, err, "fleet enumeration cancelled")
+		}
 		if len(onlySet) > 0 {
 			if _, ok := onlySet[entry.SessionID]; !ok {
 				continue
