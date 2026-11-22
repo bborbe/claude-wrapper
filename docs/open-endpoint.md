@@ -39,10 +39,23 @@ wrapper executes those rules. It does not re-decide them.
 | `path` | `headless` · `tab` · `none` |
 | `window_key`, `window_id` | role-map key and id; set only when `path` is `tab` |
 | `session_id`, `pane_id` | set when known |
+| `bind` | the endpoint's own task bind, or `null`; see below |
 | `reason`, `remedy` | set only when `branch` is `refused` |
 | `message` | free text: the refusal's detail, or a best-effort start-command note on an opened tab |
 
 A field that is not decided for a row (a row refused at the page read has no role yet) is the empty string; `window_id` is null unless the row opened a tab.
+
+`bind` is an object `{task, session_id, action, error}` — or `null` when the row bound nothing
+(a tab row, a refused row, or an open that named no task). `action` is `stamped` (the task had no
+`claude_session_id`, so the endpoint wrote it), `appended` (another live session already owned the
+task, so the endpoint only appended to `metrics_sessions`) or `failed` (with `error` set; the child
+is already live, so a bind failure never fails the open).
+
+It exists because a task file cannot answer the question. A spawned child runs
+`/vault-cli:work-on-task "<task>"` as its opening turn, and that path stamps `claude_session_id` and
+appends `metrics_sessions` itself — measured 2026-11-22, a fixture read empty at open time and
+carried a stamp minutes later with the endpoint never binding. `bind` is the endpoint's own record,
+so a caller can tell the endpoint's write from the child's.
 
 `reason` tokens: `missing-row`, `row-unreadable`, `undecidable-role`, `manager-mode-headless`,
 `truncated-id`, `liveness-unreadable`, `answer-path`, `role-map-key-missing`, `hold-window`,

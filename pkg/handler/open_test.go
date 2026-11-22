@@ -153,16 +153,18 @@ type openFakeHeadless struct {
 func (f *openFakeHeadless) SpawnOpenHeadless(
 	_ context.Context,
 	request pkg.OpenHeadlessRequest,
-) (*pkg.Session, error) {
+) (*pkg.Session, *pkg.OpenBind, error) {
 	f.requests = append(f.requests, request)
 	if f.err != nil {
-		return nil, f.err
+		return nil, nil, f.err
 	}
 	id := request.Resume
 	if id == "" {
 		id = openTestUUID(500)
 	}
-	return &pkg.Session{ID: id}, nil
+	return &pkg.Session{ID: id}, &pkg.OpenBind{
+		Task: request.Task, SessionID: id, Action: "stamped",
+	}, nil
 }
 
 // openFakeRunner records every write-back argv.
@@ -429,7 +431,7 @@ var _ = Describe("Open handler", func() {
 var openVerdictKeys = []string{
 	"kind", "vault", "name", "role", "role_source", "mode", "mode_note",
 	"branch", "path", "window_key", "window_id", "session_id", "pane_id",
-	"reason", "remedy", "message",
+	"bind", "reason", "remedy", "message",
 }
 
 var openTokenSets = map[string][]string{
@@ -448,7 +450,7 @@ var openTokenSets = map[string][]string{
 }
 
 var _ = Describe("Open verdict shape", func() {
-	It("AC5: every verdict carries all 16 fields and only documented tokens", func() {
+	It("AC5: every verdict carries all 17 fields and only documented tokens", func() {
 		f := newOpenTestFixtureWithDir()
 		writeOpenTestCallerPages(f.dir)
 
