@@ -94,7 +94,9 @@ func (s *supervisor) Adopt(ctx context.Context) (AdoptReport, error) {
 		}
 		files, openErr := s.store.Open(ctx, record.ID)
 		if openErr != nil {
-			report.skip(record.ID, record.Dir, "open session files failed: "+openErr.Error())
+			// Already named by a WARNING and not a silent path: the record stays
+			// on disk for the next pass, so it is not counted as a skip.
+			log.Printf("WARNING: adopt session %s failed: %v", record.ID, openErr)
 			continue
 		}
 		// Re-resolved from the same options the spawn used, because an adopted child
