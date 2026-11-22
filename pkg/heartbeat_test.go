@@ -101,26 +101,48 @@ var _ = ginkgo.Describe("HeartbeatPoster", func() {
 		gomega.Expect(client.snapshot()).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("suppresses only a terminal ledger row", func() {
+	ginkgo.It("suppresses only a terminal HEADLESS ledger row", func() {
 		// One registry of live sessions, one ledger row per case. The assertion is the
 		// POSTED SET, never a count: a count would pass for an implementation that
 		// posted the wrong sessions and skipped the right number.
+		//
+		// ⚠️ The MODE is load-bearing, not decoration. A terminal row on an interactive
+		// session is a finished TURN, not a finished session: the tab is still open and
+		// its process alive, and nothing re-opens the row until the next turn. Skipping
+		// it drops a live session out of the liveness population — the undercount this
+		// task exists to fix. Only a headless terminal row may be skipped.
 		cases := []struct {
 			name   string
 			rows   []LedgerRow
 			posted bool
 		}{
-			{"done", []LedgerRow{{SessionID: "s-done", Status: "done"}}, false},
-			{"error", []LedgerRow{{SessionID: "s-error", Status: "error"}}, false},
-			{"running", []LedgerRow{{SessionID: "s-running", Status: "running"}}, true},
+			{"done", []LedgerRow{{SessionID: "s-done", Status: "done", Mode: SpawnModeHeadless}}, false},
+			{"error", []LedgerRow{{SessionID: "s-error", Status: "error", Mode: SpawnModeHeadless}}, false},
+			{"running", []LedgerRow{{SessionID: "s-running", Status: "running", Mode: SpawnModeHeadless}}, true},
 			{"empty", []LedgerRow{{SessionID: "s-empty", Status: ""}}, true},
 			{"cancelled", []LedgerRow{{SessionID: "s-cancelled", Status: "cancelled"}}, true},
 			{"no-row", nil, true},
 			// A resumed session keeps its id, so its new `running` row must override the
 			// stale terminal one that precedes it.
 			{"duplicate", []LedgerRow{
-				{SessionID: "s-duplicate", Status: "done"},
-				{SessionID: "s-duplicate", Status: "running"},
+				{SessionID: "s-duplicate", Status: "done", Mode: SpawnModeHeadless},
+				{SessionID: "s-duplicate", Status: "running", Mode: SpawnModeHeadless},
+			}, true},
+			// An interactive session idle at the prompt: terminal row, live process.
+			{"done-interactive", []LedgerRow{
+				{SessionID: "s-done-interactive", Status: "done", Mode: SpawnModeInteractive},
+			}, true},
+			{"error-interactive", []LedgerRow{
+				{SessionID: "s-error-interactive", Status: "error", Mode: SpawnModeInteractive},
+			}, true},
+			// A legacy terminal row carrying no mode cannot prove `headless`, so it does
+			// not skip — the asymmetry resolves toward not dropping a live session.
+			{"done-empty-mode", []LedgerRow{{SessionID: "s-done-empty-mode", Status: "done"}}, true},
+			// A session first recorded headless and later continued interactively: the
+			// last row wins, and an interactive row is never an ended session.
+			{"headless-then-interactive", []LedgerRow{
+				{SessionID: "s-headless-then-interactive", Status: "done", Mode: SpawnModeHeadless},
+				{SessionID: "s-headless-then-interactive", Status: "done", Mode: SpawnModeInteractive},
 			}, true},
 		}
 
