@@ -48,6 +48,7 @@ const (
 	ToolPendingPermissions     ToolName = "pending_permissions"
 	ToolReadPushConfig         ToolName = "read_push_config"
 	ToolOpenRows               ToolName = "open_rows"
+	ToolReloadFleet            ToolName = "reload_fleet"
 )
 
 // RosterToolNames is every tool the roster face exposes, in listing order.
@@ -71,6 +72,7 @@ func RosterToolNames() []ToolName {
 		ToolPendingPermissions,
 		ToolReadPushConfig,
 		ToolOpenRows,
+		ToolReloadFleet,
 	}
 }
 
@@ -132,6 +134,10 @@ type RosterToolServer struct {
 	// Tabs types into a tab worker's pane for send_agent_message. Nil means a tab
 	// worker cannot be messaged.
 	Tabs TabClient
+	// PaneJoiner joins a session's pid to its WezTerm pane, so a tab absent from
+	// the ledger can still be reached by run_slash_command. Nil disables the
+	// fallback, which is correct only for a daemon with no WezTerm.
+	PaneJoiner PaneJoiner
 	// Now bounds the pane-send readiness and confirmation polls. Nil falls back to
 	// the system clock, which is what a test wants to override.
 	Now libtime.CurrentDateTimeGetter
@@ -345,6 +351,8 @@ func (s *RosterToolServer) invoke(
 		return s.readPushConfig(ctx, args)
 	case ToolOpenRows:
 		return s.openRows(ctx, args, sessionID)
+	case ToolReloadFleet:
+		return s.reloadFleet(ctx, args)
 	default:
 		return "", errors.Errorf(ctx, "unknown tool %q", name)
 	}
@@ -1803,6 +1811,7 @@ func (s *RosterToolServer) recordStop(ctx context.Context, row *AgentRow, caller
 func rosterToolDefinitions() []any {
 	definitions := append(spawnToolDefinitions(), parkToolDefinitions()...)
 	definitions = append(definitions, runSlashCommandToolDefinition())
+	definitions = append(definitions, reloadFleetToolDefinition())
 	definitions = append(definitions, modeToolDefinitions()...)
 	return append(definitions, openToolDefinitions()...)
 }
