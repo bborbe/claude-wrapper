@@ -267,9 +267,9 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 			answeringChild(`{"type":"result","subtype":"success","is_error":false}`),
 			successorLedger,
 		)
-		adopted, err := successor.Adopt(ctx)
+		report, err := successor.Adopt(ctx)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(adopted).To(gomega.Equal(1))
+		gomega.Expect(report.Adopted).To(gomega.ConsistOf(session.ID))
 		defer func() { _ = successor.Stop(context.Background(), session.ID) }()
 
 		// Nothing is written: the row already carries that turn's verdict, and a

@@ -168,7 +168,9 @@ func (f *fakeSupervisor) SubscribeFrom(
 	return f.events[start:], start, live, func() {}, nil
 }
 
-func (f *fakeSupervisor) Adopt(_ context.Context) (int, error) { return 0, nil }
+func (f *fakeSupervisor) Adopt(_ context.Context) (pkg.AdoptReport, error) {
+	return pkg.AdoptReport{}, nil
+}
 
 func (f *fakeSupervisor) Drain(_ context.Context, _ time.Duration) pkg.DrainReport {
 	return pkg.DrainReport{}

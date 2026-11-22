@@ -118,9 +118,10 @@ type Supervisor interface {
 	SubscribeFrom(ctx context.Context, id string, from int) (
 		replay []Event, firstSeq int, live <-chan Event, cancel func(), err error)
 	// Adopt registers every child a previous daemon left running, so a restart
-	// does not lose the sessions streaming across it. It returns how many were
-	// adopted.
-	Adopt(ctx context.Context) (int, error)
+	// does not lose the sessions streaming across it. It returns the adopted ids
+	// and one row per record it did not adopt, with the reason — so a dropped
+	// record is reported rather than silently pruned.
+	Adopt(ctx context.Context) (AdoptReport, error)
 	// Drain waits for each child to reach a turn boundary, up to bound, and
 	// reports what it found. It never kills a child.
 	Drain(ctx context.Context, bound time.Duration) DrainReport
@@ -352,106 +353,6 @@ func (s *supervisor) SubscribeFrom(
 		return nil, 0, nil, nil, errors.Wrapf(ctx, ErrSessionNotFound, "unknown session %q", id)
 	}
 	return c.subscribeFrom(from)
-}
-
-// Adopt registers every child a previous daemon left running.
-//
-// It is what makes a restart cost a turn boundary rather than a turn. Each
-// record names a pid and two endpoint paths; a pid that is still alive is a child
-// that survived, and its state is rebuilt by replaying the event file from the
-// beginning — state is derived from events, so a replay reconstructs exactly what
-// the previous daemon reported, including a turn left open across the restart.
-func (s *supervisor) Adopt(ctx context.Context) (int, error) {
-	records, err := s.store.List(ctx)
-	if err != nil {
-		return 0, errors.Wrapf(ctx, err, "list session records failed")
-	}
-	adopted := 0
-	for _, record := range records {
-		if record.ID == "" {
-			continue
-		}
-		if !processAlive(record.ChildPID) {
-			// The child left while no daemon was watching. Its record has nothing
-			// left to serve — no stream, no stdin — so keeping it would make every
-			// later list report a session that cannot be reached.
-			if removeErr := s.store.Remove(ctx, record.ID); removeErr != nil {
-				log.Printf("WARNING: prune session %s failed: %v", record.ID, removeErr)
-			}
-			continue
-		}
-		currentStart, stale := s.staleRecordStart(ctx, record)
-		if stale {
-			continue
-		}
-		files, openErr := s.store.Open(ctx, record.ID)
-		if openErr != nil {
-			log.Printf("WARNING: adopt session %s failed: %v", record.ID, openErr)
-			continue
-		}
-		// Re-resolved from the same options the spawn used, because an adopted child
-		// parks on the same policy the spawning daemon applied. A zero PolicyContext
-		// is not "no opinion" — it carries no rules, and the decider escalates
-		// everything it cannot match, so every adopted park would wait for a manager
-		// and then be denied by the timeout. That is the opposite of the in-process
-		// behaviour, and it would apply to every session after every restart.
-		policy, policyErr := s.resolvePolicy(ctx, record.Options)
-		if policyErr != nil {
-			// The child is already running. Refusing to adopt would orphan it, which
-			// is the failure this path exists to remove, so it is adopted with no
-			// rules and the loss is named — an empty rule set escalates rather than
-			// silently allowing.
-			log.Printf("WARNING: adopt session %s: policy unavailable: %v", record.ID, policyErr)
-		}
-		c := &child{
-			id:           record.ID,
-			pid:          record.ChildPID,
-			procStart:    currentStart,
-			now:          s.now,
-			stdin:        files.Stdin,
-			eventsPath:   files.EventsPath,
-			subscribers:  map[int]chan Event{},
-			tailDone:     make(chan struct{}),
-			policy:       policy,
-			ledger:       s.ledger,
-			exitRecorder: s.exitRecorder,
-			ctx:          s.ctx,
-			taskResolver: s.policy.TaskResolver,
-			openCards:    s.policy.OpenCards,
-			session: Session{
-				ID:       record.ID,
-				State:    StateStarting,
-				Stall:    &Stall{},
-				Controls: []Control{ControlMessage},
-				Cwd:      record.Cwd,
-				// Mode is what a board answer is checked against: a permission gate
-				// releases only for a headless producer. Leaving it empty made every
-				// adopted headless worker look like a tab worker, so an answer that
-				// arrived during the restart gap was refused — the exact case this
-				// change exists to make deliverable.
-				Mode:      sessionMode(record.Options.Mode),
-				Role:      record.Options.Role,
-				StartedAt: record.StartedAt,
-			},
-		}
-		if record.Question != nil {
-			// The tool that asked is a grandchild of the child, so it survived the
-			// restart too and is still polling for its answer. Restoring the question
-			// is what keeps that answer deliverable.
-			question := *record.Question
-			c.session.Question = &question
-			c.session.Controls = []Control{ControlAnswer, ControlMessage}
-			s.pending.Register(question.RequestID, question)
-		}
-		s.mutex.Lock()
-		s.sessions[record.ID] = c
-		s.mutex.Unlock()
-		//nolint:gosec // the child outlives every request; there is no request ctx to inherit
-		go c.tail()
-		go c.watch()
-		adopted++
-	}
-	return adopted, nil
 }
 
 // DrainReport is what a shutdown found when it waited for turn boundaries.

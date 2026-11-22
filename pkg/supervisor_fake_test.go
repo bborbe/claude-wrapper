@@ -20,7 +20,7 @@ import (
 // was never built to answer.
 type fakeDurable struct{}
 
-func (fakeDurable) Adopt(context.Context) (int, error) { return 0, nil }
+func (fakeDurable) Adopt(context.Context) (AdoptReport, error) { return AdoptReport{}, nil }
 
 func (fakeDurable) Drain(context.Context, time.Duration) DrainReport { return DrainReport{} }
 
