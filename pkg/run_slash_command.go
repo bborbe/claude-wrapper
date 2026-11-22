@@ -18,7 +18,14 @@ import (
 // Fixed in code, exact match, no arguments: the tool writes a real command into
 // a live worker, so what it can run has to be reviewable as a diff rather than
 // supplied at call time — the same property the macro table rests on.
-var allowedSlashCommands = StringList{"/compact", "/reload-plugins"}
+//
+// `/mcp reconnect tts` is here because `tts` is ONE shared HTTP MCP server
+// (`http://127.0.0.1:12000/mcp`): its LaunchAgent restarts it (`KeepAlive`,
+// `ThrottleInterval 30`), and every restart orphans every live session's
+// connection at once. Reconnect is the only remedy, and it is per session — so
+// without this entry the fleet remedy costs one keystroke per pane. A second
+// server is one more exact-match entry, added when it is needed.
+var allowedSlashCommands = StringList{"/compact", "/reload-plugins", "/mcp reconnect tts"}
 
 // runSlashCommandToolDefinition is the MCP schema for run_slash_command.
 func runSlashCommandToolDefinition() any {

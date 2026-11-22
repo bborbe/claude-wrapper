@@ -98,19 +98,20 @@ func ReloadFleet(
 	if deps.PollInterval <= 0 {
 		deps.PollInterval = DefaultReloadPollInterval
 	}
-	live, err := deps.Registry.Live(ctx)
+	sessions, err := liveSessions(ctx, deps, only)
 	if err != nil {
-		return ReloadReport{}, errors.Wrapf(ctx, err, "list live sessions failed")
+		return ReloadReport{}, err
 	}
-	onlySet := toSet(only)
-	report := ReloadReport{Results: make([]ReloadResult, 0, len(live))}
-	for _, entry := range live {
-		if len(onlySet) > 0 {
-			if _, ok := onlySet[entry.SessionID]; !ok {
-				continue
-			}
+	report := ReloadReport{Results: make([]ReloadResult, 0, len(sessions))}
+	for _, session := range sessions {
+		// One delivery can block for the settle poll, so a whole run can take
+		// minutes: stop between sessions when the caller has gone away.
+		select {
+		case <-ctx.Done():
+			return report, errors.Wrapf(ctx, ctx.Err(), "fleet reload cancelled")
+		default:
 		}
-		report.Results = append(report.Results, reloadOne(ctx, deps, entry))
+		report.Results = append(report.Results, reloadOne(ctx, deps, session))
 	}
 	missing, extra, err := crossCheck(ctx, deps.Registry, deps.Roster)
 	if err != nil {
@@ -121,27 +122,17 @@ func ReloadFleet(
 }
 
 // reloadOne decides and executes one session's outcome.
-func reloadOne(ctx context.Context, deps ReloadFleetDeps, entry RegistryEntry) ReloadResult {
-	result := ReloadResult{SessionID: entry.SessionID}
-
-	status, err := deps.Registry.Status(ctx, entry.SessionID)
-	if err != nil {
-		result.Outcome = OutcomeUnverified
-		result.Detail = "status read failed: " + err.Error()
+func reloadOne(
+	ctx context.Context,
+	deps ReloadFleetDeps,
+	session fleetSession,
+) ReloadResult {
+	result := ReloadResult{SessionID: session.Entry.SessionID}
+	if outcome, detail, skip := reloadSkipOutcome(session); skip {
+		result.Outcome, result.Detail = outcome, detail
 		return result
 	}
-	if status != nil {
-		switch *status {
-		case "busy", "waiting":
-			result.Outcome = OutcomeBusy
-			result.Detail = "status " + *status
-			return result
-		case "shell":
-			result.Outcome = OutcomeNoPane
-			result.Detail = "shell session"
-			return result
-		}
-	}
+	entry := session.Entry
 
 	before, hadMarker := deps.Markers.Newest(entry.PID)
 	if err := deps.Slash.Run(ctx, entry.SessionID, "/reload-plugins"); err != nil {
@@ -162,6 +153,23 @@ func reloadOne(ctx context.Context, deps ReloadFleetDeps, entry RegistryEntry) R
 	result.Outcome = OutcomeUnverified
 	result.Detail = "marker did not move within the settle timeout"
 	return result
+}
+
+// reloadSkipOutcome maps a pre-delivery skip onto the reload vocabulary. A
+// status that could not be read is `unverified`: nothing was attempted, and the
+// reload's own outcome set has no closer value for it.
+func reloadSkipOutcome(session fleetSession) (ReloadOutcome, string, bool) {
+	switch session.Skip {
+	case skipBusy:
+		return OutcomeBusy, session.Detail, true
+	case skipNoPane:
+		return OutcomeNoPane, session.Detail, true
+	case skipUnreadable:
+		return OutcomeUnverified, session.Detail, true
+	case skipNone:
+		return "", "", false
+	}
+	return "", "", false
 }
 
 // waitMarkerMoved polls until the pid's newest marker is newer than before, or
