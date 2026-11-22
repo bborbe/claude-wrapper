@@ -67,6 +67,10 @@ type SessionRecord struct {
 	// answer undeliverable — the recorded-but-not-delivered defect this
 	// repository exists to remove.
 	Question *Question `json:"question,omitempty"`
+	// Dir is the store directory the record was read from. It is not part of the
+	// record on disk: List sets it, so a caller that must report a record whose
+	// own id is empty has the one name that still identifies it.
+	Dir string `json:"-"`
 }
 
 // SessionFiles is one session's durable endpoints.
@@ -322,6 +326,7 @@ func (s *sessionStore) List(ctx context.Context) ([]SessionRecord, error) {
 			// restart that adopts what it can and one that refuses to start.
 			continue
 		}
+		record.Dir = name
 		records = append(records, *record)
 	}
 	return records, nil

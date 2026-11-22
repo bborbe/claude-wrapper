@@ -147,9 +147,9 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 		// starts after a restart: a fresh, empty in-memory map and nothing but the
 		// record and the event file to go on.
 		successor := newSupervisor(echoChild())
-		adopted, err := successor.Adopt(ctx)
+		report, err := successor.Adopt(ctx)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(adopted).To(gomega.Equal(1))
+		gomega.Expect(report.Adopted).To(gomega.ConsistOf(session.ID))
 
 		recovered, err := successor.Get(ctx, session.ID)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -172,9 +172,9 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 		spawned := childFor(sup, session.ID)
 
 		successor := newSupervisor(echoChild())
-		adopted, err := successor.Adopt(ctx)
+		report, err := successor.Adopt(ctx)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(adopted).To(gomega.Equal(1))
+		gomega.Expect(report.Adopted).To(gomega.ConsistOf(session.ID))
 
 		recovered := childFor(successor, session.ID)
 
@@ -204,9 +204,14 @@ var _ = ginkgo.Describe("durable session endpoints", func() {
 		_ = files.EventsWriter.Close()
 
 		sup := newSupervisor(echoChild())
-		adopted, err := sup.Adopt(ctx)
+		report, err := sup.Adopt(ctx)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(adopted).To(gomega.Equal(0))
+		gomega.Expect(report.Adopted).To(gomega.BeEmpty())
+		gomega.Expect(report.Skipped).To(gomega.ConsistOf(AdoptSkip{
+			ID:     dead.ID,
+			Dir:    dead.ID,
+			Reason: "child pid is not alive",
+		}))
 
 		records, err := store.List(ctx)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())

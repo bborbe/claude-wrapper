@@ -284,10 +284,15 @@ func main() {
 	)
 	// Re-adoption runs before the listener opens, so a supervisor that connects the
 	// instant the port is up already sees the sessions that survived the restart.
-	if adopted, adoptErr := supervisor.Adopt(ctx); adoptErr != nil {
+	if report, adoptErr := supervisor.Adopt(ctx); adoptErr != nil {
 		log.Printf("WARNING: re-adopt failed: %v", adoptErr)
-	} else if adopted > 0 {
-		log.Printf("re-adopted %d live session(s) from the previous daemon", adopted)
+	} else {
+		// Both lines on every pass, including a quiet one: a suppressed summary
+		// and a pass that adopted nothing must not read the same, and the
+		// skipped ids are what make a dropped record visible instead of absent.
+		log.Printf("re-adopted %d live session(s) from the previous daemon", len(report.Adopted))
+		log.Printf("job=adopt action=restart adopted=%d skipped=%d skipped_sessions=%s",
+			len(report.Adopted), len(report.Skipped), strings.Join(report.SkippedSessions(), ","))
 	}
 
 	// One lock set for every route that can write a turn: a sequence and a
