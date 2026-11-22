@@ -9,6 +9,7 @@ import (
 	stderrors "errors"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -409,5 +410,54 @@ var _ = ginkgo.Describe("TaskLauncher", func() {
 			To(gomega.BeNil())
 		writeTask("A Task.md", "---\nlauncher: "+launcher+"\n---\nbody\n")
 		gomega.Expect(TaskLauncherModel(dir, "A Task")).To(gomega.Equal("deepseek-v4-flash-max[1m]"))
+	})
+})
+
+// The resume guard runs this on the request path. An UNBOUNDED child inherits the
+// MCP client's own timeout, so a hung `vault-cli` is only killed once the client
+// has already given up — and the guard then reports `signal: killed`, naming the
+// child as the fault while the real cause is the client's timeout.
+var _ = ginkgo.Describe("vaultCLILister", func() {
+	ginkgo.It("kills a hung vault-cli at its own bound and reports the kill", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		shim := filepath.Join(dir, "vault-cli")
+		// `exec` replaces the shell, so killing the child kills the sleep too and no
+		// grandchild outlives the spec.
+		gomega.Expect(os.WriteFile(shim, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755)).
+			To(gomega.Succeed())
+		ginkgo.GinkgoT().Setenv(
+			"PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		)
+
+		lister := &vaultCLILister{timeout: 100 * time.Millisecond}
+		start := time.Now()
+		_, err := lister.List(context.Background())
+		elapsed := time.Since(start)
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("was killed"))
+		gomega.Expect(stderrors.Is(err, ErrVaultListUnreadable)).To(gomega.BeTrue())
+		// The bound is what matters: the call reaches a decision on its own, well
+		// before the request's own timeout could have killed it.
+		gomega.Expect(elapsed).To(gomega.BeNumerically("<", 2*time.Second))
+	})
+
+	ginkgo.It("returns a readable list unchanged, never a fabricated empty one", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		shim := filepath.Join(dir, "vault-cli")
+		gomega.Expect(os.WriteFile(
+			shim,
+			[]byte("#!/bin/sh\nprintf '%s' '[{\"name\":\"v\",\"path\":\"/tmp/v\"}]'\n"),
+			0o755,
+		)).To(gomega.Succeed())
+		ginkgo.GinkgoT().Setenv(
+			"PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		)
+
+		vaults, err := (&vaultCLILister{timeout: time.Second}).List(context.Background())
+
+		gomega.Expect(err).To(gomega.Succeed())
+		gomega.Expect(vaults).To(gomega.HaveLen(1))
+		gomega.Expect(vaults[0].Name).To(gomega.Equal("v"))
 	})
 })

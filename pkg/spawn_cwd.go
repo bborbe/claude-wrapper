@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 )
@@ -36,10 +37,37 @@ type VaultLister interface {
 
 // NewVaultCLILister creates a VaultLister that shells `vault-cli config list`.
 func NewVaultCLILister() VaultLister {
-	return &vaultCLILister{}
+	return &vaultCLILister{timeout: vaultListTimeout}
 }
 
-type vaultCLILister struct{}
+// ErrVaultListUnreadable reports that `vault-cli config list` did not finish
+// inside vaultListTimeout and its child was killed.
+//
+// It is a distinct sentinel so the resume guard can tell "the list could not be
+// read in time" from "vault-cli answered with an error", and code the failure
+// accordingly instead of handing back a bare `signal: killed`.
+var ErrVaultListUnreadable = errors.New(
+	context.Background(),
+	"vault-cli config list did not finish in time and was killed",
+)
+
+// vaultListTimeout bounds the `vault-cli config list` child.
+//
+// The resume guard calls this on the request path, so an UNBOUNDED child inherits
+// the MCP client's own timeout. When the client gives up, exec.CommandContext
+// SIGKILLs the child and the guard reports `signal: killed` — naming the child as
+// the fault while the real cause is that the client already stopped waiting.
+// Measured 2026-11-15: three resume calls logged exactly that line, each after the
+// client had timed out, while `vault-cli config list` ran in 0.02–0.07 s from a
+// shell. Two seconds is ~30x the slowest measured healthy run, so a healthy call
+// never reaches it and a wedged one reaches a decision long before the client does.
+const vaultListTimeout = 2 * time.Second
+
+type vaultCLILister struct {
+	// timeout bounds one `vault-cli config list` run. Zero means vaultListTimeout;
+	// a test sets it small to exercise the kill without waiting two seconds.
+	timeout time.Duration
+}
 
 // List returns the configured vaults.
 //
@@ -48,9 +76,21 @@ type vaultCLILister struct{}
 // plausible shape, and the caller would refuse a spawn the operator expected to
 // work.
 func (l *vaultCLILister) List(ctx context.Context) ([]Vault, error) {
-	output, err := exec.CommandContext(ctx, "vault-cli", "config", "list", "--output", "json").
+	timeout := l.timeout
+	if timeout <= 0 {
+		timeout = vaultListTimeout
+	}
+	listCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := exec.CommandContext(listCtx, "vault-cli", "config", "list", "--output", "json").
 		Output()
 	if err != nil {
+		// A killed child is the case this bound exists for: report it as such
+		// rather than letting the exec error read as a vault-cli failure.
+		if listCtx.Err() != nil {
+			return nil, errors.Wrapf(ctx, ErrVaultListUnreadable,
+				"vault-cli config list was killed after %s without finishing", timeout)
+		}
 		return nil, errors.Wrapf(ctx, err, "vault-cli config list failed")
 	}
 	var vaults []Vault
