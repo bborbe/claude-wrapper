@@ -139,21 +139,21 @@ func (s *RosterToolServer) runSlashCommandInPane(
 	if s.Tabs == nil {
 		return false, "", nil
 	}
-	ledgerRow, ok := s.localLedgerRow(ctx, agentID)
+	paneID, mode, sessionID, ok := s.resolvePane(ctx, agentID)
 	if !ok {
 		return false, "", nil
 	}
-	if ledgerRow.PaneID == "" {
+	if paneID == "" {
 		return true, "", errors.Errorf(
 			ctx,
 			"agent %s is a %s worker with no pane and no live child in this daemon — "+
 				"there is nothing to run %s in",
 			agentID,
-			ledgerRow.Mode,
+			mode,
 			command,
 		)
 	}
-	if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, command, s.currentDateTime()); err != nil {
+	if err := SendWhenReady(ctx, s.Tabs, paneID, command, s.currentDateTime()); err != nil {
 		return true, "", err
 	}
 	response, err := marshalJSON(ctx, map[string]any{
@@ -161,10 +161,61 @@ func (s *RosterToolServer) runSlashCommandInPane(
 		"command":    command,
 		"sent":       true,
 		"channel":    "pane",
-		"pane_id":    ledgerRow.PaneID,
-		"session_id": ledgerRow.SessionID,
+		"pane_id":    paneID,
+		"session_id": sessionID,
 	})
 	return true, response, err
+}
+
+// resolvePane resolves agentID to a pane: the ledger row first, then the
+// pid→pane join for a tab absent from the ledger. ok=false means this daemon
+// does not own the agent at all (an A2A or cluster worker), which is the
+// caller's cue to refuse it by name rather than answer a pane send.
+func (s *RosterToolServer) resolvePane(
+	ctx context.Context,
+	agentID string,
+) (paneID string, mode string, sessionID string, ok bool) {
+	if row, found := s.localLedgerRow(ctx, agentID); found {
+		return row.PaneID, row.Mode, row.SessionID, true
+	}
+	pid, found := s.pidForSession(ctx, agentID)
+	if !found {
+		return "", "", "", false
+	}
+	// A live pid with no ledger row is a tab this daemon did not spawn. Join it
+	// to its pane; if the join misses, the empty pane is the honest answer and
+	// runSlashCommandInPane reports "no pane and no live child".
+	if s.PaneJoiner == nil {
+		return "", "interactive", agentID, true
+	}
+	panes, err := s.PaneJoiner.PanesForPIDs(ctx, []int{pid})
+	if err != nil {
+		return "", "interactive", agentID, true
+	}
+	if pane, ok := panes[pid]; ok && pane != "" {
+		return pane, "interactive", agentID, true
+	}
+	return "", "interactive", agentID, true
+}
+
+// pidForSession returns the live pid registered for a session id, if any.
+func (s *RosterToolServer) pidForSession(
+	ctx context.Context,
+	sessionID string,
+) (int, bool) {
+	if s.Registry == nil {
+		return 0, false
+	}
+	entries, err := s.Registry.Live(ctx)
+	if err != nil {
+		return 0, false
+	}
+	for _, entry := range entries {
+		if entry.SessionID == sessionID {
+			return entry.PID, true
+		}
+	}
+	return 0, false
 }
 
 // localLedgerRow resolves an agent id to the ledger row of a worker this daemon
