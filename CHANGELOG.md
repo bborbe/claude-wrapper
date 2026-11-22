@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.62.0
 
 - feat: **deliver one allowlisted slash command to every live session in one call, and allow `/mcp reconnect tts` at all.** `tts` is one shared HTTP MCP server, so its LaunchAgent's `KeepAlive` restart orphans every live session's connection at once and the only remedy is `/mcp reconnect tts` per pane — which the allowlist refused, so the fleet had no way to do it. `fleet_slash_command` (MCP tool + `POST /api/1.0/fleet-slash-command` + `--fleet-slash-command` / `--fleet-sessions` CLI) reuses the reload's enumeration and delivery, and reports `delivered` / `refused` / `busy` / `no-pane` / `failed` per session — no `reloaded` analogue, because a slash command leaves no marker to verify, so `delivered` means the command reached the session, not that its effect took hold. The enumeration moved into `pkg/fleet.go` so both verbs share one loop: `reload_fleet`'s five outcomes, marker verification and exit codes are unchanged and its tests pass unmodified. A command outside the allowlist is refused once with 400 rather than once per session. Change set: `pkg/fleet.go`, `pkg/fleet_slash_command.go`, `pkg/fleet_slash_command_test.go`, `pkg/reload_fleet.go`, `pkg/run_slash_command.go`, `pkg/roster_mcp.go`, `pkg/roster_mcp_test.go`, `pkg/handler/fleet_route.go`, `pkg/handler/fleet_slash_command.go`, `pkg/handler/fleet_slash_command_test.go`, `pkg/handler/reload_fleet.go`, `main.go`, `main_test.go`, `CHANGELOG.md`.
 
