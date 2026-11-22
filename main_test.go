@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,11 +24,21 @@ func TestMain(t *testing.T) {
 	ginkgo.RunSpecs(t, "Main Suite")
 }
 
-// reloadDaemon serves a fixed report and records the request body.
+// reloadDaemon serves a fixed report at the given status.
 func reloadDaemon(report pkg.ReloadReport, status int) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(report)
+	}))
+}
+
+// reloadDaemonCapturing serves a fixed report and records the request body, so a
+// test can assert the scoped sessions reach the daemon.
+func reloadDaemonCapturing(report pkg.ReloadReport, captured *[]byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(report)
 	}))
 }
@@ -76,5 +87,15 @@ var _ = ginkgo.Describe("reloadFleetCLI", func() {
 		var stdout, stderr bytes.Buffer
 		code := reloadFleetCLI(context.Background(), "http://127.0.0.1:1", "", &stdout, &stderr)
 		gomega.Expect(code).To(gomega.Equal(2))
+	})
+
+	ginkgo.It("sends the scoped sessions to the daemon", func() {
+		var captured []byte
+		srv := reloadDaemonCapturing(pkg.ReloadReport{}, &captured)
+		defer srv.Close()
+		var stdout, stderr bytes.Buffer
+		_ = reloadFleetCLI(context.Background(), srv.URL, "a,b", &stdout, &stderr)
+		gomega.Expect(string(captured)).To(gomega.ContainSubstring(`"a"`))
+		gomega.Expect(string(captured)).To(gomega.ContainSubstring(`"b"`))
 	})
 })

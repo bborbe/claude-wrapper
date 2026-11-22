@@ -975,7 +975,8 @@ func reloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string, stdout, 
 		return 2
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(stderr, "reload-fleet: daemon unreachable: %v\n", err)
 		return 2
@@ -986,7 +987,8 @@ func reloadFleetCLI(ctx context.Context, daemonURL, sessionsCSV string, stdout, 
 		return 2
 	}
 	var report pkg.ReloadReport
-	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+	const maxReloadResponseBytes = 1 << 20
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReloadResponseBytes)).Decode(&report); err != nil {
 		fmt.Fprintf(stderr, "reload-fleet: decode failed: %v\n", err)
 		return 2
 	}

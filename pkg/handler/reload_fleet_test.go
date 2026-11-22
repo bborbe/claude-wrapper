@@ -7,6 +7,7 @@ package handler_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,7 @@ func (f *fakeReloadSurface) ReloadFleetReport(_ context.Context, only []string) 
 func reloadRequest(method, host, body string) *http.Request {
 	req := httptest.NewRequest(method, "/api/1.0/reload-fleet", strings.NewReader(body))
 	req.Host = host
+	req.Header.Set("Content-Type", "application/json")
 	return req
 }
 
@@ -70,5 +72,30 @@ var _ = Describe("ReloadFleet handler", func() {
 		handler.ReloadFleet(&fakeReloadSurface{}).ServeHTTP(
 			rec, reloadRequest(http.MethodPost, "localhost", `{not json`))
 		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("returns 415 for a non-JSON content-type", func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/1.0/reload-fleet", strings.NewReader(`{}`))
+		req.Host = "localhost"
+		rec := httptest.NewRecorder()
+		handler.ReloadFleet(&fakeReloadSurface{}).ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusUnsupportedMediaType))
+	})
+
+	It("returns 200 for an empty body (every live session)", func() {
+		surface := &fakeReloadSurface{report: pkg.ReloadReport{
+			Results: []pkg.ReloadResult{{SessionID: "s1", Outcome: pkg.OutcomeReloaded}},
+		}}
+		rec := httptest.NewRecorder()
+		handler.ReloadFleet(surface).ServeHTTP(rec, reloadRequest(http.MethodPost, "localhost", ""))
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(surface.only).To(BeEmpty())
+	})
+
+	It("returns 500 when the surface errors", func() {
+		surface := &fakeReloadSurface{err: errors.New("boom")}
+		rec := httptest.NewRecorder()
+		handler.ReloadFleet(surface).ServeHTTP(rec, reloadRequest(http.MethodPost, "localhost", `{}`))
+		Expect(rec.Code).To(Equal(http.StatusInternalServerError))
 	})
 })

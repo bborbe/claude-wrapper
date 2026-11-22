@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/bborbe/errors"
 
@@ -22,7 +23,9 @@ type ReloadFleetSurface interface {
 }
 
 // ReloadFleet serves POST /api/1.0/reload-fleet: the REST half of the
-// reload_fleet MCP tool. Loopback-gated like the other pane-touching routes.
+// reload_fleet MCP tool. It is loopback-gated and input-validated like
+// handler.Open, and it clears the server write deadline because the serial fleet
+// reload can outlast the 60s WriteTimeout.
 func ReloadFleet(surface ReloadFleetSurface) http.Handler {
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -36,11 +39,36 @@ func ReloadFleet(surface ReloadFleetSurface) http.Handler {
 				errors.Errorf(ctx, "method %q not allowed", req.Method))
 			return
 		}
+		if !pkg.IsJSONRequest(req) {
+			resp.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
+		// The serial fleet reload can outlast the server's 60s WriteTimeout: a
+		// 10s settle per unverified session plus ~8-16s SendWhenReady per busy or
+		// refusing session. Without clearing the deadline the report is written
+		// after it and the CLI reads a broken connection despite the reload having
+		// run. Same call as handler.Open and clearRosterWriteDeadline.
+		if err := http.NewResponseController(resp).SetWriteDeadline(time.Time{}); err != nil &&
+			!errors.Is(err, http.ErrNotSupported) {
+			writeError(resp, http.StatusInternalServerError,
+				errors.Wrapf(ctx, err, "clear write deadline failed"))
+			return
+		}
 		var body struct {
 			Sessions []string `json:"sessions"`
 		}
-		if req.Body != nil {
-			if err := json.NewDecoder(req.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		raw, err := io.ReadAll(io.LimitReader(req.Body, pkg.MaxOpenBody+1))
+		if err != nil {
+			writeError(resp, http.StatusBadRequest,
+				errors.Wrapf(ctx, err, "read body failed"))
+			return
+		}
+		if len(raw) > pkg.MaxOpenBody {
+			writeError(resp, http.StatusBadRequest, errors.Errorf(ctx, "body exceeds 1 MiB"))
+			return
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &body); err != nil {
 				writeError(resp, http.StatusBadRequest,
 					errors.Wrapf(ctx, err, "decode body failed"))
 				return
