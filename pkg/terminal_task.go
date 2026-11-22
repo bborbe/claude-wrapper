@@ -337,7 +337,9 @@ func (c *child) cardVerdict(ctx context.Context) (cardVerdict, error) {
 // nothing pending — the Go daemon's end of life for the headless spawn path.
 // It is the daemon-side counterpart of the node server's `endWorkerIfIdle`,
 // which makes the same stop decision for the spawn path it drives. The daemon
-// adds the open-card keep and has no zero-turn grace.
+// adds the open-card keep and one zero-turn retry (see retryZeroTurn): a turn
+// that produced no assistant message is re-sent once before the child is
+// stopped, because that turn is a failure, not a finished turn.
 //
 // ⚠️ EVERY keep arm is logged. A silent keep would make a stop line
 // indistinguishable from a keep.
@@ -349,6 +351,15 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	// the window where state still reads idle on a child that has already exited.
 	if c.procGone.Load() {
 		log.Printf("agent %s: turn closed — the process is already gone", c.id)
+		return
+	}
+	// A turn that produced no assistant message is a FAILED turn, not a finished
+	// one, and it is the one case where stopping the child destroys work that
+	// still exists: the prompt has been consumed and nothing came back from it.
+	// Re-sending it once is the remedy — a stream that died mid-flight is
+	// transient, and the alternative is a worker that looks like it ran and wrote
+	// nothing.
+	if c.retryZeroTurn(ctx) {
 		return
 	}
 	// The card check runs BEFORE the decision is committed, and before the lock
@@ -420,6 +431,7 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	}
 	// Commit: from here `send` refuses a new turn, so the kill cannot lose one.
 	c.ending = true
+	turns := c.zeroTurns.turns
 	killErr := c.killLocked("headless-turn-end")
 	if killErr != nil {
 		c.ending = false
@@ -428,6 +440,17 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 
 	if killErr != nil {
 		log.Printf("WARNING: could not stop %s after its turn closed: %v", c.id, killErr)
+		return
+	}
+	// ⚠️ The zero-turn close gets its own line. "nothing pending" is true of both
+	// cases and reads as a normal end, which is exactly how a worker that produced
+	// nothing stayed invisible: the operator saw a clean stop and an empty result.
+	if turns == 0 {
+		log.Printf(
+			"agent %s: turn closed with ZERO assistant turns — stopping the session; "+
+				"it produced no output (retry budget spent)",
+			c.id,
+		)
 		return
 	}
 	log.Printf("agent %s: turn closed with nothing pending — stopping the session", c.id)

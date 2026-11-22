@@ -126,6 +126,15 @@ func (r *SessionExitFileRecorder) line(session Session, pid int, status ExitStat
 		"writer="+SessionExitWriterWrapper,
 	)
 	fields = append(fields, stallFields(session.Stall, session.PendingTurns)...)
+	// turns is written on every record, unlike the stall fields above.
+	//
+	// A stall point is absent on a healthy session and its absence is itself the
+	// finding, so writing it unconditionally would destroy that signal. This field
+	// is the opposite: its VALUE is the finding, and a reader comparing a
+	// `turns=0` close against a `turns=4` one needs both sides present. The daily
+	// job parses these as a name→value map, so an added name reads as an added
+	// name — it does not shift the columns a reader indexes.
+	fields = append(fields, "turns="+strconv.Itoa(session.AssistantTurns))
 	return strings.Join(fields, "\t") + "\n"
 }
 

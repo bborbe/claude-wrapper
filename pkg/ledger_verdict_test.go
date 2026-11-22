@@ -38,11 +38,17 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 	// answeringChild announces itself, then answers every line it reads with the
 	// result event the test names. `result` is the child's own terminal event, so
 	// what the wrapper writes to the ledger must be this object verbatim.
+	//
+	// It emits an assistant message before the result on purpose: a result with no
+	// assistant message is a zero-turn close, which the daemon now retries — and a
+	// retry re-opens the row, so a fixture shaped that way would make every ledger
+	// ordering spec here measure the retry instead of the ordering.
 	answeringChild := func(result string) string {
 		path := filepath.Join(dir, "answering-child.sh")
 		script := "#!/bin/sh\n" +
 			"printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"m\",\"permissionMode\":\"auto\"}'\n" +
 			"while IFS= read -r line; do\n" +
+			"  printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"model\":\"m\"}}'\n" +
 			"  printf '%s\\n' '" + result + "'\n" +
 			"done\n"
 		gomega.Expect(os.WriteFile(path, []byte(script), 0o700)).To(gomega.Succeed())

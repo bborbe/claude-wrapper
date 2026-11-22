@@ -33,7 +33,7 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 	ginkgo.It("writes a tab-separated record marked as the wrapper's", func() {
 		line := record(ExitStatus{Code: code(0)})
 		gomega.Expect(line).To(gomega.HaveSuffix("\n"))
-		gomega.Expect(fields(line)).To(gomega.HaveLen(9))
+		gomega.Expect(fields(line)).To(gomega.HaveLen(10))
 		gomega.Expect(line).To(gomega.ContainSubstring("kind=exited"))
 		gomega.Expect(line).To(gomega.ContainSubstring("session=sid-1"))
 		gomega.Expect(line).To(gomega.ContainSubstring("pid=4242"))
@@ -61,7 +61,7 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 		raw, err := os.ReadFile(filepath.Join(dir, "session-sid-2.log"))
 		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
 		line := string(raw)
-		gomega.Expect(fields(line)).To(gomega.HaveLen(13))
+		gomega.Expect(fields(line)).To(gomega.HaveLen(14))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_phase=hook"))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_last_event=system/hook_response"))
 		gomega.Expect(line).To(gomega.ContainSubstring("stall_pending_hooks=SessionStart:startup"))
@@ -77,6 +77,31 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 	ginkgo.It("omits the stall fields for a session that initialised", func() {
 		line := record(ExitStatus{Code: code(0)})
 		gomega.Expect(line).NotTo(gomega.ContainSubstring("stall_"))
+	})
+
+	// A zero-turn close and a healthy one both write `kind=signalled
+	// sender=headless-turn-end`, so the turn count is the only field that tells
+	// them apart. Written unconditionally, unlike the stall fields above, because
+	// here it is the VALUE that carries the finding.
+	ginkgo.It("records the turn count so a zero-turn close reads differently", func() {
+		dir := ginkgo.GinkgoT().TempDir()
+		recorder := &SessionExitFileRecorder{Dir: dir}
+		recorder.Record(Session{ID: "sid-4"}, 4545, ExitStatus{
+			Code:   code(-1),
+			Signal: syscall.SIGKILL,
+			Sender: "headless-turn-end",
+		})
+		recorder.Record(Session{ID: "sid-4", AssistantTurns: 4}, 4546, ExitStatus{
+			Code:   code(-1),
+			Signal: syscall.SIGKILL,
+			Sender: "headless-turn-end",
+		})
+		raw, err := os.ReadFile(filepath.Join(dir, "session-sid-4.log"))
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		gomega.Expect(lines).To(gomega.HaveLen(2))
+		gomega.Expect(lines[0]).To(gomega.ContainSubstring("turns=0"))
+		gomega.Expect(lines[1]).To(gomega.ContainSubstring("turns=4"))
 	})
 
 	// The worst case has no event to hang the point on: a child that emitted
@@ -109,7 +134,7 @@ var _ = ginkgo.Describe("SessionExitFileRecorder", func() {
 			Signal: syscall.SIGKILL,
 			Sender: IdleReaperJobName,
 		})
-		gomega.Expect(fields(line)).To(gomega.HaveLen(9))
+		gomega.Expect(fields(line)).To(gomega.HaveLen(10))
 		gomega.Expect(fields(line)[1]).To(gomega.Equal("kind=signalled"))
 		gomega.Expect(fields(line)[2]).To(gomega.Equal("pane=-"))
 		gomega.Expect(fields(line)[3]).To(gomega.Equal("session=sid-1"))

@@ -1258,6 +1258,9 @@ type child struct {
 	// child's own message_start: State still reads idle in that window, so a
 	// caller that wrote a turn would be invisible to anything reading State.
 	pendingTurns int
+	// zeroTurns tracks the turn in flight, so a close that produced nothing can be
+	// told apart from a finished turn — see retryZeroTurn.
+	zeroTurns zeroTurnGuard
 	// procGone reports that the child's process is no longer running. The tailer
 	// reads it to decide whether an empty read means "wait" or "finished", which is
 	// what lets it drain the last events before the session is settled.
@@ -1349,6 +1352,7 @@ func (c *child) snapshot() *Session {
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
 	clone.PendingTurns = c.pendingTurns
+	clone.AssistantTurns = c.zeroTurns.turns
 	if c.session.Stall != nil {
 		stall := *c.session.Stall
 		stall.PendingHooks = append([]string{}, c.session.Stall.PendingHooks...)
@@ -1478,6 +1482,7 @@ func (c *child) send(ctx context.Context, text string) error {
 		return errors.Wrapf(ctx, ErrSessionExited, "session %q is ending", c.id)
 	}
 	c.pendingTurns++
+	c.zeroTurns.begin(text)
 	// The turn's own sequence, taken here so it precedes any result that can close
 	// it: the row's writes are ordered by this number, and a turn that has not been
 	// numbered yet cannot be superseded.
@@ -1795,12 +1800,7 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 			c.applyInit(event)
 		}
 	case "assistant":
-		if message, ok := event["message"].(map[string]any); ok {
-			if model, ok := message["model"].(string); ok && model != "" && model != syntheticModel {
-				c.session.Model = model
-				c.session.ModelSource = "assistant"
-			}
-		}
+		c.applyAssistant(event)
 	case "stream_event":
 		c.applyStreamEvent(event)
 	case "control_response":
