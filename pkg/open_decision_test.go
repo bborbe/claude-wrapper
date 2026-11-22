@@ -516,7 +516,7 @@ var _ = ginkgo.Describe("open verdict shape", func() {
 		expectedKeys := []string{
 			"kind", "vault", "name", "role", "role_source", "mode", "mode_note",
 			"branch", "path", "window_key", "window_id", "session_id", "pane_id",
-			"reason", "remedy", "message",
+			"bind", "reason", "remedy", "message",
 		}
 		tokens := map[string][]string{
 			"role":        {RoleAgent, RoleHuman, RoleManager},

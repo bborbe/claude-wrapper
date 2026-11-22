@@ -62,7 +62,7 @@ type fakeHeadlessOpener struct {
 func (f *fakeHeadlessOpener) SpawnOpenHeadless(
 	ctx context.Context,
 	request OpenHeadlessRequest,
-) (*Session, error) {
+) (*Session, *OpenBind, error) {
 	f.requests = append(f.requests, request)
 	if f.order != nil {
 		f.order.add("headless")
@@ -74,17 +74,17 @@ func (f *fakeHeadlessOpener) SpawnOpenHeadless(
 		select {
 		case <-f.block:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	}
 	if f.err != nil {
-		return nil, f.err
+		return nil, nil, f.err
 	}
 	id := request.Resume
 	if id == "" {
 		id = openExecTestUUID(500)
 	}
-	return &Session{ID: id}, nil
+	return &Session{ID: id}, &OpenBind{Task: request.Task, SessionID: id, Action: "stamped"}, nil
 }
 
 // failingSendSupervisor makes the opening turn fail and records the stop.

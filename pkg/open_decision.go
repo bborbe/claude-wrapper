@@ -134,9 +134,14 @@ type OpenVerdict struct {
 	WindowID   *int   `json:"window_id"`
 	SessionID  string `json:"session_id"`
 	PaneID     string `json:"pane_id"`
-	Reason     string `json:"reason"`
-	Remedy     string `json:"remedy"`
-	Message    string `json:"message"`
+	// Bind is the endpoint's own record of the task bind it performed, or null
+	// on a row that binds nothing (tab, refused, no task). It is the only
+	// evidence that distinguishes the endpoint's write from a spawned child
+	// stamping itself through /vault-cli:work-on-task.
+	Bind    *OpenBind `json:"bind"`
+	Reason  string    `json:"reason"`
+	Remedy  string    `json:"remedy"`
+	Message string    `json:"message"`
 }
 
 // OpenRefusal is one named refusal: its reason token, the detail, the remedy.

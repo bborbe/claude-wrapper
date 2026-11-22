@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"github.com/bborbe/errors"
@@ -148,17 +149,51 @@ type OpenHeadlessRequest struct {
 	CallerSessionID string
 }
 
-// OpenHeadlessSpawner starts or resumes an agent row headless.
+// OpenBind action tokens. They are part of the verdict contract documented in
+// docs/open-endpoint.md § Verdict, so both bind call sites read them from here
+// rather than spelling the literals twice.
+const (
+	OpenBindStamped  = "stamped"
+	OpenBindAppended = "appended"
+	OpenBindFailed   = "failed"
+)
+
+// OpenBind is the open endpoint's own record of the task bind it performed:
+// which task, which session, and whether the task was stamped (no prior owner)
+// or the session only appended to metrics_sessions (a claude_session_id was
+// already there). It is returned to the caller so the endpoint's write is
+// OBSERVABLE — without it, a task file cannot distinguish the endpoint's bind
+// from a spawned child that runs /vault-cli:work-on-task and stamps itself.
+type OpenBind struct {
+	Task      string `json:"task"`
+	SessionID string `json:"session_id"`
+	Action    string `json:"action"`
+	Error     string `json:"error,omitempty"`
+}
+
+// OpenHeadlessSpawner starts or resumes an agent row headless and reports the
+// bind it performed. A nil *OpenBind means no task was named, so nothing was
+// written.
 type OpenHeadlessSpawner interface {
-	SpawnOpenHeadless(ctx context.Context, request OpenHeadlessRequest) (*Session, error)
+	SpawnOpenHeadless(
+		ctx context.Context,
+		request OpenHeadlessRequest,
+	) (*Session, *OpenBind, error)
 }
 
 // SpawnOpenHeadless is the open endpoint's agent path: spawn_agent's own
 // headless spawn with role agent, the task as label, and mode_source open.
+//
+// ⚠️ It BINDS the spawned session to the task it names, exactly as spawn_agent
+// does. Until 2026-11-22 this path called startHeadless and returned without
+// binding, so five workers opened through it on v0.63.1 got no
+// claude_session_id and a manager had to stamp them by hand. The bind is wired
+// to both call sites of startHeadless now; a bind failure is reported on the
+// bind, never as a failed open, because the child is already live.
 func (s *RosterToolServer) SpawnOpenHeadless(
 	ctx context.Context,
 	request OpenHeadlessRequest,
-) (*Session, error) {
+) (*Session, *OpenBind, error) {
 	session, _, _, err := s.startHeadless(ctx, spawnAgentArgs{
 		Vault:         request.Vault,
 		Task:          request.Task,
@@ -173,7 +208,41 @@ func (s *RosterToolServer) SpawnOpenHeadless(
 		Source: OpenModeSource,
 	}, false)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return session, nil
+	return session, s.bindOpenSession(ctx, request, session.ID), nil
+}
+
+// bindOpenSession performs the same ownership-honouring bind spawn_agent does
+// and reports it as an OpenBind. It shares bindSpawnedTask with the MCP path so
+// the ownership rule has one implementation; only the reporting shape differs.
+func (s *RosterToolServer) bindOpenSession(
+	ctx context.Context,
+	request OpenHeadlessRequest,
+	sessionID string,
+) *OpenBind {
+	// Trim once and use it for both the guard and the report, so the name
+	// reported is the name the bind actually touched.
+	task := strings.TrimSpace(request.Task)
+	if task == "" {
+		return nil
+	}
+	bind := &OpenBind{Task: task, SessionID: sessionID}
+	action, err := s.bindSpawnedTask(ctx, spawnAgentArgs{
+		Vault: request.Vault,
+		Task:  task,
+	}, sessionID)
+	if err != nil {
+		log.Printf(
+			"WARNING: open bind of task %q to session %s failed: %v",
+			task,
+			sessionID,
+			err,
+		)
+		bind.Action = OpenBindFailed
+		bind.Error = err.Error()
+		return bind
+	}
+	bind.Action = action
+	return bind
 }

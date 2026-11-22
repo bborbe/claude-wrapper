@@ -344,7 +344,7 @@ func (e *openExecutor) openHeadlessRow(
 		})
 		return verdict
 	}
-	session, err := e.deps.Headless.SpawnOpenHeadless(sideCtx, OpenHeadlessRequest{
+	session, bind, err := e.deps.Headless.SpawnOpenHeadless(sideCtx, OpenHeadlessRequest{
 		Vault:           row.Vault,
 		Task:            row.Name,
 		Resume:          decision.Resume,
@@ -358,6 +358,7 @@ func (e *openExecutor) openHeadlessRow(
 		return verdict
 	}
 	verdict.SessionID = session.ID
+	verdict.Bind = bind
 	return verdict
 }
 

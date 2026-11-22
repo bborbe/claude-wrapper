@@ -153,16 +153,18 @@ type openFakeHeadless struct {
 func (f *openFakeHeadless) SpawnOpenHeadless(
 	_ context.Context,
 	request pkg.OpenHeadlessRequest,
-) (*pkg.Session, error) {
+) (*pkg.Session, *pkg.OpenBind, error) {
 	f.requests = append(f.requests, request)
 	if f.err != nil {
-		return nil, f.err
+		return nil, nil, f.err
 	}
 	id := request.Resume
 	if id == "" {
 		id = openTestUUID(500)
 	}
-	return &pkg.Session{ID: id}, nil
+	return &pkg.Session{ID: id}, &pkg.OpenBind{
+		Task: request.Task, SessionID: id, Action: "stamped",
+	}, nil
 }
 
 // openFakeRunner records every write-back argv.
@@ -429,7 +431,7 @@ var _ = Describe("Open handler", func() {
 var openVerdictKeys = []string{
 	"kind", "vault", "name", "role", "role_source", "mode", "mode_note",
 	"branch", "path", "window_key", "window_id", "session_id", "pane_id",
-	"reason", "remedy", "message",
+	"bind", "reason", "remedy", "message",
 }
 
 var openTokenSets = map[string][]string{
@@ -448,7 +450,7 @@ var openTokenSets = map[string][]string{
 }
 
 var _ = Describe("Open verdict shape", func() {
-	It("AC5: every verdict carries all 16 fields and only documented tokens", func() {
+	It("AC5: every verdict carries all 17 fields and only documented tokens", func() {
 		f := newOpenTestFixtureWithDir()
 		writeOpenTestCallerPages(f.dir)
 
@@ -480,5 +482,16 @@ var _ = Describe("Open verdict shape", func() {
 		Expect(body.Verdicts[0]["branch"]).To(Equal("resume"))
 		Expect(body.Verdicts[1]["branch"]).To(Equal("create"))
 		Expect(body.Verdicts[2]["reason"]).To(Equal("missing-row"))
+
+		// The bind the executor computed must actually reach the response. A
+		// verdict that binds the task but drops the record is the exact
+		// regression the `bind` field exists to prevent, and the key-presence
+		// loop above cannot see it (a nil bind still serialises as `bind: null`).
+		headlessBind, ok := body.Verdicts[0]["bind"].(map[string]any)
+		Expect(ok).To(BeTrue(), "the headless verdict must carry a bind object")
+		Expect(headlessBind["action"]).To(Equal("stamped"))
+		Expect(headlessBind["task"]).To(Equal("Agent"))
+		Expect(headlessBind["session_id"]).To(Equal(openTestUUID(1)))
+		Expect(body.Verdicts[1]["bind"]).To(BeNil(), "a tab row binds nothing")
 	})
 })
