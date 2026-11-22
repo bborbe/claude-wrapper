@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.61.1
 
 - fix: **a headless turn that closes with no assistant message is re-sent once instead of stopping the worker.** A resumed worker's first turn can end with a bare `result` and no assistant message at all — a stream that died mid-flight (measured 2026-11-22: `data-flow-incomplete codes=[6,10]`). The daemon read that result as a normal turn end, SIGKILLed the child one second after the prompt, and the resumed task file was never touched, so the work read as a session that ran and produced nothing. The turn is now re-sent once before the child is stopped, and the stop is named in the log and in the exit record: a zero-turn close is a **failed** turn, not a finished one. `Session` gains `assistant_turns`, and the per-session exit record gains `turns=<n>` on every line — `turns=0` vs `turns=4` is what separates a stranded worker from a healthy close, since both otherwise write `kind=signalled sender=headless-turn-end`. Written unconditionally, unlike the stall fields, because here the value is the finding. The `answeringChild` test fixture now emits an assistant message before its result: a bare result is the zero-turn shape, and a fixture shaped that way would have made every ledger-ordering spec measure the retry instead of the ordering.
 
