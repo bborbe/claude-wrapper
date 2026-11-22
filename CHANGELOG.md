@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.63.0
 
 - fix: **a session record the successor does not re-adopt is now reported instead of pruned silently.** `Adopt()` returned a bare count, so a restart that dropped rows logged only `re-adopted 34` — an operator could not tell a lost session from one whose child had already exited. `Adopt()` now returns an `AdoptReport` (`Adopted` ids plus one `AdoptSkip` per record carrying `Dir` and `Reason`), logs `job=adopt action=skip session=<id> reason=<why> dir=<dir>` for every non-adoption, and `main.go` logs `job=adopt action=restart adopted=<n> skipped=<n> skipped_sessions=<ids>` on every pass. A record with no id is named by its store directory and is never removed — `Dir("")` is the sessions root, so deriving a path from the id would delete the whole store. `SessionRecord` gains a non-serialized `Dir`, set by `List()`. Change set: `pkg/supervisor.go`, `pkg/sessionstore.go`, `pkg/adopt_report_test.go`, `pkg/durable_test.go`, `pkg/ledger_verdict_test.go`, `pkg/supervisor_fake_test.go`, `pkg/handler/handler_test.go`, `main.go`, `CHANGELOG.md`.
 
