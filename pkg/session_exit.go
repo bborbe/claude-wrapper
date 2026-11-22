@@ -265,6 +265,31 @@ func (r *SessionExitFileRecorder) logf(line string) {
 	log.Printf("%s", line)
 }
 
+// recordExitLocked writes this child's exit record. The caller must hold c.mutex
+// and have already settled the state; exitCode is nil for an adopted child.
+//
+// It lives here, beside the recorder it feeds, so the two fields that must be
+// copied from their LIVE homes sit next to the record that depends on them.
+//
+// ⚠️ **`Session` is not the source for either counter.** `c.session.PendingTurns`
+// and `c.session.AssistantTurns` are assigned nowhere but `snapshot()`'s clone, so
+// passing `c.session` raw records zero for both — and `turns=0` on every line is
+// exactly what makes a healthy close indistinguishable from a stranded worker,
+// the discrimination this record exists to provide.
+func (c *child) recordExitLocked(exitCode *int) {
+	if c.exitRecorder == nil {
+		return
+	}
+	recorded := c.session
+	recorded.PendingTurns = c.pendingTurns
+	recorded.AssistantTurns = c.zeroTurns.turns
+	c.exitRecorder.Record(recorded, c.pid, ExitStatus{
+		Code:   exitCode,
+		Signal: c.exitSignal,
+		Sender: c.lastKillSender,
+	})
+}
+
 // SetSessionExitRecorder installs the exit store on the supervisor.
 //
 // It is a setter rather than a constructor parameter because the supervisor

@@ -70,18 +70,27 @@ func (c *child) applyAssistant(event map[string]any) {
 // nothing. Re-sending is safe precisely because the count is zero: nothing was
 // produced, so nothing can be duplicated.
 func (c *child) retryZeroTurn(ctx context.Context) bool {
-	// ⚠️ Check and spend in ONE critical section. closeHeadlessTurnEnd runs on its
-	// own goroutine per result event, so two turn ends arriving together would
-	// otherwise both read the budget unspent and both re-send the same prompt.
+	// ⚠️ Check, spend AND reserve in ONE critical section. closeHeadlessTurnEnd runs
+	// on its own goroutine per result event, so two turn ends arriving together
+	// would otherwise both read the budget unspent and both re-send the same
+	// prompt.
+	//
+	// `retrying` is the reservation, and it is not tidiness: the write below must
+	// happen outside this lock (send takes it), and a duplicate turn end that ran
+	// in that gap would read the child idle and kill it before the re-send's own
+	// pendingTurns++ landed — spending the budget and losing the attempt. With the
+	// flag set, keepReasonLocked reports the child as having an open turn for the
+	// whole gap.
 	c.mutex.Lock()
 	turns := c.zeroTurns.turns
 	text := c.zeroTurns.text
-	if turns > 0 || text == "" || c.zeroTurns.retries >= zeroTurnRetryBudget {
+	if c.retrying || turns > 0 || text == "" || c.zeroTurns.retries >= zeroTurnRetryBudget {
 		c.mutex.Unlock()
 		return false
 	}
 	c.zeroTurns.retries++
 	spent := c.zeroTurns.retries
+	c.retrying = true
 	c.mutex.Unlock()
 	log.Printf(
 		"agent %s: turn closed after %d assistant turns — re-sending the same turn (attempt %d of %d)",
@@ -90,8 +99,15 @@ func (c *child) retryZeroTurn(ctx context.Context) bool {
 		spent,
 		zeroTurnRetryBudget,
 	)
-	if err := c.send(ctx, text); err != nil {
-		log.Printf("WARNING: agent %s: zero-turn retry failed: %v", c.id, err)
+	// ⚠️ Clear the reservation on BOTH outcomes. A successful send leaves
+	// pendingTurns>0, so the child stays kept on its own; a failed one must become
+	// stoppable again, or a write error would park the worker forever.
+	sendErr := c.send(ctx, text)
+	c.mutex.Lock()
+	c.retrying = false
+	c.mutex.Unlock()
+	if sendErr != nil {
+		log.Printf("WARNING: agent %s: zero-turn retry failed: %v", c.id, sendErr)
 		return false
 	}
 	return true

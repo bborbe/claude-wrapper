@@ -192,6 +192,7 @@ func (c *child) endsAtTurnEnd() bool {
 const (
 	reasonAlreadyExited   = "already exited"
 	reasonTurnOpen        = "a turn is open"
+	reasonRetryPending    = "a zero-turn retry is in flight"
 	reasonQuestionPending = "a question is pending"
 )
 
@@ -219,6 +220,12 @@ func (c *child) keepReasonLocked() (string, bool) {
 		return reasonAlreadyExited, true
 	case c.pendingTurns > 0 || c.session.State == StateGenerating:
 		return reasonTurnOpen, true
+	case c.retrying:
+		// The re-send is decided and its budget spent, but its write has not yet
+		// incremented pendingTurns. Treating this as an open turn is what closes
+		// the window between the decision and the write: a duplicate turn end in
+		// that gap would otherwise kill the child and lose the only attempt.
+		return reasonRetryPending, true
 	case c.session.Question != nil:
 		return reasonQuestionPending, true
 	}

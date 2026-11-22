@@ -1261,6 +1261,13 @@ type child struct {
 	// zeroTurns tracks the turn in flight, so a close that produced nothing can be
 	// told apart from a finished turn — see retryZeroTurn.
 	zeroTurns zeroTurnGuard
+	// retrying is set while a zero-turn re-send has been decided but not yet
+	// written. It is a reservation, not a status: the retry spends its budget
+	// under this mutex and then releases it to write, so without the flag a
+	// duplicate turn end arriving in that window would read the child idle and
+	// SIGKILL it before the re-send's own pendingTurns++ landed — losing the one
+	// attempt the budget allows. keepReasonLocked reads it as an open turn.
+	retrying bool
 	// procGone reports that the child's process is no longer running. The tailer
 	// reads it to decide whether an empty read means "wait" or "finished", which is
 	// what lets it drain the last events before the session is settled.
@@ -1738,19 +1745,7 @@ func (c *child) reap(exitCode *int) {
 	// Recorded here rather than from a poller: this is the only place that holds
 	// both the settled session and the wait status, and a poller would have to
 	// reconstruct the second from the first.
-	if c.exitRecorder != nil {
-		// The live counter is c.pendingTurns; c.session.PendingTurns is only
-		// filled by snapshot(), so passing c.session raw would record zero for a
-		// child that was given work and never started — the exact case the field
-		// exists to separate from "was never given any".
-		recorded := c.session
-		recorded.PendingTurns = c.pendingTurns
-		c.exitRecorder.Record(recorded, c.pid, ExitStatus{
-			Code:   exitCode,
-			Signal: c.exitSignal,
-			Sender: c.lastKillSender,
-		})
-	}
+	c.recordExitLocked(exitCode)
 	// A child killed mid-turn closes nothing, so the counter would otherwise
 	// stay positive for the life of the process and misreport the field.
 	c.pendingTurns = 0
