@@ -262,14 +262,24 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	liveByName map[string]bool,
 	verdictErr error,
 ) (FlaggedRow, bool, error) {
-	var role, mode, flagSetBy, deferDate, block string
-	var blockedBy []string
-	// flagSetByKnown is what separates "this page carries no flag_set_by" from
-	// "this kind's projection does not serve the field". Only the first is a
-	// refusal; refusing on the second would stamp every flagged goal and topic
-	// `agent-set-flag`, and the tick never opens a refused row — the exact
-	// regression the 2026-11-10 provenance ruling fixed.
-	flagSetByKnown := false
+	// Every kind now carries the same five enrichment fields on the list
+	// projection, so none of them is kind-gated. They were, and that was the
+	// defect: a goal deferred to the future opened its manager early, a goal's own
+	// role was ignored, and its blockers and provenance were invisible — all
+	// because the page-reading source parsed those fields from every page and the
+	// index-backed one read them only for tasks.
+	// The two projections differ, so each kind is read from the one that carries
+	// its fields. `TaskItem` serves neither role, mode, flag_set_by nor blocked_by
+	// — a task's record endpoint does — while GoalItem/TopicItem carry all five on
+	// the list. Reading the wrong side for either kind is silent: a missing value
+	// looks like an absent field, so a task loses its provenance refusal and a goal
+	// loses its due date.
+	role := item.Role
+	mode := item.Mode
+	flagSetBy := item.FlagSetBy
+	deferDate := item.DeferDate
+	blockedBy := item.BlockedBy
+	var block string
 	if kind == "task" {
 		page, err := s.Client.Page(ctx, kind, item.ID)
 		if err != nil {
@@ -280,17 +290,11 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		flagSetBy = frontmatterString(page.Frontmatter, "flag_set_by")
 		deferDate = frontmatterString(page.Frontmatter, "defer_date")
 		blockedBy = frontmatterStrings(page.Frontmatter, "blocked_by")
-		flagSetByKnown = true
-		// The owner ladder reads managed_by and goals off this block; passing it
-		// empty dropped both rungs, so a task whose goal manager is live fell to
-		// the fleet and could be opened twice.
+		// The owner ladder's task branch reads managed_by and goals off this block.
 		block = ownerBlock(
 			frontmatterString(page.Frontmatter, "managed_by"),
 			frontmatterStrings(page.Frontmatter, "goals"),
 		)
-	} else if item.FlagSetBy != "" {
-		flagSetBy = item.FlagSetBy
-		flagSetByKnown = true
 	}
 	blockedBy = openBlockersOf(blockedBy, item.Vault, kind, statuses)
 
@@ -318,7 +322,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		kind, item, task, block, role, normalisedRole, live,
 		index, liveByID, liveByName, verdictErr,
 	)
-	refused := append(refusalsFor(flagSetBy, flagSetByKnown), branchRefused...)
+	refused := append(refusalsFor(flagSetBy), branchRefused...)
 
 	return FlaggedRow{
 		Kind:      kind,
@@ -515,14 +519,12 @@ func frontmatterStrings(frontmatter map[string]any, key string) []string {
 // already known flagged (the eligibility query selected it), so only the
 // provenance half remains. An absent value admits nothing, exactly as
 // flagSetByOf's empty string does.
-func refusalsFor(flagSetBy string, known bool) []string {
-	// An unknown provenance is not a refusal. A goal or topic whose flag_set_by
-	// the index does not serve would otherwise be stamped agent-set-flag, and the
-	// tick never opens a refused row — which would refuse every flagged goal and
-	// topic and re-break the goal/topic opening fix.
-	if !known {
-		return []string{}
-	}
+func refusalsFor(flagSetBy string) []string {
+	// The index serves flag_set_by for every kind, so an empty value means the
+	// page carries no provenance — which admits nothing, exactly as the
+	// page-reading version's flagSetByOf("") did. There is no longer an "unknown"
+	// case to exempt: that exemption existed only while goals and topics were
+	// missing the field.
 	if slices.Contains(OpeningActors, strings.TrimSpace(flagSetBy)) {
 		return []string{}
 	}

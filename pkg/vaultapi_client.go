@@ -48,12 +48,19 @@ type VaultAPIRow struct {
 	// row, which is the state the tick opens fresh.
 	SessionID string   `json:"claude_session_id"`
 	Goals     []string `json:"goals"`
-	// FlagSetBy is the page's `flag_set_by`, empty when the index does not serve
-	// it or the page lacks it. The two are indistinguishable here, which is why
-	// the caller must treat an empty value as UNKNOWN for a kind whose projection
-	// does not carry the field — refusing on unknown would refuse every flagged
-	// goal and topic, and the tick never opens a refused row.
+	// FlagSetBy is the page's `flag_set_by`. The index serves it for every kind
+	// since vault-api v0.31.0, so an empty value means the page genuinely carries
+	// no provenance — which the task rule refuses. Before that release the field
+	// was absent for goals and topics and had to be read as UNKNOWN.
 	FlagSetBy string `json:"flag_set_by"`
+	// Role, Mode, DeferDate, BlockedBy are the per-kind enrichment a consumer
+	// needs and a task's record endpoint already served. Goals and topics carry
+	// them since v0.31.0; without them the tick applied the task defaults, so a
+	// future-deferred goal opened its manager early.
+	Role      string   `json:"role"`
+	Mode      string   `json:"mode"`
+	DeferDate string   `json:"defer_date"`
+	BlockedBy []string `json:"blocked_by"`
 }
 
 // VaultAPIPage is one record's full frontmatter and body, as the record endpoint

@@ -56,13 +56,16 @@ func (f fakeVaultAPI) Page(_ context.Context, _, id string) (VaultAPIPage, error
 	return f.pages[id], nil
 }
 
+// taskRow is an operator-flagged row: the index serves flag_set_by for every kind
+// now, so a fixture without it is refused rather than opened.
 func taskRow(id, title string) VaultAPIRow {
 	return VaultAPIRow{
-		ID:     id,
-		Title:  title,
-		Status: "in_progress",
-		Flag:   true,
-		Vault:  "private-personal",
+		ID:        id,
+		Title:     title,
+		Status:    "in_progress",
+		Flag:      true,
+		Vault:     "private-personal",
+		FlagSetBy: "operator",
 	}
 }
 
@@ -114,23 +117,62 @@ var _ = ginkgo.Describe("VaultAPIFlaggedRowsSource", func() {
 		gomega.Expect(rows[0].Refused).To(gomega.ContainElement(RefusalAgentSetFlag))
 	})
 
-	ginkgo.It("does not refuse an operator-flagged goal or topic whose provenance is unknown", func() {
-		// The index serves no flag_set_by for goals or topics. Treating that
-		// unknown as "agent-set" would stamp every flagged goal and topic with a
-		// refusal, and the tick never opens a refused row.
+	ginkgo.It("applies the provenance rule to goals and topics too", func() {
+		// The index serves flag_set_by for every kind, so the pre-swap rule applies
+		// uniformly: an operator flag opens, an agent flag refuses.
 		client := fakeVaultAPI{
 			eligible: map[string][]VaultAPIRow{
-				"goal":  {{ID: "g1", Title: "A Goal", Status: "in_progress", Flag: true, Vault: "v"}},
-				"topic": {{ID: "p1", Title: "A Topic", Status: "in_progress", Flag: true, Vault: "v"}},
+				"goal": {
+					{ID: "g1", Title: "Operator Goal", Status: "in_progress", Flag: true,
+						Vault: "v", FlagSetBy: "operator"},
+					{ID: "g2", Title: "Agent Goal", Status: "in_progress", Flag: true,
+						Vault: "v", FlagSetBy: "agent"},
+				},
+				"topic": {{ID: "p1", Title: "A Topic", Status: "in_progress", Flag: true,
+					Vault: "v", FlagSetBy: "operator"}},
 			},
 		}
 
 		rows, err := source(client, nil).Rows(ctx)
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(rows).To(gomega.HaveLen(2))
+		gomega.Expect(rows).To(gomega.HaveLen(3))
+		byName := map[string]FlaggedRow{}
 		for _, row := range rows {
-			gomega.Expect(row.Refused).To(gomega.BeEmpty(), row.Kind+" must not be refused")
+			byName[row.Name] = row
 		}
+		gomega.Expect(byName["Operator Goal"].Refused).To(gomega.BeEmpty())
+		gomega.Expect(byName["A Topic"].Refused).To(gomega.BeEmpty())
+		gomega.Expect(byName["Agent Goal"].Refused).To(gomega.ContainElement(RefusalAgentSetFlag))
+	})
+
+	ginkgo.It("applies the due rule to a goal deferred to the future", func() {
+		// The deleted page-reading source parsed defer_date from every page. Reading
+		// it only for tasks let a future-deferred goal open its manager early.
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{
+				"goal": {{ID: "g1", Title: "Later Goal", Status: "in_progress", Flag: true,
+					Vault: "v", DeferDate: "2999-01-01"}},
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("carries a goal's own role and blockers", func() {
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{
+				"goal": {{ID: "g1", Title: "A Goal", Status: "in_progress", Flag: true,
+					Vault: "v", Role: "manager", BlockedBy: []string{"[[Unfinished]]"}}},
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Role).To(gomega.Equal(RoleManager))
+		gomega.Expect(rows[0].BlockedBy).To(gomega.ConsistOf("[[Unfinished]]"))
 	})
 
 	ginkgo.It("keys the goal→topic map by the case-preserving title", func() {
