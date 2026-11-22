@@ -70,22 +70,24 @@ func (c *child) applyAssistant(event map[string]any) {
 // nothing. Re-sending is safe precisely because the count is zero: nothing was
 // produced, so nothing can be duplicated.
 func (c *child) retryZeroTurn(ctx context.Context) bool {
+	// ⚠️ Check and spend in ONE critical section. closeHeadlessTurnEnd runs on its
+	// own goroutine per result event, so two turn ends arriving together would
+	// otherwise both read the budget unspent and both re-send the same prompt.
 	c.mutex.Lock()
 	turns := c.zeroTurns.turns
 	text := c.zeroTurns.text
-	spent := c.zeroTurns.retries
-	c.mutex.Unlock()
-	if turns > 0 || text == "" || spent >= zeroTurnRetryBudget {
+	if turns > 0 || text == "" || c.zeroTurns.retries >= zeroTurnRetryBudget {
+		c.mutex.Unlock()
 		return false
 	}
-	c.mutex.Lock()
 	c.zeroTurns.retries++
+	spent := c.zeroTurns.retries
 	c.mutex.Unlock()
 	log.Printf(
 		"agent %s: turn closed after %d assistant turns — re-sending the same turn (attempt %d of %d)",
 		c.id,
 		turns,
-		spent+1,
+		spent,
 		zeroTurnRetryBudget,
 	)
 	if err := c.send(ctx, text); err != nil {
