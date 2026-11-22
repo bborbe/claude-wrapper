@@ -282,7 +282,7 @@ func (c *child) recordExitLocked(exitCode *int) {
 	}
 	recorded := c.session
 	recorded.PendingTurns = c.pendingTurns
-	recorded.AssistantTurns = c.zeroTurns.turns
+	recorded.AssistantTurns = c.zeroTurns.turns()
 	c.exitRecorder.Record(recorded, c.pid, ExitStatus{
 		Code:   exitCode,
 		Signal: c.exitSignal,

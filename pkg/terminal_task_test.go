@@ -397,7 +397,7 @@ var _ = ginkgo.Describe("headless turn end", func() {
 	}
 
 	ginkgo.It("stops a headless agent whose turn closed with nothing pending", func() {
-		c.zeroTurns.turns = 3
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing", turns: 3}
 		checkTurnEnd()
 		expectKilled()
 	})
@@ -410,7 +410,7 @@ var _ = ginkgo.Describe("headless turn end", func() {
 		sink := captureLog()
 		stdin := &recordWriter{}
 		c.stdin = stdin
-		c.zeroTurns.text = "do the thing"
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing"}
 		checkTurnEnd()
 		expectAlive()
 		gomega.Eventually(stdin.count, "2s").Should(gomega.Equal(1))
@@ -422,8 +422,7 @@ var _ = ginkgo.Describe("headless turn end", func() {
 	ginkgo.It("does not re-send a turn that produced an assistant message", func() {
 		stdin := &recordWriter{}
 		c.stdin = stdin
-		c.zeroTurns.text = "do the thing"
-		c.zeroTurns.turns = 2
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing", turns: 2}
 		checkTurnEnd()
 		expectKilled()
 		gomega.Consistently(stdin.count, 200*time.Millisecond).Should(gomega.Equal(0))
@@ -431,7 +430,7 @@ var _ = ginkgo.Describe("headless turn end", func() {
 	ginkgo.It("stops and names the zero-turn close once the retry budget is spent", func() {
 		sink := captureLog()
 		c.stdin = &recordWriter{}
-		c.zeroTurns.text = "do the thing"
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing"}
 		c.zeroTurns.retries = zeroTurnRetryBudget
 		checkTurnEnd()
 		expectKilled()
@@ -505,7 +504,7 @@ var _ = ginkgo.Describe("headless turn end", func() {
 		c.mutex.Unlock()
 		// A real turn produced output, so this is not the zero-turn path: the
 		// store-budget stop is what this spec is measuring.
-		c.zeroTurns.turns = 2
+		c.zeroTurns.closed = &zeroTurn{text: "do the thing", turns: 2}
 		checkTurnEnd()
 		expectKilled()
 		// The bound being applied is the fix's whole point, and both halves of it

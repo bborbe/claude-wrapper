@@ -438,7 +438,7 @@ func (c *child) closeHeadlessTurnEnd(ctx context.Context) {
 	}
 	// Commit: from here `send` refuses a new turn, so the kill cannot lose one.
 	c.ending = true
-	turns := c.zeroTurns.turns
+	turns := c.zeroTurns.turns()
 	killErr := c.killLocked("headless-turn-end")
 	if killErr != nil {
 		c.ending = false

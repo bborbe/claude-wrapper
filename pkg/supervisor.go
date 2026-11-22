@@ -1359,7 +1359,7 @@ func (c *child) snapshot() *Session {
 	}
 	clone.Controls = append([]Control{}, c.session.Controls...)
 	clone.PendingTurns = c.pendingTurns
-	clone.AssistantTurns = c.zeroTurns.turns
+	clone.AssistantTurns = c.zeroTurns.turns()
 	if c.session.Stall != nil {
 		stall := *c.session.Stall
 		stall.PendingHooks = append([]string{}, c.session.Stall.PendingHooks...)
@@ -1527,6 +1527,9 @@ func (c *child) send(ctx context.Context, text string) error {
 	if writeErr != nil {
 		c.mutex.Lock()
 		c.pendingTurns--
+		// The queue must stay in step with pendingTurns, or the turn this failed
+		// write never delivered would be the one a later close is judged against.
+		c.zeroTurns.dropLast()
 		c.mutex.Unlock()
 		// The row was re-opened to `running` a moment ago, and rolling the counter
 		// back is not enough: `reap` only writes an abandoned verdict for an open
@@ -1805,6 +1808,9 @@ func (c *child) apply(seq int, event map[string]any, replayed bool) {
 		if c.pendingTurns > 0 {
 			c.pendingTurns--
 		}
+		// Pop the turn this result closes, so the retry decision below and the exit
+		// record are both about THAT turn rather than the newest one written.
+		c.zeroTurns.close()
 		if !replayed {
 			c.recordTurnVerdict(event, c.closedTurnLocked())
 			c.checkTerminalTask()
