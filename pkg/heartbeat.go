@@ -230,11 +230,14 @@ func (p *heartbeatPoster) round(ctx context.Context) {
 			return
 		default:
 		}
-		// A session the ledger records as ended gets no heartbeat, so its liveness
-		// falls back to whatever its owner left behind — which is nothing, because
-		// the supervisor clears the stamp when the turn ends. Without this the poster
-		// re-creates that cleared stamp within one tick, and a finished worker reads
-		// LIVE for as long as its child process holds stdin.
+		// A HEADLESS session the ledger records as ended gets no heartbeat, so its
+		// liveness falls back to whatever its owner left behind — which is nothing,
+		// because the supervisor clears the stamp when the turn ends. Without this the
+		// poster re-creates that cleared stamp within one tick, and a finished worker
+		// reads LIVE for as long as its child process holds stdin.
+		//
+		// ⚠️ An INTERACTIVE session is never in this set, even with a terminal row —
+		// its turn ending does not end the session. See `endedSessions`.
 		if ended[entry.SessionID] {
 			continue
 		}
@@ -263,6 +266,22 @@ func (p *heartbeatPoster) round(ctx context.Context) {
 // ⚠️ **The LAST row for a session id wins.** A resumed session keeps its id, so a
 // stale terminal row followed by a new `running` row must read as live; a non-terminal
 // row therefore CLEARS the id rather than being ignored.
+//
+// ⚠️ **Only a HEADLESS terminal row counts as ended, and that narrowness is the
+// whole point.** An interactive session's turn end is written terminal too
+// (`NewTerminalLedgerPatch`), and nothing re-opens the row until the next turn
+// starts (`NewTurnStartedLedgerPatch`) — so a tab session sitting idle at the
+// prompt would carry a terminal row for as long as its operator is away. Skipping
+// it would drop a live session out of the fleet's liveness population until its
+// next turn, which is the undercount this filter must not cause. A headless
+// worker is different: its turn end is the end of its turn AND its supervisor
+// cleared the stamp, so stamping it again would report a finished worker as live.
+//
+// An empty `mode` cannot prove `headless`, so it does not skip either. The
+// asymmetry resolves toward stamping: not stamping a live session is the defect
+// this filter exists to avoid, and only a proven headless row is worth the
+// opposite risk. Measured 2026-11-22: of 6,759 ledger rows, 2,415 had a terminal
+// last row — 2,414 `headless`, exactly 1 `interactive`, none empty.
 func (p *heartbeatPoster) endedSessions(ctx context.Context) map[string]bool {
 	ended := map[string]bool{}
 	if p.ledger == nil {
@@ -282,6 +301,14 @@ func (p *heartbeatPoster) endedSessions(ctx context.Context) map[string]bool {
 		if !terminalLedgerStatuses[row.Status] {
 			// Not terminal: unknown, not ended. Clears any earlier terminal row for the
 			// same id — see the last-row-wins note above.
+			delete(ended, row.SessionID)
+			continue
+		}
+		if row.Mode != SpawnModeHeadless {
+			// A terminal row on anything but a headless worker is a finished TURN, not
+			// a finished session. See the note above; this also clears an earlier
+			// headless terminal row for the same id, which is correct for a resumed
+			// session that now runs interactively.
 			delete(ended, row.SessionID)
 			continue
 		}
