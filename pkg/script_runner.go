@@ -7,7 +7,9 @@ package pkg
 import (
 	"bytes"
 	"context"
+	"io"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -28,6 +30,15 @@ type ScriptResult struct {
 // run or did not finish" — an exec failure or the timeout.
 type ScriptRunner interface {
 	RunScript(ctx context.Context, name string, args ...string) (ScriptResult, error)
+	// RunScriptWithStdin runs the script with stdin fed from the given string. Use it
+	// for an argument that must not appear on the command line — a secret, or a large
+	// park input the probe reads via `--input -`.
+	RunScriptWithStdin(
+		ctx context.Context,
+		stdin string,
+		name string,
+		args ...string,
+	) (ScriptResult, error)
 }
 
 // defaultScriptTimeout bounds one script run. None of the three scripts the
@@ -49,6 +60,25 @@ func (r ExecScriptRunner) RunScript(
 	name string,
 	args ...string,
 ) (ScriptResult, error) {
+	return r.run(ctx, nil, name, args...)
+}
+
+// RunScriptWithStdin runs the script with stdin fed from the given string.
+func (r ExecScriptRunner) RunScriptWithStdin(
+	ctx context.Context,
+	stdin string,
+	name string,
+	args ...string,
+) (ScriptResult, error) {
+	return r.run(ctx, strings.NewReader(stdin), name, args...)
+}
+
+func (r ExecScriptRunner) run(
+	ctx context.Context,
+	stdin io.Reader,
+	name string,
+	args ...string,
+) (ScriptResult, error) {
 	timeout := r.Timeout
 	if timeout == 0 {
 		timeout = defaultScriptTimeout
@@ -63,6 +93,7 @@ func (r ExecScriptRunner) RunScript(
 	// the safe sink, and the answer-path probe additionally refuses an id that is
 	// not a bare filename before it runs.
 	cmd := exec.CommandContext(runCtx, name, args...)
+	cmd.Stdin = stdin
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()

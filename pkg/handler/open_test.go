@@ -187,6 +187,7 @@ type openFakeScripts struct {
 	results map[string]pkg.ScriptResult
 	errs    map[string]error
 	calls   [][]string
+	stdin   []string
 }
 
 func (f *openFakeScripts) RunScript(
@@ -204,6 +205,17 @@ func (f *openFakeScripts) RunScript(
 		return f.results[key], err
 	}
 	return f.results[key], nil
+}
+
+// RunScriptWithStdin records the stdin it was handed, then answers from the map.
+func (f *openFakeScripts) RunScriptWithStdin(
+	_ context.Context,
+	stdin string,
+	name string,
+	args ...string,
+) (pkg.ScriptResult, error) {
+	f.stdin = append(f.stdin, stdin)
+	return f.RunScript(context.Background(), name, args...)
 }
 
 // probeCalls counts the answer-path probe invocations.

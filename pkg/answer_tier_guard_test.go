@@ -81,25 +81,27 @@ var _ = ginkgo.Describe("RosterToolServer permission-tier guard on the answer pa
 			gomega.Expect(server.permissionTierRefusal(ctx, nil)).To(gomega.BeEmpty())
 		})
 
-		// It calls the probe with the park's own input, never a re-derivation.
-		ginkgo.It("passes a Bash command as the probe input", func() {
+		// It calls the probe with the park's own input on stdin, never argv.
+		ginkgo.It("passes a Bash command on stdin, never argv", func() {
 			_ = server.permissionTierRefusal(ctx, &Question{
 				ToolName: "Bash",
 				Input:    map[string]any{"command": "ls -la"},
 			})
 			gomega.Expect(scripts.calls).To(gomega.ContainElement(
-				[]string{openPython, permissionTierTestScript, "--tool", "Bash", "--input", "ls -la"},
+				[]string{openPython, permissionTierTestScript, "--tool", "Bash", "--input", "-"},
 			))
+			gomega.Expect(scripts.stdin).To(gomega.ContainElement("ls -la"))
 		})
 
-		ginkgo.It("passes a non-Bash input as JSON", func() {
+		ginkgo.It("passes a non-Bash input as JSON on stdin, never argv", func() {
 			_ = server.permissionTierRefusal(ctx, &Question{
 				ToolName: "Write",
 				Input:    map[string]any{"file_path": "/x"},
 			})
 			gomega.Expect(scripts.calls).To(gomega.ContainElement(
-				[]string{openPython, permissionTierTestScript, "--tool", "Write", "--input", `{"file_path":"/x"}`},
+				[]string{openPython, permissionTierTestScript, "--tool", "Write", "--input", "-"},
 			))
+			gomega.Expect(scripts.stdin).To(gomega.ContainElement(`{"file_path":"/x"}`))
 		})
 
 		// Every branch refuses: a guard that failed open would answer the very gate
@@ -135,8 +137,9 @@ var _ = ginkgo.Describe("RosterToolServer permission-tier guard on the answer pa
 		ginkgo.It("refuses an operator-tier park before the answer lands", func() {
 			scripts.results[permissionTierTestScript] = operatorTierProbe()
 			supervisor.question = &Question{
-				ToolName: "Bash",
-				Input:    map[string]any{"command": "kubectl apply -f x.yaml"},
+				RequestID: "r1",
+				ToolName:  "Bash",
+				Input:     map[string]any{"command": "kubectl apply -f x.yaml"},
 			}
 			_, err := server.answerPermission(ctx,
 				json.RawMessage(`{"agent_id":"a1","request_id":"r1","behavior":"allow"}`), "")
@@ -146,11 +149,27 @@ var _ = ginkgo.Describe("RosterToolServer permission-tier guard on the answer pa
 		})
 
 		ginkgo.It("answers a manager-tier park", func() {
-			supervisor.question = &Question{ToolName: "Bash", Input: map[string]any{"command": "ls -la"}}
+			supervisor.question = &Question{RequestID: "r1", ToolName: "Bash", Input: map[string]any{"command": "ls -la"}}
 			_, err := server.answerPermission(ctx,
 				json.RawMessage(`{"agent_id":"a1","request_id":"r1","behavior":"allow"}`), "")
 			gomega.Expect(err).To(gomega.BeNil())
 			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(1))
+		})
+
+		// The bypass the reviewer named: an agent_id whose Question is manager-tier
+		// paired with an operator-tier park's request_id must refuse, or the classified
+		// park is not the answered one.
+		ginkgo.It("refuses when the request_id does not match the parked prompt", func() {
+			supervisor.question = &Question{
+				RequestID: "other",
+				ToolName:  "Bash",
+				Input:     map[string]any{"command": "ls -la"},
+			}
+			_, err := server.answerPermission(ctx,
+				json.RawMessage(`{"agent_id":"a1","request_id":"r1","behavior":"allow"}`), "")
+			gomega.Expect(err).NotTo(gomega.BeNil())
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("does not match the parked prompt"))
+			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(0))
 		})
 	})
 })

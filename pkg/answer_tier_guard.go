@@ -55,8 +55,10 @@ func (s *RosterToolServer) permissionTierRefusal(
 	if refusal != "" {
 		return refusal
 	}
-	result, err := s.Scripts.RunScript(
-		ctx, openPython, s.PermissionTierScript, "--tool", tool, "--input", input,
+	// The input goes on stdin, never argv: a non-Bash park carries file content that
+	// may be a secret, and argv is visible in `ps`. The probe reads `--input -`.
+	result, err := s.Scripts.RunScriptWithStdin(
+		ctx, input, openPython, s.PermissionTierScript, "--tool", tool, "--input", "-",
 	)
 	if err != nil {
 		return fmt.Sprintf("the permission-tier probe could not run: %v", err)
