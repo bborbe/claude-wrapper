@@ -140,6 +140,15 @@ var (
 	// nicety — and it is a sentinel so a caller can tell it from a transport
 	// failure that happened to mention a task.
 	ErrTaskTerminal = stderrors.New("task-terminal")
+	// ErrForeignVault is returned when an open or a spawn targets a vault outside
+	// the daemon's own vault family.
+	//
+	// A daemon serves one vault family; a row from another family's vault would
+	// resume its worker under a daemon whose manager never queries its parks, so
+	// the worker's prompt has no answer path and it exits having done nothing. It
+	// is a sentinel so a caller can tell this refusal from a transport failure that
+	// happened to name a vault.
+	ErrForeignVault = stderrors.New("foreign vault")
 	// ErrResumeWithoutPrompt is returned when a headless resume carries no
 	// opening turn.
 	//

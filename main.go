@@ -52,6 +52,13 @@ type flaggedTickFlags struct {
 var flaggedTickVaultAPIURL = flag.String("vault-api-url", "http://localhost:9091/api/v1",
 	"base URL of the local vault-api the flagged tick reads its rows from")
 
+// daemonVaultFlag names the vault this daemon serves, so a spawn or open into
+// another vault family is refused. Package-level because main is at its funlen
+// ceiling; it defaults to the vault of -sweep-gate-vault when empty.
+var daemonVaultFlag = flag.String("vault", "",
+	"vault name this daemon serves; a spawn or open into another vault family is refused. "+
+		"Defaults to the vault of -sweep-gate-vault")
+
 func registerFlaggedTickFlags() flaggedTickFlags {
 	return flaggedTickFlags{
 		interval: flag.Duration("flagged-tick-interval", pkg.DefaultFlaggedTickInterval,
@@ -313,7 +320,7 @@ func main() {
 		*flagged.interval,
 		*fleetPusher.interval, *fleetPusher.watchInterval, *fleetPusher.watchMaxAge,
 		*fleetPusher.heartbeat, parkedGate, *stateDir, *keepalive,
-		openPathsFromFlags(open),
+		openPathsFromFlags(open), *daemonVaultFlag, *sweepGate.vault,
 	)
 
 	startDaemonJobs(ctx, supervisor, sweepGate)
@@ -723,6 +730,8 @@ func startFleetFaces(
 	stateDir string,
 	keepalive bool,
 	openPaths openScriptPaths,
+	daemonVault string,
+	sweepVaultPath string,
 ) {
 	now := libtime.NewCurrentDateTime()
 	registry := pkg.NewSessionRegistry("")
@@ -735,6 +744,7 @@ func startFleetFaces(
 	// refused by name.
 	tabs := pkg.NewTabClient("")
 	vaults := pkg.NewVaultCLILister()
+	ownVault := daemonVaultForLog(ctx, vaults, daemonVault, sweepVaultPath)
 	tabSpawner := pkg.NewTabSpawner(
 		tabs, registry, pkg.NewRoleMapReader(""), vaults, ledger, now,
 		// No exit recorder: the daemon ships no copy of the script, and an empty
@@ -747,39 +757,10 @@ func startFleetFaces(
 		supervisor, ledger, pkg.NewRegistryLiveness(registry, heartbeats),
 		pkg.NewTranscriptReader(now), registry,
 	)
-	rosterServer := &pkg.RosterToolServer{
-		Roster:     roster,
-		Supervisor: supervisor,
-		Ledger:     ledger,
-		Decider:    decider,
-		Board:      boardStoreFromURL(attentionURL), // closes a settled answer's card
-		A2A:        a2aManager,
-		Spawner:    tabSpawner,
-		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in
-		// ~/.config/claude-supervisor/config.json. Without it every spawn that
-		// omits `interactive` opens a tab regardless of the configured mode.
-		SpawnMode:  pkg.NewSpawnModeSourcesReader("", nil),
-		Vaults:     vaults,
-		Tabs:       tabs,
-		PaneJoiner: pkg.NewWeztermPaneJoiner(""),
-		Now:        now,
-		Caps:       caps,
-		// The id → name join send_agent_message needs: it holds the session id,
-		// the caller's `SendMessage` takes the registry name, and this maps one to the other.
-		Registry: registry,
-		// The same lock set the REST and /mcp faces take, so a mode change refuses
-		// with `running a sequence` instead of queuing on this face only.
-		Locks: locks,
-		// The append-only switch history; without it every reply says `recorded: false`.
-		PermissionModeLog: pkg.NewPermissionModeLog("", now),
-		// Answer-path guard on the live spawn path: spawn_agent refuses a headless
-		// spawn from a session whose probe reads non-OK (its parks would die).
-		Scripts: pkg.ExecScriptRunner{}, AnswerPathScript: openPaths.answerPath,
-		PermissionTierScript: expandHome(pkg.DefaultPermissionTierScript),
-		// The vault-cli bind of a spawned session to its task: spawn_agent writes the
-		// spawned id onto the task it was given, honouring vault-cli's ownership rule.
-		Runner: pkg.ExecCommandRunner{},
-	}
+	rosterServer := newRosterServer(
+		roster, supervisor, ledger, decider, attentionURL, a2aManager, tabSpawner,
+		vaults, ownVault, tabs, now, caps, registry, locks, openPaths,
+	)
 	// Mounted before the MCP face so open_rows is wired when it starts serving;
 	// the executor is shared with the flagged tick so both route one way.
 	openExecutor := mountOpenSurface(mux, rosterServer, tabs, registry, vaults, caps, ledger, now, openPaths)
@@ -809,6 +790,86 @@ func startFleetFaces(
 	)
 }
 
+// daemonVaultForLog resolves the vault family this daemon serves and logs whether
+// the guard is on, so an off guard is visible rather than assumed on.
+//
+// Both production daemons name their own vault in -sweep-gate-vault; -vault
+// overrides it explicitly. A daemon that names neither runs the guard disabled.
+func daemonVaultForLog(
+	ctx context.Context,
+	vaults pkg.VaultLister,
+	daemonVault string,
+	sweepVaultPath string,
+) pkg.DaemonVault {
+	ownVault := pkg.ResolveDaemonVault(ctx, vaults, daemonVault, sweepVaultPath)
+	if ownVault.Enabled() {
+		log.Printf(
+			"vault guard: this daemon serves vault %q (family %q); spawns and opens into another family are refused",
+			ownVault.Name, ownVault.Family(),
+		)
+		return ownVault
+	}
+	log.Printf(
+		"WARNING: vault guard disabled — neither -vault nor -sweep-gate-vault names a vault, so a cross-vault open would not be refused",
+	)
+	return ownVault
+}
+
+// newRosterServer builds the fleet-facing MCP face. Extracted from
+// startFleetFaces so that function stays inside its funlen budget.
+func newRosterServer(
+	roster pkg.Roster,
+	supervisor pkg.Supervisor,
+	ledger pkg.LedgerReader,
+	decider *pkg.PermissionDecider,
+	attentionURL string,
+	a2aManager *a2a.Manager,
+	tabSpawner pkg.TabSpawner,
+	vaults pkg.VaultLister,
+	ownVault pkg.DaemonVault,
+	tabs pkg.TabClient,
+	now libtime.CurrentDateTimeGetter,
+	caps pkg.SpawnCaps,
+	registry pkg.SessionRegistry,
+	locks *pkg.SessionLocks,
+	openPaths openScriptPaths,
+) *pkg.RosterToolServer {
+	return &pkg.RosterToolServer{
+		Roster:     roster,
+		Supervisor: supervisor,
+		Ledger:     ledger,
+		Decider:    decider,
+		Board:      boardStoreFromURL(attentionURL), // closes a settled answer's card
+		A2A:        a2aManager,
+		Spawner:    tabSpawner,
+		// The operator's spawn mode: SUPERVISOR_SPAWN_MODE, then `spawn.mode` in
+		// ~/.config/claude-supervisor/config.json. Without it every spawn that
+		// omits `interactive` opens a tab regardless of the configured mode.
+		SpawnMode:  pkg.NewSpawnModeSourcesReader("", nil),
+		Vaults:     vaults,
+		OwnVault:   ownVault,
+		Tabs:       tabs,
+		PaneJoiner: pkg.NewWeztermPaneJoiner(""),
+		Now:        now,
+		Caps:       caps,
+		// The id → name join send_agent_message needs: it holds the session id,
+		// the caller's `SendMessage` takes the registry name, and this maps one to the other.
+		Registry: registry,
+		// The same lock set the REST and /mcp faces take, so a mode change refuses
+		// with `running a sequence` instead of queuing on this face only.
+		Locks: locks,
+		// The append-only switch history; without it every reply says `recorded: false`.
+		PermissionModeLog: pkg.NewPermissionModeLog("", now),
+		// Answer-path guard on the live spawn path: spawn_agent refuses a headless
+		// spawn from a session whose probe reads non-OK (its parks would die).
+		Scripts: pkg.ExecScriptRunner{}, AnswerPathScript: openPaths.answerPath,
+		PermissionTierScript: expandHome(pkg.DefaultPermissionTierScript),
+		// The vault-cli bind of a spawned session to its task: spawn_agent writes the
+		// spawned id onto the task it was given, honouring vault-cli's ownership rule.
+		Runner: pkg.ExecCommandRunner{},
+	}
+}
+
 // mountOpenSurface wires the one open operation onto both its surfaces.
 //
 // POST /api/1.0/open and the open_rows MCP tool share the same pkg.OpenSurface,
@@ -834,6 +895,7 @@ func mountOpenSurface(
 	)
 	executor := pkg.NewOpenExecutor(pkg.OpenExecutorDeps{
 		Vaults:           vaults,
+		OwnVault:         rosterServer.OwnVault,
 		Registry:         registry,
 		Panes:            pkg.NewWeztermPaneJoiner(""),
 		RoleMap:          pkg.NewRoleMapReader(""),

@@ -59,6 +59,7 @@ const (
 	OpenReasonTargetUnsupported   = "target-unsupported"
 	OpenReasonInFlight            = "in-flight"
 	OpenReasonSpawnRefused        = "spawn-refused"
+	OpenReasonVaultMismatch       = "vault-mismatch"
 )
 
 // OpenWindowKeyHold is the role-map key no open may ever land in.
@@ -88,6 +89,7 @@ var openRemedies = map[string]string{
 	OpenReasonTargetUnsupported:   "the open endpoint opens local rows only; spawn this row on its target with spawn_agent",
 	OpenReasonInFlight:            "wait for the other open of this row to finish, then re-run",
 	OpenReasonSpawnRefused:        "read the message, clear what refused (a slot, the launcher or the task state), then re-run",
+	OpenReasonVaultMismatch:       "open the row through a daemon serving its own vault family, then re-run",
 }
 
 // openFlagTruthy is the supervisor's strict YAML-boolean predicate, mirrored
