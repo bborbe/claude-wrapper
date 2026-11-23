@@ -347,4 +347,78 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 		c.pendingTurns--
 		gomega.Expect(c.closedTurnLocked()).To(gomega.Equal(uint64(2)))
 	})
+
+	// A turn that closes DURING a drain must still record its verdict. The daemon
+	// cancels its process context on SIGTERM — the cause is `terminated signal
+	// received` — before the drain runs, so a verdict written with that context
+	// failed to reach the store, and the successor replays the result as history
+	// and files nothing either: the turn's outcome was dropped by the restart.
+	// Measured 2026-11-23 in the wrapper's stderr log (Library/Logs/claude-wrapper/stderr.log):
+	// a drain at 14:47:20 followed by `ledger verdict for session 5df08d81 … failed: …
+	// terminated signal received`.
+	ginkgo.It("files a turn's verdict even after the process context is cancelled", func() {
+		release := filepath.Join(dir, "release-turn")
+		// The child announces the turn, then blocks until the spec releases it, so
+		// the cancellation lands while the turn is still open — the drain's window.
+		path := filepath.Join(dir, "drain-child.sh")
+		script := "#!/bin/sh\n" +
+			"printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"m\",\"permissionMode\":\"auto\"}'\n" +
+			"while IFS= read -r line; do\n" +
+			"  printf '%s\\n' '{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"}}'\n" +
+			"  while [ ! -f '" + release + "' ]; do sleep 0.05; done\n" +
+			"  printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"model\":\"m\"}}'\n" +
+			"  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}'\n" +
+			"done\n"
+		gomega.Expect(os.WriteFile(path, []byte(script), 0o700)).To(gomega.Succeed())
+
+		ledger := &ctxHonouringLedger{fake: &fakeLedger{}}
+		sup := newSupervisor(path, ledger)
+		// The child inherits the supervisor's ctx; cancel it to stand in for the
+		// SIGTERM that starts a drain.
+		processCtx, cancel := context.WithCancel(context.Background())
+		sup.ctx = processCtx
+		defer cancel()
+
+		session, err := sup.Spawn(ctx, SpawnOptions{Cwd: dir, Mode: SpawnModeInteractive})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		defer func() { _ = sup.Stop(context.Background(), session.ID) }()
+		gomega.Expect(sup.Send(ctx, session.ID, "do the thing")).To(gomega.Succeed())
+
+		// The turn is open and the child is blocked: this is the drain's window.
+		gomega.Eventually(func() State {
+			sup.mutex.RLock()
+			c := sup.sessions[session.ID]
+			sup.mutex.RUnlock()
+			return c.snapshot().State
+		}, "5s").Should(gomega.Equal(StateGenerating))
+
+		cancel() // the SIGTERM that cancels the process context before the drain
+		gomega.Expect(os.WriteFile(release, nil, 0o600)).To(gomega.Succeed())
+
+		gomega.Eventually(func() string {
+			return patchStatusOf(patchFor(ledger.fake, session.ID))
+		}, "5s").Should(gomega.Equal("done"))
+	})
 })
+
+// ctxHonouringLedger mirrors the real HTTP-backed ledger: it refuses a write
+// whose context is already cancelled. The plain fakeLedger records regardless,
+// so it cannot observe the shutdown defect the cancelled-context spec exists for.
+type ctxHonouringLedger struct {
+	fake *fakeLedger
+}
+
+func (l *ctxHonouringLedger) Rows(ctx context.Context) ([]LedgerRow, error) {
+	return l.fake.Rows(ctx)
+}
+
+func (l *ctxHonouringLedger) Post(ctx context.Context, spawnerSessionID string, row LedgerRow) error {
+	return l.fake.Post(ctx, spawnerSessionID, row)
+}
+
+func (l *ctxHonouringLedger) Patch(ctx context.Context, sessionID string, patch LedgerPatch) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return l.fake.Patch(ctx, sessionID, patch)
+}

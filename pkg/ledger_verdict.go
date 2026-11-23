@@ -25,7 +25,7 @@ import (
 // error, so there is no event loop to protect, and leaving the write in flight
 // would let it land after a retry's re-open.
 func (c *child) recordFailedTurn(turn uint64, writeErr error) {
-	if c.ledger == nil {
+	if !c.canWriteVerdict() {
 		return
 	}
 	//nolint:errchkjson // a map of strings and a bool cannot fail to encode
@@ -40,7 +40,25 @@ func (c *child) recordFailedTurn(turn uint64, writeErr error) {
 		)
 		return
 	}
-	c.patchVerdict(turn, true, c.ctx, NewTerminalLedgerPatch("error", encoded, c.endedAt()))
+	c.patchVerdict(turn, true, c.verdictContext(), NewTerminalLedgerPatch("error", encoded, c.endedAt()))
+}
+
+// verdictContext is the context a terminal verdict is written with.
+//
+// ⚠️ **It is deliberately NOT the child's own ctx.** c.ctx is the daemon's
+// process context, and a SIGTERM cancels it — with the cause
+// `terminated signal received` — BEFORE the drain runs. A turn that closes
+// during that drain is exactly the turn the drain waited for, and its verdict
+// would then fail to reach the store; the successor replays the result as
+// history and files no verdict either, so the turn's outcome was dropped by the
+// restart. context.WithoutCancel keeps the write alive across the shutdown; the
+// ledger client's own 15 s timeout still bounds it.
+//
+// Every caller reaches this through canWriteVerdict, which refuses a nil c.ctx,
+// so there is no nil branch here — a background-context fallback would be
+// business logic reaching for a context nobody propagated.
+func (c *child) verdictContext() context.Context {
+	return context.WithoutCancel(c.ctx)
 }
 
 // closedTurnLocked is the sequence number of the turn a result just closed.
@@ -96,7 +114,7 @@ func (c *child) fileTurnVerdict(turn uint64, status string, event map[string]any
 		)
 		return
 	}
-	c.patchVerdict(turn, true, c.ctx, NewTerminalLedgerPatch(status, encoded, c.endedAt()))
+	c.patchVerdict(turn, true, c.verdictContext(), NewTerminalLedgerPatch(status, encoded, c.endedAt()))
 }
 
 // canWriteVerdict reports whether a verdict can be filed at all, and names the
@@ -163,7 +181,7 @@ func (c *child) recordAbandonedTurn(exitCode *int) {
 // The encoding happened under c.mutex and is tiny, so it stays there; only the
 // store round trip is moved off the lock.
 func (c *child) fileAbandonedVerdict(turn uint64, encoded json.RawMessage) {
-	c.patchVerdict(turn, true, c.ctx, NewTerminalLedgerPatch("error", encoded, c.endedAt()))
+	c.patchVerdict(turn, true, c.verdictContext(), NewTerminalLedgerPatch("error", encoded, c.endedAt()))
 }
 
 // verdictReopenTimeout bounds the one ledger write on a caller's critical path.
@@ -204,7 +222,7 @@ func (c *child) tryPatchVerdict(
 		"claude-wrapper: ledger write in flight for session %s — deferring this turn's re-open rather than stalling the turn",
 		c.id,
 	)
-	go c.patchVerdict(turn, terminal, c.ctx, patch)
+	go c.patchVerdict(turn, terminal, c.verdictContext(), patch)
 }
 
 // patchVerdict applies one ledger patch and logs what could not land.
