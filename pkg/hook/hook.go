@@ -177,9 +177,10 @@ type AllowAuthority interface {
 // The narrow allow is deliberate. Five review passes found nineteen bypasses and
 // every one of them was in an allow path, so the binary went deny-only. That
 // pushed every `git -C <root> <read-only>` call — the shape the rules prescribe —
-// back to the prompt. Two reviewed parsers get the authority back — the compound
-// guard and the push gate, whose allow fires only on a fully parsed push whose
-// whole call is allowable; every other allow path stays discarded.
+// back to the prompt. An allow is honoured only from a guard that opts in via
+// AllowAuthority — today the compound guard, the /tmp write guard and the push
+// gate, each a reviewed parser whose allow fires only on a fully parsed, wholly
+// allowable call. Every other allow path stays discarded.
 func (r *Registry) Evaluate(input Input) Decision {
 	var allow Decision
 	for _, guard := range r.guards {

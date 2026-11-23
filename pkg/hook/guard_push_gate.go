@@ -23,8 +23,8 @@ const (
 	pushGateRefspecRemedy = "Re-run with an explicit refspec — `git push origin <branch>`. " +
 		"No operator approval is needed for this."
 	pushGateRenameRemedy = "Rename the branch to a conforming shape — one of `fix/` `feat/` " +
-		"`docs/` `refactor/` `test/` `chore/` `hotfix/`, a Seibert ticket branch " +
-		"`PROJECT-12345-description`, or `dev`/`staging` — then re-run. " +
+		"`docs/` `refactor/` `test/` `chore/` `hotfix/` `dark-factory/` `sentry-fix/`, a " +
+		"Seibert ticket branch `PROJECT-12345-description`, or `dev`/`staging` — then re-run. " +
 		"No operator approval is needed for this."
 	pushGateAllowReason = "Feature-branch push cleared by ask-git-push-gate.sh: the refspec " +
 		"matched an allowed branch shape (a feature prefix, a Seibert ticket branch, or " +
@@ -60,6 +60,11 @@ var (
 // explicitly allowed so the permission layer does not prompt on it.
 type PushGateGuard struct{}
 
+// PushGateGuard holds allow authority, so the allow it computes for a fully parsed
+// feature-shaped push reaches the registry instead of being discarded. This
+// assertion is the regression guard for that silent-failure class.
+var _ AllowAuthority = (*PushGateGuard)(nil)
+
 // NewPushGateGuard returns the push-gate guard.
 func NewPushGateGuard() *PushGateGuard {
 	return &PushGateGuard{}
@@ -70,10 +75,10 @@ func (g *PushGateGuard) Name() string { return "ask-git-push-gate.sh" }
 
 // MayAllow grants this guard allow authority; see Registry.Evaluate.
 //
-// It only ever allows a push it has fully parsed: every segment resolved, every
-// refspec a known shape, and WholeCallAllowable true for the whole command. That
-// is the same reviewed parser the compound guard relies on, which is why this
-// guard holds authority while the other allow paths stay discarded.
+// The guard allows only a push it has fully parsed: every segment resolved, every
+// refspec a known shape, and WholeCallAllowable true for the whole command — the
+// shared rule every allow-emitting guard uses. Deny is unaffected; authority only
+// lets the allow the guard already computes reach the registry.
 func (g *PushGateGuard) MayAllow() bool { return true }
 
 // Applies reports whether this is a Bash call naming a push.

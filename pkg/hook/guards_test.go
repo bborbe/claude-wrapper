@@ -535,7 +535,10 @@ var _ = Describe("PushGateGuard", func() {
 
 	// wire runs one PreToolUse payload through a registry and returns stdout, so a
 	// test proves what the binary actually emits rather than what a guard decides.
+	// The single-guard registry isolates this guard; the default-registry case below
+	// proves the real chain honours it too.
 	wire := func(registry *hook.Registry, command string, cwd string) string {
+		GinkgoHelper()
 		payload, err := json.Marshal(map[string]any{
 			"hook_event_name": "PreToolUse",
 			"tool_name":       "Bash",
@@ -550,20 +553,48 @@ var _ = Describe("PushGateGuard", func() {
 		return out.String()
 	}
 
+	// decision decodes the permission decision the binary emitted, so the assertion
+	// does not depend on field order or JSON escaping.
+	decision := func(out string) string {
+		GinkgoHelper()
+		var envelope struct {
+			HookSpecificOutput struct {
+				PermissionDecision string `json:"permissionDecision"`
+			} `json:"hookSpecificOutput"`
+		}
+		Expect(json.Unmarshal([]byte(out), &envelope)).To(Succeed())
+		return envelope.HookSpecificOutput.PermissionDecision
+	}
+
+	It("holds allow authority", func() {
+		Expect(guard.MayAllow()).To(BeTrue())
+	})
+
+	It("is honoured by the default registry", func() {
+		input := bashInput("git push -u origin feat/x")
+		input.Cwd = withMaintainer
+		Expect(hook.NewDefaultRegistry().Evaluate(input).Allow).To(BeTrue())
+	})
+
 	It("emits the feature-branch allow on the wire", func() {
-		out := wire(hook.NewRegistry(hook.NewPushGateGuard()), "git push -u origin feat/x", withMaintainer)
-		Expect(out).To(ContainSubstring(`"permissionDecision":"allow"`))
+		out := wire(
+			hook.NewRegistry(hook.NewPushGateGuard()), "git push -u origin feat/x", withMaintainer,
+		)
+		Expect(decision(out)).To(Equal("allow"))
 		Expect(out).To(ContainSubstring("Feature-branch push cleared"))
 	})
 
 	DescribeTable("emits a deny on the wire for each protected arm",
 		func(command string) {
 			out := wire(hook.NewRegistry(hook.NewPushGateGuard()), command, withMaintainer)
-			Expect(out).To(ContainSubstring(`"permissionDecision":"deny"`))
+			Expect(decision(out)).To(Equal("deny"))
 		},
 		Entry("master", "git push origin master"),
 		Entry("force", "git push --force origin feat/x"),
 		Entry("ref deletion", "git push origin :feat/x"),
+		Entry("a tag", "git push origin v1.2.3"),
+		Entry("HEAD", "git push origin HEAD"),
+		Entry("an unknown branch shape", "git push origin scratch/verify"),
 	)
 })
 
