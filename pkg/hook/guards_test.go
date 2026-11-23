@@ -495,6 +495,10 @@ var _ = Describe("PushGateGuard", func() {
 		Entry("the staging branch", "git push origin staging", withMaintainer, false, true),
 		Entry("a dark-factory branch", "git push origin dark-factory/x", withMaintainer, false, true),
 		Entry("a sentry-fix branch", "git push origin sentry-fix/x", withMaintainer, false, true),
+		Entry("a feature push carrying an exempt master refspec",
+			"git push origin feat/x master", withoutMaintainer, false, false),
+		Entry("a feature push carrying a gated master refspec",
+			"git push origin feat/x master", withMaintainer, true, false),
 		Entry("a force push", "git push --force origin feat/x", withMaintainer, true, false),
 		Entry("a ref deletion", "git push origin :feat/x", withMaintainer, true, false),
 		Entry("a tag", "git push origin v1.2.3", withMaintainer, true, false),
@@ -553,9 +557,9 @@ var _ = Describe("PushGateGuard", func() {
 		return out.String()
 	}
 
-	// decision decodes the permission decision the binary emitted, so the assertion
-	// does not depend on field order or JSON escaping.
-	decision := func(out string) string {
+	// wireDecision decodes the permission decision the binary emitted, so the
+	// assertion does not depend on field order or JSON escaping.
+	wireDecision := func(out string) string {
 		GinkgoHelper()
 		var envelope struct {
 			HookSpecificOutput struct {
@@ -573,23 +577,28 @@ var _ = Describe("PushGateGuard", func() {
 	It("is honoured by the default registry", func() {
 		input := bashInput("git push -u origin feat/x")
 		input.Cwd = withMaintainer
-		Expect(hook.NewDefaultRegistry().Evaluate(input).Allow).To(BeTrue())
+		decision := hook.NewDefaultRegistry().Evaluate(input)
+		Expect(decision.Allow).To(BeTrue())
+		// Pin the origin: the compound guard also holds authority, so Allow alone
+		// would not prove this guard's allow survived the chain.
+		Expect(decision.Reason).To(ContainSubstring("Feature-branch push cleared"))
 	})
 
 	It("emits the feature-branch allow on the wire", func() {
 		out := wire(
 			hook.NewRegistry(hook.NewPushGateGuard()), "git push -u origin feat/x", withMaintainer,
 		)
-		Expect(decision(out)).To(Equal("allow"))
+		Expect(wireDecision(out)).To(Equal("allow"))
 		Expect(out).To(ContainSubstring("Feature-branch push cleared"))
 	})
 
 	DescribeTable("emits a deny on the wire for each protected arm",
 		func(command string) {
 			out := wire(hook.NewRegistry(hook.NewPushGateGuard()), command, withMaintainer)
-			Expect(decision(out)).To(Equal("deny"))
+			Expect(wireDecision(out)).To(Equal("deny"))
 		},
 		Entry("master", "git push origin master"),
+		Entry("a feature push carrying a master refspec", "git push origin feat/x master"),
 		Entry("force", "git push --force origin feat/x"),
 		Entry("ref deletion", "git push origin :feat/x"),
 		Entry("a tag", "git push origin v1.2.3"),

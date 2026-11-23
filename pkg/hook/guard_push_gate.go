@@ -77,8 +77,8 @@ func (g *PushGateGuard) Name() string { return "ask-git-push-gate.sh" }
 //
 // The guard allows only a push it has fully parsed: every segment resolved, every
 // refspec a known shape, and WholeCallAllowable true for the whole command — the
-// shared rule every allow-emitting guard uses. Deny is unaffected; authority only
-// lets the allow the guard already computes reach the registry.
+// shared whole-call rule the allow paths consult. Deny is unaffected; authority
+// only lets the allow the guard already computes reach the registry.
 func (g *PushGateGuard) MayAllow() bool { return true }
 
 // Applies reports whether this is a Bash call naming a push.
@@ -153,17 +153,21 @@ func (g *PushGateGuard) evaluatePush(segment string, repo string) (Decision, boo
 		), false
 	}
 	root, _ := repoRoot(repo)
-	allowed := false
+	// Every refspec must be explicitly allowed. A refspec the guard declined to
+	// bless — a master push the repo exempts, an unresolvable target — returns
+	// neither allow nor deny, and it must not ride a sibling's allow: the whole-call
+	// allow would then cover a refspec the guard never approved.
+	allAllowed := true
 	for _, spec := range positional[1:] {
 		decision, ok := g.evaluateRefspec(spec, positional[0], root)
 		if decision.Deny {
 			return decision, false
 		}
-		if ok {
-			allowed = true
+		if !ok {
+			allAllowed = false
 		}
 	}
-	return Decision{}, allowed
+	return Decision{}, allAllowed
 }
 
 // pushGateFlags classifies the push arguments.
