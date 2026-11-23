@@ -74,30 +74,33 @@ func (d ParkEventDue) DueTasks() []string {
 // Absent means the directory does not exist; readable means the store was read
 // and the negative is real. Both yield `due=false` here, because neither licenses
 // an act — but an UNREADABLE store is an error, never a quiet tick.
-func NewParkEventDue(run KeepaliveScriptRunner) func(ctx context.Context) (task string, due bool, err error) {
-	return func(ctx context.Context) (string, bool, error) {
+func NewParkEventDue(run KeepaliveScriptRunner) func(ctx context.Context) ([]string, error) {
+	return func(ctx context.Context) ([]string, error) {
 		if run == nil {
-			return "", false, errors.New(ctx, "park-event read has no script runner")
+			return nil, errors.New(ctx, "park-event read has no script runner")
 		}
 		output, code, err := run(ctx, "due", "--json")
 		if err != nil {
-			return "", false, errors.Wrap(ctx, err, "park-event due failed")
+			return nil, errors.Wrap(ctx, err, "park-event due failed")
 		}
 		if code != 0 {
-			return "", false, errors.Errorf(ctx, "park-event due exited %d", code)
+			return nil, errors.Errorf(ctx, "park-event due exited %d", code)
 		}
 		var parsed ParkEventDue
 		if unmarshalErr := json.Unmarshal([]byte(output), &parsed); unmarshalErr != nil {
-			return "", false, errors.Wrap(ctx, unmarshalErr, "park-event due printed unparseable JSON")
+			return nil, errors.Wrap(ctx, unmarshalErr, "park-event due printed unparseable JSON")
 		}
 		if parsed.Store == "unreadable" {
 			// A store that could not be read is not a fleet with nothing parked.
-			return "", false, errors.Errorf(ctx, "park-event store unreadable: %s", parsed.Reason)
+			return nil, errors.Errorf(ctx, "park-event store unreadable: %s", parsed.Reason)
 		}
 		tasks := parsed.DueTasks()
 		if len(tasks) == 0 {
-			return "", false, nil
+			return nil, nil
 		}
-		return tasks[0], true, nil
+		// ⚠️ **Every due task, not just the first.** The caller skips a gated task
+		// and acts on the next; returning only `tasks[0]` let a blocked head-of-line
+		// task stall the whole leg for as long as its blocker stayed open.
+		return tasks, nil
 	}
 }

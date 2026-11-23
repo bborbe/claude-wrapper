@@ -225,8 +225,12 @@ func newKeepaliveProcedures(
 			Now:     now,
 		},
 		&pkg.DueParkWatchProcedure{
-			DueTask: pkg.NewParkEventDue(keepaliveScript("park-event.py")),
-			Resume:  newDueParkResume(filtered, act),
+			DueTasks: pkg.NewParkEventDue(keepaliveScript("park-event.py")),
+			// The same index the flagged tick reads: a `blocked_by` row must be
+			// skipped on the same rule in both legs, or the keep-alive re-spawns a
+			// row the tick has already refused as `blocked`.
+			Blockers: pkg.NewVaultAPIBlockers(pkg.HTTPVaultAPIClient{BaseURL: *flaggedTickVaultAPIURL}),
+			Resume:   newDueParkResume(filtered, act),
 		},
 		&pkg.ParkNudgeProcedure{
 			Nudges: newParkNudges(filtered),
