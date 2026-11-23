@@ -116,9 +116,7 @@ var _ = ginkgo.Describe("resolves the tracked set from a fixture vault", func() 
 	// not. Without these two cases, removing the conjunct leaves every other test
 	// green: the ambiguity test above supplies `page_type: topic`, so the topic
 	// branch is still taken and the both-match refusal still fires. These are the
-	// only pins on the conjunct, which is why `tests/sweep-gate-goal-branch.sh`'s
-	// "topic page WITHOUT page_type: topic -> REFUSE" case must not be retired
-	// until they exist.
+	// only pins on the conjunct.
 	ginkgo.It("refuses a topic page that carries no page_type: topic", func() {
 		vault := ginkgo.GinkgoT().TempDir()
 		gomega.Expect(os.MkdirAll(filepath.Join(vault, "23 Topics"), 0o750)).To(gomega.Succeed())
