@@ -133,6 +133,10 @@ type RosterToolServer struct {
 	// Vaults resolves a headless spawn's `vault` to its directory. Nil means a
 	// headless spawn must pass `cwd`.
 	Vaults VaultLister
+	// OwnVault is the vault family this daemon serves. A spawn into another family
+	// is refused before any side effect, so a worker cannot be held by a daemon
+	// whose manager never queries its parks. The zero value disables the guard.
+	OwnVault DaemonVault
 	// Tabs types into a tab worker's pane for send_agent_message. Nil means a tab
 	// worker cannot be messaged.
 	Tabs TabClient

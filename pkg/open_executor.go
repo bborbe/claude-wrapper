@@ -44,7 +44,12 @@ type OpenExecutor interface {
 // OpenExecutorDeps are the executor's collaborators. Every one is required
 // in the daemon; a test supplies fakes.
 type OpenExecutorDeps struct {
-	Vaults   VaultLister
+	Vaults VaultLister
+	// OwnVault is the vault family this daemon serves. A row from another family
+	// is refused `vault-mismatch` before any side effect, so a daemon cannot resume
+	// a worker whose parks its own manager will never query. The zero value
+	// disables the guard.
+	OwnVault DaemonVault
 	Registry SessionRegistry
 	Panes    PaneJoiner
 	RoleMap  RoleMapReader
@@ -165,6 +170,17 @@ func (e *openExecutor) openRow(
 			Reason:  OpenReasonRowUnreadable,
 			Message: fmt.Sprintf("vault %q is not configured", row.Vault),
 		})
+		return e.finish(verdict)
+	}
+
+	// The vault-family guard runs before the page read and every side effect: a
+	// daemon serves one vault family, so a row from another family must be refused
+	// rather than resumed under a daemon whose manager never queries its parks.
+	// It covers both the REST/MCP request path and the flagged reopen tick, which
+	// share this executor.
+	if err := RefuseForeignVault(ctx, e.deps.OwnVault, row.Vault, vault.Path); err != nil {
+		verdict := newOpenVerdict(row)
+		verdict.refuse(OpenRefusal{Reason: OpenReasonVaultMismatch, Message: err.Error()})
 		return e.finish(verdict)
 	}
 

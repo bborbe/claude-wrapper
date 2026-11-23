@@ -69,7 +69,7 @@ and is not new — `spawn_agent`'s resume path already produced it.
 
 `reason` tokens: `missing-row`, `row-unreadable`, `undecidable-role`, `manager-mode-headless`,
 `truncated-id`, `liveness-unreadable`, `answer-path`, `role-map-key-missing`, `hold-window`,
-`goal-loop-unsupported`, `target-unsupported`, `in-flight`, `spawn-refused`.
+`goal-loop-unsupported`, `target-unsupported`, `in-flight`, `spawn-refused`, `vault-mismatch`.
 
 Each verdict also writes one log line:
 
@@ -120,6 +120,30 @@ The first match wins. Every refusal is decided before the first side effect.
 8. Write back a defaulted `role` or an absent/normalised `mode` on task rows, then spawn. Spawn
    caps, start-rate, the terminal-task guard and any launcher/ceiling script refusal →
    `spawn-refused`, with the refusing component's own message.
+
+## Vault-family guard
+
+A daemon serves exactly one vault **family** — the vault it was launched for and every vault
+sharing that family's prefix (`private`, `seibert`, `assistant`). It must never open a row from
+another family: that row's worker would be held by a daemon whose manager never queries its
+parks, so its prompt has no answer path and it exits having done nothing. (Measured 2026-11-23:
+the brogrammers daemon resumed a `private-personal` task headless through its flagged reopen
+tick; 18090 returned `404 unknown session` for it, so its park could not be answered.)
+
+The guard is decided **after the vault resolves and before the page is read**, so it fires before
+any side effect on every branch — request, tick, jump, live, resume and create alike. A row whose
+vault is outside the daemon's family is `refused` with reason `vault-mismatch`; the message names
+both vaults it found in conflict (the daemon's own vault and the row's), matching
+`claude-supervisor` `fleet-surface.md` § Spawn a worker's world precondition. Nothing is opened,
+written back or spawned.
+
+The same guard sits on the headless spawn path (`spawn_agent` and `SpawnOpenHeadless`), which
+resolves the target vault from `vault` or `cwd` and refuses a family mismatch identically.
+
+The daemon's own vault comes from `-vault` when given, else the vault of `-sweep-gate-vault`.
+A daemon started with neither runs the guard **disabled** and logs a WARNING naming that, so a
+guard that is off is visible rather than assumed on. Both production daemons name their vault in
+`-sweep-gate-vault`.
 
 ## Answer-path probe
 

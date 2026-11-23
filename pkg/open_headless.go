@@ -53,6 +53,13 @@ func (s *RosterToolServer) startHeadless(
 	if err != nil {
 		return nil, "", "", err
 	}
+	// The vault-family guard, after the cwd resolves and before any side effect:
+	// a spawn or resume whose vault is outside this daemon's family would be held
+	// by a daemon whose manager never queries its parks. Covers spawn_agent and the
+	// open endpoint's SpawnOpenHeadless, which both call this.
+	if err := s.refuseForeignVault(ctx, body, cwd); err != nil {
+		return nil, "", "", err
+	}
 	// Terminal first: a resume of a finished task must say so, not send the caller
 	// away to add a prompt and then refuse them for the task state on the retry.
 	// The vault scan this costs is paid only on a refusal path.
@@ -108,6 +115,38 @@ func (s *RosterToolServer) startHeadless(
 	}
 	s.recordSpawn(ctx, session, sessionID, body, resolution.Source)
 	return session, mode, modeSource, nil
+}
+
+// refuseForeignVault refuses a headless spawn or resume whose vault is outside
+// this daemon's vault family.
+//
+// It resolves the target vault the same way the spawn does — the named vault,
+// else the cwd — so the guard and the spawn cannot disagree about which vault the
+// worker would run in. A daemon whose own vault is unknown has the guard
+// disabled (DaemonVault.Enabled is false), which is the only safe default for a
+// daemon started without naming a vault.
+func (s *RosterToolServer) refuseForeignVault(
+	ctx context.Context,
+	body spawnAgentArgs,
+	cwd string,
+) error {
+	if !s.OwnVault.Enabled() {
+		return nil
+	}
+	vault, err := s.vaultFor(ctx, body, cwd)
+	if err != nil {
+		return err
+	}
+	if vault == nil {
+		return errors.Wrapf(
+			ctx,
+			ErrForeignVault,
+			"this daemon serves vault %q but the spawn's vault could not be resolved "+
+				"to compare — refusing rather than spawning into an unknown vault",
+			s.OwnVault.Name,
+		)
+	}
+	return RefuseForeignVault(ctx, s.OwnVault, vault.Name, vault.Path)
 }
 
 // roleForHeadlessSpawn resolves the role a headless spawn runs under: the
