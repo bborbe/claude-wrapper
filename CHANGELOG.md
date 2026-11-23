@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.64.0
 
 - feat: **`/mcp reconnect <server>` is allowlisted, so a dead MCP server is reconnected fleet-wide instead of one pane at a time.** The slash-command allowlist was exact-match, so only `/mcp reconnect tts` could be delivered and every other MCP server had to be reconnected by hand in each live session — 13 sessions on 2026-11-23, when `semantic-search` (port 8321) crash-looped on a stale scope root and every session held a dead connection. The literal entry is replaced by a validated name pattern, `^/mcp reconnect [a-z0-9][a-z0-9-]*$`, checked by one `isAllowedSlashCommand` predicate that both the single-session and the fleet path call, so the two surfaces cannot drift. The admitted argument is a bare name token — lowercase letters, digits and hyphens, starting with a letter or digit — and nothing else: no whitespace, no shell metacharacter, no second word. `$` is RE2's end-of-text anchor, so a trailing newline does not match either, which keeps the line typed into a pane bounded to a reconnect of one name the harness itself resolves against the configured servers. Both MCP tool descriptions and the refusal message now name the pattern rather than a list shorter than what is admitted. Change set: `pkg/run_slash_command.go`, `pkg/fleet_slash_command.go`, `pkg/run_slash_command_test.go`, `pkg/fleet_slash_command_test.go`, `CHANGELOG.md`.
 
