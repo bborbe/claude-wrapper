@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.65.3
 
 - test: **the `page_type: topic` conjunct in `ResolveSubject` gains its only pin, before the shell regression that currently covers it is retired.** `tests/sweep-gate-goal-branch.sh` in the `bborbe/claude` repo is the sole test for "a topic page WITHOUT `page_type: topic` must be refused", and it is scheduled for deletion once the Python `sweep-gate.py` module it exercises goes. Removing the conjunct from `pkg/sweepgate/snapshot.go` left every existing test green — the ambiguity case supplies `page_type: topic`, so the topic branch is still taken and the both-match refusal still fires — so the guard had no Go coverage at all. Added two cases to `pkg/sweepgate/snapshot_test.go`: an untyped topic page is refused with `no subject page`, and the identical page carrying the conjunct resolves as `topic`. Verified as a known-positive: deleting `&& pageTypeOf(topicPath) == "topic"` fails exactly the new refusal case (232 passed, 1 failed) and nothing else. Change set: `pkg/sweepgate/snapshot_test.go`, `CHANGELOG.md`.
 
