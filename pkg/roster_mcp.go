@@ -176,6 +176,12 @@ type RosterToolServer struct {
 	// refuses a headless spawn for the same reason Scripts nil does: the guard
 	// never fails open.
 	AnswerPathScript string
+	// PermissionTierScript is claude-supervisor's permission-tier.py
+	// (DefaultPermissionTierScript). answer_permission refuses an operator-tier
+	// park rather than settling it, so a manager cannot breach the SC3 placement
+	// control. Empty refuses the same way AnswerPathScript does: the guard never
+	// fails open.
+	PermissionTierScript string
 	// Runner runs the `vault-cli` bind of a spawned session to its task. Nil means
 	// a task-bearing spawn reports a failed bind and writes nothing — the correct
 	// degradation for a daemon started without a runner.
@@ -669,6 +675,26 @@ func (s *RosterToolServer) answerPermission(
 	kind := AnswerKindPermission
 	if session.Question != nil && session.Question.Kind != "" {
 		kind = session.Question.Kind
+	}
+	// The tier gate sits on the ANSWER, before Supervisor.Answer settles the park.
+	// closeSettledCard is downstream of the answer, so gating the card close alone
+	// would be too late: the answer has already settled the gate.
+	//
+	// ⚠️ The classification must be the park this answer settles. agent_id selects
+	// the session whose Question is classified, but Supervisor.Answer targets
+	// body.RequestID; a caller that sends one agent's id with another park's
+	// request_id would have a manager-tier Question checked while an operator-tier
+	// park was answered. Refuse on any mismatch so the classified park IS the
+	// answered park.
+	if kind == AnswerKindPermission {
+		if session.Question == nil || session.Question.RequestID != body.RequestID {
+			return "", errors.Errorf(ctx,
+				"answer_permission refused: request_id %q does not match the parked prompt on agent %q, so its tier cannot be verified",
+				body.RequestID, body.AgentID)
+		}
+		if refusal := s.permissionTierRefusal(ctx, session.Question); refusal != "" {
+			return "", errors.Errorf(ctx, "answer_permission refused: %s", refusal)
+		}
 	}
 	if err := s.Supervisor.Answer(ctx, body.AgentID, body.RequestID, Answer{
 		Kind:     kind,
