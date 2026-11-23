@@ -984,6 +984,38 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 		}
 	})
 
+	ginkgo.It("names the three provenance classes in one tick line", func() {
+		// SC2: an operator-set row is opened with no marker of its own, so the
+		// refusal tokens alone cannot distinguish the three states. The counts can.
+		result := FlaggedTickResult{
+			Considered: 3,
+			ProvenanceCounts: map[Provenance]int{
+				ProvenanceOperator:   1,
+				ProvenanceAgent:      1,
+				ProvenanceUnrecorded: 1,
+			},
+		}
+		gomega.Expect(result.Line()).
+			To(gomega.ContainSubstring("provenance=operator:1; agent:1; unrecorded:1"))
+		ginkgo.GinkgoWriter.Printf("provenance line=%s\n", result.Line())
+	})
+
+	ginkgo.It("counts provenance per class from the row set", func() {
+		rows := []FlaggedRow{
+			{Kind: "task", Vault: "v", Name: "op", Liveness: "ABSENT", Provenance: ProvenanceOperator},
+			{Kind: "task", Vault: "v", Name: "ag", Liveness: "ABSENT",
+				Provenance: ProvenanceAgent, Refused: []string{RefusalAgentSetFlag}},
+			{Kind: "task", Vault: "v", Name: "un", Liveness: "ABSENT",
+				Provenance: ProvenanceUnrecorded, Refused: []string{RefusalProvenanceUnrecorded}},
+		}
+		result, err := newTick(staticSource{rows: rows}, &recordingReopener{}, &recordingCaps{}).
+			Tick(context.Background())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Line()).
+			To(gomega.ContainSubstring("provenance=operator:1; agent:1; unrecorded:1"))
+		ginkgo.GinkgoWriter.Printf("row-set line=%s\n", result.Line())
+	})
+
 	ginkgo.It("accounts for every row when a caps refusal ends the opening pass", func() {
 		rows := []FlaggedRow{
 			rowWith("agent", "headless", "one"),

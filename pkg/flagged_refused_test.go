@@ -25,11 +25,52 @@ var _ = ginkgo.Describe("Refusals", func() {
 		gomega.Expect(FlagAdmits(block, "task")).To(gomega.BeFalse())
 	})
 
-	ginkgo.It("refuses a flag with NO provenance rather than assuming the operator set it", func() {
+	ginkgo.It("refuses a flag with NO provenance as UNRECORDED, not as agent-set", func() {
 		// Absence admits nothing — `legacy` exists precisely so a missing field could
-		// mean refuse without breaking the rows already dispositioned.
+		// mean refuse without breaking the rows already dispositioned. But absence is
+		// not evidence an AGENT set it, so the reason must say "unrecorded" and name
+		// the command that records the actor.
 		block := "flag: true\n"
-		gomega.Expect(Refusals("task", block)).To(gomega.Equal([]string{RefusalAgentSetFlag}))
+		refusals := Refusals("task", block)
+		gomega.Expect(refusals).To(gomega.HaveLen(1))
+		gomega.Expect(refusals[0]).To(gomega.ContainSubstring(RefusalProvenanceUnrecorded))
+		gomega.Expect(refusals[0]).To(gomega.ContainSubstring("--by operator"))
+	})
+
+	ginkgo.It("refuses `unknown` and `none` as unrecorded, never as agent-set", func() {
+		// `unknown` is what `vault-cli task set … flag true` stamps when the write
+		// declares no actor. Folding it into agent-set refused a legitimate operator
+		// task forever, with no visible remedy — the defect this split fixes.
+		for _, actor := range []string{"unknown", "none"} {
+			block := "flag: true\nflag_set_by: " + actor + "\n"
+			refusals := Refusals("task", block)
+			gomega.Expect(refusals).To(gomega.HaveLen(1), "actor=%s", actor)
+			gomega.Expect(refusals[0]).To(gomega.ContainSubstring(RefusalProvenanceUnrecorded), "actor=%s", actor)
+			gomega.Expect(refusals[0]).NotTo(gomega.ContainSubstring(RefusalAgentSetFlag), "actor=%s", actor)
+		}
+	})
+
+	ginkgo.It("admits the same row once the actor is recorded as operator", func() {
+		// SC3's second half: the remedy is a real state transition, not a string.
+		// A row refused as unrecorded is admitted when its `flag_set_by` becomes
+		// `operator` — the write the refusal names.
+		unrecorded := "flag: true\nflag_set_by: unknown\n"
+		gomega.Expect(Refusals("task", unrecorded)).NotTo(gomega.BeEmpty())
+		recorded := "flag: true\nflag_set_by: operator\n"
+		gomega.Expect(Refusals("task", recorded)).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("names the three provenance classes", func() {
+		for actor, want := range map[string]Provenance{
+			"operator": ProvenanceOperator,
+			"legacy":   ProvenanceOperator,
+			"agent":    ProvenanceAgent,
+			"unknown":  ProvenanceUnrecorded,
+			"none":     ProvenanceUnrecorded,
+			"":         ProvenanceUnrecorded,
+		} {
+			gomega.Expect(ProvenanceClass(actor)).To(gomega.Equal(want), "actor=%q", actor)
+		}
 	})
 
 	ginkgo.It("says nothing about an unflagged row", func() {
@@ -85,5 +126,44 @@ var _ = ginkgo.Describe("Refusals", func() {
 	ginkgo.It("admits a quoted provenance value", func() {
 		block := "flag: true\nflag_set_by: \"operator\"\n"
 		gomega.Expect(FlagAdmits(block, "task")).To(gomega.BeTrue())
+	})
+})
+
+var _ = ginkgo.Describe("ProvenanceRefusal remedy quoting", func() {
+	ginkgo.It("single-quotes a plain task title", func() {
+		reason := ProvenanceRefusal("unknown", "Some Task")
+		gomega.Expect(reason).To(gomega.ContainSubstring(
+			"vault-cli task set 'Some Task' flag true --by operator"))
+	})
+
+	ginkgo.DescribeTable("a hostile title cannot break out of the remedy command",
+		func(title string, want string) {
+			reason := ProvenanceRefusal("unknown", title)
+			gomega.Expect(reason).To(gomega.ContainSubstring(want))
+		},
+		// A double quote was the original sink: it closed the interpolated string and
+		// the rest ran as shell once the operator pasted the remedy.
+		ginkgo.Entry("double quote", `a"; rm -rf /; echo "b`,
+			`task set 'a"; rm -rf /; echo "b' flag true --by operator`),
+		// Command substitution is inert inside single quotes — `$` is literal there.
+		ginkgo.Entry("command substitution", `x $(id)`,
+			`task set 'x $(id)' flag true --by operator`),
+		ginkgo.Entry("backtick", "x `id`",
+			"task set 'x `id`' flag true --by operator"),
+		// The only escape single quotes need: close, emit an escaped quote, reopen.
+		ginkgo.Entry("embedded single quote", `it's`,
+			`task set 'it'\''s' flag true --by operator`),
+		ginkgo.Entry("backslash", `a\b`,
+			`task set 'a\b' flag true --by operator`),
+	)
+
+	ginkgo.It("keeps a title carrying a newline as one shell word", func() {
+		reason := ProvenanceRefusal("unknown", "a\nb")
+		gomega.Expect(reason).To(gomega.ContainSubstring("task set 'a\nb' flag true --by operator"))
+	})
+
+	ginkgo.It("carries no title at all for an agent-set or operator flag", func() {
+		gomega.Expect(ProvenanceRefusal("agent", `x'; rm -rf /`)).To(gomega.Equal(RefusalAgentSetFlag))
+		gomega.Expect(ProvenanceRefusal("operator", `x'; rm -rf /`)).To(gomega.BeEmpty())
 	})
 })

@@ -176,6 +176,12 @@ type FlaggedTickResult struct {
 	// RowsSource names where this tick's eligible rows came from — `vault-api`
 	// since the source swap. A tick that scans pages cannot emit it.
 	RowsSource string
+	// ProvenanceCounts counts this tick's considered rows by provenance class —
+	// `operator`, `agent`, `unrecorded`. It is what makes the three states
+	// distinguishable in ONE line: a refusal token marks only the refused rows, and
+	// an operator-set row is opened with no provenance marker of its own. Rows whose
+	// source computed no class (the exec source, a fixture) are not counted.
+	ProvenanceCounts map[Provenance]int
 }
 
 // liveCountSourceReporter is the narrow half of SpawnCaps the tick logs.
@@ -229,6 +235,13 @@ func (r FlaggedTickResult) Line() string {
 	if r.RowsSource != "" {
 		line += " rows_source=" + r.RowsSource
 	}
+	// `provenance=` names all three states in one line. The refusal tokens below it
+	// mark only the refused rows; without this field an operator-set row is visible
+	// only as an `opened=` entry with no provenance of its own, so a reader cannot
+	// tell "the operator set this" from "nothing checked".
+	if counts := formatProvenance(r.ProvenanceCounts); counts != "" {
+		line += " provenance=" + counts
+	}
 	// `resume_delay=` is the per-resume measurement, and it sits on the summary
 	// line for the same reason `rows=` does: a row's dead time has to be readable
 	// next to the tick that ended it, or the delay cannot be attributed to a tick.
@@ -277,6 +290,21 @@ func formatCounts(entries []string) string {
 	parts := make([]string, 0, len(classes))
 	for _, class := range classes {
 		parts = append(parts, fmt.Sprintf("%s:%d", class, counts[class]))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// formatProvenance renders the three provenance classes in a fixed order so the
+// line is stable across runs of the same tick. A class with no rows is omitted.
+func formatProvenance(counts map[Provenance]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	for _, class := range AvailableProvenances {
+		if count := counts[class]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%s:%d", class, count))
+		}
 	}
 	return strings.Join(parts, "; ")
 }
@@ -921,6 +949,20 @@ func (t *FlaggedTick) nudgeRow(
 	result.Nudged = append(result.Nudged, row.Key())
 }
 
+// countProvenance tallies the considered rows by provenance class. A row whose
+// source computed no class is skipped rather than guessed at.
+func countProvenance(result *FlaggedTickResult, rows []FlaggedRow) {
+	for _, row := range rows {
+		if row.Provenance == "" {
+			continue
+		}
+		if result.ProvenanceCounts == nil {
+			result.ProvenanceCounts = map[Provenance]int{}
+		}
+		result.ProvenanceCounts[row.Provenance]++
+	}
+}
+
 // tickFromRows is the decision pass, separated from the read so the running loop
 // can feed it a cached row set.
 func (t *FlaggedTick) tickFromRows(
@@ -929,6 +971,10 @@ func (t *FlaggedTick) tickFromRows(
 	var result FlaggedTickResult
 	ordered := orderFlaggedRows(rows)
 	result.Considered = len(ordered)
+	// Counted before any gate: the three states are a property of the row set, and a
+	// reader must be able to tell an operator-set row (opened, no marker of its own)
+	// from an agent-set or unattributed one (refused) in the same line.
+	countProvenance(&result, ordered)
 	// Named once per tick, before any refusal: a `caps refused` row is
 	// undiagnosable without it.
 	if reporter, ok := t.Caps.(liveCountSourceReporter); ok {

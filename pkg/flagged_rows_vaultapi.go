@@ -7,7 +7,6 @@ package pkg
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -337,19 +336,20 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		kind, item, task, block, role, normalisedRole, live,
 		index, liveByID, liveByName, verdictErr,
 	)
-	refused := append(refusalsFor(flagSetBy), branchRefused...)
+	refused := append(refusalsFor(flagSetBy, item.Title), branchRefused...)
 
 	return FlaggedRow{
-		Kind:      kind,
-		Vault:     item.Vault,
-		Name:      item.Title,
-		Role:      normalisedRole,
-		Mode:      task.Mode,
-		SessionID: task.Session,
-		Liveness:  live,
-		Branch:    branch,
-		BlockedBy: blockedBy,
-		Refused:   refused,
+		Kind:       kind,
+		Vault:      item.Vault,
+		Name:       item.Title,
+		Role:       normalisedRole,
+		Mode:       task.Mode,
+		SessionID:  task.Session,
+		Liveness:   live,
+		Branch:     branch,
+		BlockedBy:  blockedBy,
+		Refused:    refused,
+		Provenance: ProvenanceClass(flagSetBy),
 	}, true, nil
 }
 
@@ -527,23 +527,20 @@ func frontmatterStrings(frontmatter map[string]any, key string) []string {
 	return nil
 }
 
-// refusalsForFlagSetBy is the provenance refusal for a row whose flag_set_by the
-// record endpoint reported.
+// refusalsFor is the provenance refusal for a row whose flag_set_by the record
+// endpoint reported.
 //
 // It mirrors Refusals' rule without a frontmatter block to parse: the row is
 // already known flagged (the eligibility query selected it), so only the
 // provenance half remains. An absent value admits nothing, exactly as
-// flagSetByOf's empty string does.
-func refusalsFor(flagSetBy string) []string {
-	// The index serves flag_set_by for every kind, so an empty value means the
-	// page carries no provenance — which admits nothing, exactly as the
-	// page-reading version's flagSetByOf("") did. There is no longer an "unknown"
-	// case to exempt: that exemption existed only while goals and topics were
-	// missing the field.
-	if slices.Contains(OpeningActors, strings.TrimSpace(flagSetBy)) {
-		return []string{}
+// flagSetByOf's empty string does — and, like `unknown` and `none`, it is classed
+// UNRECORDED rather than agent-set, so the tick line names the missing actor and
+// the one command that records it.
+func refusalsFor(flagSetBy, name string) []string {
+	if reason := ProvenanceRefusal(flagSetBy, name); reason != "" {
+		return []string{reason}
 	}
-	return []string{RefusalAgentSetFlag}
+	return []string{}
 }
 
 // ownerBlock renders the two frontmatter fields ResolveOwner's task branch reads,

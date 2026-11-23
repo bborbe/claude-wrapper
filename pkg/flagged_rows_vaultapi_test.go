@@ -117,6 +117,42 @@ var _ = ginkgo.Describe("VaultAPIFlaggedRowsSource", func() {
 		gomega.Expect(rows[0].Refused).To(gomega.ContainElement(RefusalAgentSetFlag))
 	})
 
+	ginkgo.It("carries a DISTINCT refusal for unrecorded provenance, with the remedy", func() {
+		// `unknown` is the no-actor default. It must not read as agent-set: the
+		// refusal names the state and the one command that records the actor, so a
+		// legitimate operator row is not permanently unopenable.
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{"task": {taskRow("t1", "Alpha")}},
+			pages: map[string]VaultAPIPage{
+				"t1": taskPage(map[string]any{"flag_set_by": "unknown"}),
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Provenance).To(gomega.Equal(ProvenanceUnrecorded))
+		gomega.Expect(rows[0].Refused).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Refused[0]).To(gomega.ContainSubstring(RefusalProvenanceUnrecorded))
+		gomega.Expect(rows[0].Refused[0]).NotTo(gomega.ContainSubstring(RefusalAgentSetFlag))
+		gomega.Expect(rows[0].Refused[0]).To(gomega.ContainSubstring("--by operator"))
+	})
+
+	ginkgo.It("carries the provenance class on an admitted row", func() {
+		client := fakeVaultAPI{
+			eligible: map[string][]VaultAPIRow{"task": {taskRow("t1", "Alpha")}},
+			pages: map[string]VaultAPIPage{
+				"t1": taskPage(map[string]any{"flag_set_by": "operator"}),
+			},
+		}
+
+		rows, err := source(client, nil).Rows(ctx)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(rows).To(gomega.HaveLen(1))
+		gomega.Expect(rows[0].Provenance).To(gomega.Equal(ProvenanceOperator))
+		gomega.Expect(rows[0].Refused).To(gomega.BeEmpty())
+	})
+
 	ginkgo.It("applies the provenance rule to goals and topics too", func() {
 		// The index serves flag_set_by for every kind, so the pre-swap rule applies
 		// uniformly: an operator flag opens, an agent flag refuses.

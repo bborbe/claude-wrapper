@@ -1,31 +1,32 @@
 # The eligibility predicate
 
 `claude-wrapper`'s flagged reopen tick does not decide which rows are eligible.
-It reads that decision from `flagged-rows.py`, which lives in **another repo** —
-`claude-supervisor` — and is exec'd, never modified.
+It asks **vault-api** for them — the eligible set is computed by vault-api's own
+index and flag/due filters — and then resolves each row's branch and provenance in
+Go (`pkg/flagged_rows_vaultapi.go`).
 
-This page is the contract between the two. It exists because the spec that
-introduced the tick is not a durable home for it: specs are archived once the
-work lands, and a field renamed on the Python side would then decode to a Go
-zero value **silently**, opening or refusing the wrong rows with no error.
+This page is the contract for the fields the tick consumes and the rules it
+applies to them. It exists because a field renamed on the vault-api side would
+decode to a Go zero value **silently**, opening or refusing the wrong rows with no
+error.
 
 ## Where the predicate lives
 
 | | |
 |---|---|
-| Source | `scripts/flagged-rows.py`, in the `claude-supervisor` repo |
-| Deployed copy | `scripts/flagged-rows.py` under the claude-supervisor marketplace clone |
-| Invocation | `<python3> <script> --json`; `--flagged-rows-script` sets the path |
-| Cost | several minutes — it walks every vault's task pages, so it scales with fleet size. Measured over 2 minutes on 2026-11-12. |
-| Ownership | `claude-supervisor` — read-only from this repo |
+| Eligible rows | vault-api's list projection, filtered by `flag=true&status=in_progress&due=now` |
+| Per-row enrichment | vault-api's record endpoint (`role`, `mode`, `flag_set_by`, `defer_date`, `blocked_by`) |
+| Branch + provenance rules | `pkg/flagged_rows_vaultapi.go`, `pkg/flagged_branch.go`, `pkg/flagged_refused.go` |
+| Read cost | one list request + one record read per eligible task |
+| Ownership | vault-api owns the index; claude-wrapper owns the rules |
 
 The tick bounds the read with a timeout (`predicateTimeout`, 10 minutes) and
 abandons a hung read rather than stalling every later tick.
 
 ## Fields the tick consumes
 
-`flagged-rows.py --json` emits `{"rows": [...]}`. These are the ten fields the
-tick decodes; everything else in a row is ignored.
+The source returns one row per eligible page. These are the fields the tick
+reads; everything else is ignored.
 
 | Field | Meaning | How the tick uses it |
 |---|---|---|
@@ -38,39 +39,57 @@ tick decodes; everything else in a row is ignored.
 | `liveness` | `LIVE`, `ABSENT`, `UNKNOWN` or `none` | `ABSENT` is resumed; `none` with an **empty** `session_id` on a `task` is opened fresh (never-opened, since 2026-11-15); every other value is skipped |
 | `branch` | `jump`, `resume`, `create`, `direct`, `open-manager` or `skip` | `jump` rows are skipped (already reachable); a never-opened task must read `create` or `direct` |
 | `blocked_by` | Unresolved blockers, as a list | A non-empty list skips the row |
-| `refused` | The predicate's own provenance verdicts | A non-empty list refuses the row |
+| `refused` | The provenance verdicts this source computed | A non-empty list refuses the row |
+| `provenance` | `operator`, `agent` or `unrecorded` | Counted into `provenance=` on the tick line, so one tick names all three states |
 
-## The provenance rule — `OPENING_ACTORS`
+## The provenance rule — three states, not two
 
-A **task** refuses a flag an agent set. The predicate computes that into the
-row's `refused` list, and the tick reads the list rather than re-deriving the
-rule — the predicate is the single home of "who may set a flag", and a second
-copy in Go would drift from it.
-
-```
-OPENING_ACTORS = ("operator", "legacy")
-```
-
-A task whose `flag_set_by` is outside that set — including an absent field — is
-refused with the token `agent-set-flag`. `legacy` exists for rows filed before
-the field did; no live row should be missing it.
-
-A **goal or topic** accepts any provenance. Applying the task rule to them would
-wrongly refuse every goal whose flag the fleet set.
-
-## The two refusal tokens — `REFUSAL_REASONS`
+`flag_set_by` folds into exactly three states (`ProvenanceClass` in
+`pkg/flagged_refused.go`):
 
 ```
-REFUSAL_REASONS = ("agent-set-flag", "manager-row")
+OPENING_ACTORS   = ("operator", "legacy")     → operator-set  (admitted)
+UNRECORDED       = ("", "unknown", "none")    → unrecorded    (refused, with remedy)
+anything else                                 → agent-set     (refused)
 ```
 
-- `agent-set-flag` — the per-kind provenance rule above.
+- **operator-set** admits the row. `legacy` is the marker the 270 pre-field rows
+  were converted to on 2026-09-30, so an absent field can refuse without silently
+  dropping the operator's own historic sets.
+- **agent-set** refuses the row with `agent-set-flag`. The 2026-09-28 ruling
+  stands: an agent-set flag is not approval, at every tier (task, goal, topic).
+- **unrecorded** refuses the row with `flag-provenance-unrecorded` **and names the
+  one command that clears it**: `vault-cli task set '<name>' flag true --by
+  operator`. `unknown` is what `vault-cli` stamps when a flag write declares no
+  actor (`--by` defaults to `unknown`), so admitting it would let any agent
+  self-approve by omission. It is not agent-set either — nobody recorded an actor —
+  and folding it into `agent-set-flag` was the defect: a legitimate operator row
+  read exactly like an agent-set one and was refused forever with no remedy.
+
+  The title is **single-quoted for the shell** (`shellQuote`), not
+  double-quoted. A vault task title is attacker-influenced — any session may file a
+  task — and a title carrying `"`, `$(…)` or a backtick would otherwise close a
+  double-quoted interpolation and run as shell the moment the operator pasted the
+  remedy. Inside single quotes `$`, backtick and backslash are literal, so the only
+  escape needed is the quote itself: `'` renders as `'\''`.
+
+## The three refusal tokens — `REFUSAL_REASONS`
+
+```
+REFUSAL_REASONS = ("agent-set-flag", "flag-provenance-unrecorded", "manager-row")
+```
+
+- `agent-set-flag` — an agent set the flag; the row is not approval.
+- `flag-provenance-unrecorded` — the flag is set but no actor was recorded; the
+  reason carries the one-command remedy, and only the operator runs it.
 - `manager-row` — from the branch partition, for a row that belongs to a
   manager's own branch.
 
-Both arrive in the row's `refused` list. The tick does not distinguish them: any
-non-empty `refused` list means the row is not opened, and the first token is what
-the log line reports.
+All arrive in the row's `refused` list. The tick does not distinguish them: any
+non-empty `refused` list means the row is not opened, and the first entry is what
+the log line reports. The unrecorded entry carries `: <remedy>` after the token,
+which `reasonClass` cuts off so `refused_by_reason=` still counts it under the
+bare token.
 
 ## What breaks if this drifts
 

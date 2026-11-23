@@ -40,11 +40,17 @@ type FlaggedRow struct {
 	Branch    string   `json:"branch"`
 	BlockedBy []string `json:"blocked_by"`
 	// Refused carries the predicate's OWN provenance verdicts — `agent-set-flag`
-	// for a task whose `flag_set_by` is outside OPENING_ACTORS, `manager-row` for
-	// the branch partition. The tick reads this rather than re-deriving the rule:
-	// the predicate is the single home of "who may set a flag", and a second copy
-	// here would drift from it.
+	// for a flag an agent set, `flag-provenance-unrecorded` for a flag nobody
+	// attributed, `manager-row` for the branch partition. The tick reads this
+	// rather than re-deriving the rule: the predicate is the single home of "who
+	// may set a flag", and a second copy here would drift from it.
 	Refused []string `json:"refused"`
+	// Provenance is the row's provenance class — `operator`, `agent` or
+	// `unrecorded` — as the source computed it. It is carried on the row so the
+	// tick line can name all three states in one run: a refusal token marks only
+	// the refused rows, and an operator-set row is opened with no marker of its
+	// own. Empty when the source did not compute it (the exec source, a fixture).
+	Provenance Provenance `json:"-"`
 }
 
 // Key is the row's identity in the log line and in the ledger join.
