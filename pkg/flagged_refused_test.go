@@ -128,3 +128,42 @@ var _ = ginkgo.Describe("Refusals", func() {
 		gomega.Expect(FlagAdmits(block, "task")).To(gomega.BeTrue())
 	})
 })
+
+var _ = ginkgo.Describe("ProvenanceRefusal remedy quoting", func() {
+	ginkgo.It("single-quotes a plain task title", func() {
+		reason := ProvenanceRefusal("unknown", "Some Task")
+		gomega.Expect(reason).To(gomega.ContainSubstring(
+			"vault-cli task set 'Some Task' flag true --by operator"))
+	})
+
+	ginkgo.DescribeTable("a hostile title cannot break out of the remedy command",
+		func(title string, want string) {
+			reason := ProvenanceRefusal("unknown", title)
+			gomega.Expect(reason).To(gomega.ContainSubstring(want))
+		},
+		// A double quote was the original sink: it closed the interpolated string and
+		// the rest ran as shell once the operator pasted the remedy.
+		ginkgo.Entry("double quote", `a"; rm -rf /; echo "b`,
+			`task set 'a"; rm -rf /; echo "b' flag true --by operator`),
+		// Command substitution is inert inside single quotes — `$` is literal there.
+		ginkgo.Entry("command substitution", `x $(id)`,
+			`task set 'x $(id)' flag true --by operator`),
+		ginkgo.Entry("backtick", "x `id`",
+			"task set 'x `id`' flag true --by operator"),
+		// The only escape single quotes need: close, emit an escaped quote, reopen.
+		ginkgo.Entry("embedded single quote", `it's`,
+			`task set 'it'\''s' flag true --by operator`),
+		ginkgo.Entry("backslash", `a\b`,
+			`task set 'a\b' flag true --by operator`),
+	)
+
+	ginkgo.It("keeps a title carrying a newline as one shell word", func() {
+		reason := ProvenanceRefusal("unknown", "a\nb")
+		gomega.Expect(reason).To(gomega.ContainSubstring("task set 'a\nb' flag true --by operator"))
+	})
+
+	ginkgo.It("carries no title at all for an agent-set or operator flag", func() {
+		gomega.Expect(ProvenanceRefusal("agent", `x'; rm -rf /`)).To(gomega.Equal(RefusalAgentSetFlag))
+		gomega.Expect(ProvenanceRefusal("operator", `x'; rm -rf /`)).To(gomega.BeEmpty())
+	})
+})

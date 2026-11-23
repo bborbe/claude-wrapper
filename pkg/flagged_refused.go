@@ -76,17 +76,24 @@ func ProvenanceClass(setBy string) Provenance {
 // with no visible remedy is indistinguishable from a permanent one. Only the
 // operator runs that command: an agent re-stamping `--by operator` would be
 // writing the operator's approval in their name.
+//
+// The title is interpolated into that command, so it goes through shellQuote. A
+// vault task title is attacker-influenced content — any session may file a task —
+// and a title carrying a double quote, `$(…)` or a backtick would otherwise close
+// the quoting and run as shell the moment the operator pastes the remedy.
 func ProvenanceRefusal(setBy, name string) string {
 	switch ProvenanceClass(setBy) {
 	case ProvenanceOperator:
 		return ""
 	case ProvenanceUnrecorded:
 		return RefusalProvenanceUnrecorded +
-			": no actor recorded; clear it with vault-cli task set \"" + name + "\" flag true --by operator"
+			": no actor recorded; clear it with vault-cli task set " + shellQuote(name) + " flag true --by operator"
 	default:
 		return RefusalAgentSetFlag
 	}
 }
+
+// shellQuote (pkg/tab.go) renders the title as a POSIX single-quoted shell word.
 
 // yamlTrue is the TASK truthiness set — the unquoted scalars a YAML 1.1 loader resolves
 // to boolean true, `y`/`Y` included. `commands/open.md` reads `flag` off a parsed page as

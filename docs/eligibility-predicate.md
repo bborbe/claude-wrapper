@@ -59,12 +59,19 @@ anything else                                 → agent-set     (refused)
 - **agent-set** refuses the row with `agent-set-flag`. The 2026-09-28 ruling
   stands: an agent-set flag is not approval, at every tier (task, goal, topic).
 - **unrecorded** refuses the row with `flag-provenance-unrecorded` **and names the
-  one command that clears it**: `vault-cli task set "<name>" flag true --by
+  one command that clears it**: `vault-cli task set '<name>' flag true --by
   operator`. `unknown` is what `vault-cli` stamps when a flag write declares no
   actor (`--by` defaults to `unknown`), so admitting it would let any agent
   self-approve by omission. It is not agent-set either — nobody recorded an actor —
   and folding it into `agent-set-flag` was the defect: a legitimate operator row
   read exactly like an agent-set one and was refused forever with no remedy.
+
+  The title is **single-quoted for the shell** (`shellQuote`), not
+  double-quoted. A vault task title is attacker-influenced — any session may file a
+  task — and a title carrying `"`, `$(…)` or a backtick would otherwise close a
+  double-quoted interpolation and run as shell the moment the operator pasted the
+  remedy. Inside single quotes `$`, backtick and backslash are literal, so the only
+  escape needed is the quote itself: `'` renders as `'\''`.
 
 ## The three refusal tokens — `REFUSAL_REASONS`
 
