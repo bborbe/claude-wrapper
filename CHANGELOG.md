@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.65.1
 
 - fix: **a turn that closes during a drain still records its verdict, so a daemon restart no longer drops a turn's outcome.** `drainAndStop` cancels the process context on SIGTERM before `Drain` runs, and the child's terminal ledger write used that same context — so a turn that reached its boundary inside the drain's window failed its `PATCH` with `terminated signal received`, and the successor replayed the result as history and filed no verdict either. Measured 2026-11-23 in `~/Library/Logs/claude-wrapper/stderr.log`: a drain at 14:47:20 followed by `ledger verdict for session 5df08d81 … failed: … terminated signal received`. Terminal verdicts (result, abandoned, failed, and the deferred re-open) now write on `context.WithoutCancel(c.ctx)`, which keeps the write alive across the shutdown while the ledger client's own 15 s timeout still bounds it. Change set: `pkg/ledger_verdict.go`, `pkg/ledger_verdict_test.go`, `CHANGELOG.md`.
 
