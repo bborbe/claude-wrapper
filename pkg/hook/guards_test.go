@@ -5,6 +5,7 @@
 package hook_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -491,6 +492,9 @@ var _ = Describe("PushGateGuard", func() {
 		Entry("a fix branch", "git push origin fix/x", withMaintainer, false, true),
 		Entry("a Seibert ticket branch", "git push origin BRO-21462-fix", withMaintainer, false, true),
 		Entry("an environment branch", "git push origin dev", withMaintainer, false, true),
+		Entry("the staging branch", "git push origin staging", withMaintainer, false, true),
+		Entry("a dark-factory branch", "git push origin dark-factory/x", withMaintainer, false, true),
+		Entry("a sentry-fix branch", "git push origin sentry-fix/x", withMaintainer, false, true),
 		Entry("a force push", "git push --force origin feat/x", withMaintainer, true, false),
 		Entry("a ref deletion", "git push origin :feat/x", withMaintainer, true, false),
 		Entry("a tag", "git push origin v1.2.3", withMaintainer, true, false),
@@ -528,6 +532,39 @@ var _ = Describe("PushGateGuard", func() {
 		Expect(guard.Evaluate(input).Reason).To(ContainSubstring(
 			"No operator approval is needed for this."))
 	})
+
+	// wire runs one PreToolUse payload through a registry and returns stdout, so a
+	// test proves what the binary actually emits rather than what a guard decides.
+	wire := func(registry *hook.Registry, command string, cwd string) string {
+		payload, err := json.Marshal(map[string]any{
+			"hook_event_name": "PreToolUse",
+			"tool_name":       "Bash",
+			"tool_input":      map[string]string{"command": command},
+			"cwd":             cwd,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var out strings.Builder
+		Expect(hook.Run(
+			context.Background(), registry, strings.NewReader(string(payload)), &out,
+		)).To(Succeed())
+		return out.String()
+	}
+
+	It("emits the feature-branch allow on the wire", func() {
+		out := wire(hook.NewRegistry(hook.NewPushGateGuard()), "git push -u origin feat/x", withMaintainer)
+		Expect(out).To(ContainSubstring(`"permissionDecision":"allow"`))
+		Expect(out).To(ContainSubstring("Feature-branch push cleared"))
+	})
+
+	DescribeTable("emits a deny on the wire for each protected arm",
+		func(command string) {
+			out := wire(hook.NewRegistry(hook.NewPushGateGuard()), command, withMaintainer)
+			Expect(out).To(ContainSubstring(`"permissionDecision":"deny"`))
+		},
+		Entry("master", "git push origin master"),
+		Entry("force", "git push --force origin feat/x"),
+		Entry("ref deletion", "git push origin :feat/x"),
+	)
 })
 
 var _ = Describe("CdGitChainGuard", func() {

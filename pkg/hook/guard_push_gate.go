@@ -68,6 +68,14 @@ func NewPushGateGuard() *PushGateGuard {
 // Name returns the script this guard replaces.
 func (g *PushGateGuard) Name() string { return "ask-git-push-gate.sh" }
 
+// MayAllow grants this guard allow authority; see Registry.Evaluate.
+//
+// It only ever allows a push it has fully parsed: every segment resolved, every
+// refspec a known shape, and WholeCallAllowable true for the whole command. That
+// is the same reviewed parser the compound guard relies on, which is why this
+// guard holds authority while the other allow paths stay discarded.
+func (g *PushGateGuard) MayAllow() bool { return true }
+
 // Applies reports whether this is a Bash call naming a push.
 func (g *PushGateGuard) Applies(input Input) bool {
 	if !input.IsBash() {
