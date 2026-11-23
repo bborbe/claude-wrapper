@@ -469,9 +469,12 @@ func LauncherModel(launcher string) string {
 
 // taskFolders are the vault folders a task file may live in, in lookup order.
 //
-// `25 Tasks` is the current folder; `24 Tasks` is kept because an older vault
-// still uses it, and a wrong folder must not silently disable a lookup.
-var taskFolders = []string{"25 Tasks", "24 Tasks"}
+// Derived from the row lister's own list rather than restated here. These two
+// lists are the same fact — which folders hold a task page — and a second
+// hand-kept copy drifts: it did, and `tasks` (what the older vaults such as
+// seibert-agent use) reached the lister but not this lookup, so every flagged
+// row from those vaults was refused `missing-row` even though the page existed.
+var taskFolders = taskDirsFromKindDirs()
 
 // taskText returns a task file's text, or "" when no vault folder holds it.
 //
