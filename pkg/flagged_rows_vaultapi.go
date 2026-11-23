@@ -31,6 +31,21 @@ var kindDirs = []struct {
 	{"topic", []string{"23 Topics", "Topics"}},
 }
 
+// taskDirsFromKindDirs returns the task folders, in probe order.
+//
+// The opener (`taskText`) reads this same list, so the row lister and the
+// open path cannot disagree about where a task page lives. When they did, a
+// row the lister had just read from `tasks/` was refused `missing-row` by the
+// opener, which only knew `25 Tasks` and `24 Tasks`.
+func taskDirsFromKindDirs() []string {
+	for _, kind := range kindDirs {
+		if kind.Kind == "task" {
+			return kind.Dirs
+		}
+	}
+	return nil
+}
+
 // ChildLister lists the supervisor's child table.
 //
 // One method, not the whole `Supervisor`: this source reads children to derive
