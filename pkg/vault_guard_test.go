@@ -192,4 +192,30 @@ var _ = ginkgo.Describe("RosterToolServer vault-family guard on the spawn path",
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(supervisor.spawned).To(gomega.HaveLen(1))
 	})
+
+	ginkgo.It("refuses a headless spawn whose cwd resolves outside the daemon's family", func() {
+		ownDir := ginkgo.GinkgoT().TempDir()
+		foreignDir := ginkgo.GinkgoT().TempDir()
+		vaults := &fakeVaults{vaults: []Vault{
+			{Name: "private-personal", Path: ownDir, ClaudeScript: "/scripts/cc-private"},
+			{Name: "seibert-brogrammers", Path: foreignDir, ClaudeScript: "/scripts/cc-seibert"},
+		}}
+		supervisor := &headlessSupervisor{}
+		server := &RosterToolServer{
+			Supervisor: supervisor,
+			Vaults:     vaults,
+			OwnVault:   DaemonVault{Name: "private-personal", Path: ownDir},
+		}
+
+		// spawn_agent passes a cwd, not a vault; the cwd resolves into the foreign vault.
+		_, _, _, err := server.startHeadless(ctx, spawnAgentArgs{
+			Cwd: foreignDir, Task: "T", Role: RoleAgent,
+		}, "caller", SpawnModeResolution{Mode: SpawnModeHeadless}, false)
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(stderrors.Is(err, ErrForeignVault)).To(gomega.BeTrue())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("seibert-brogrammers"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("private-personal"))
+		gomega.Expect(supervisor.spawned).To(gomega.BeEmpty())
+	})
 })
