@@ -7,7 +7,6 @@ package pkg
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
 	"github.com/bborbe/errors"
 )
@@ -66,13 +65,13 @@ func RunFleetCommand(
 	command string,
 	only []string,
 ) (FleetCommandReport, error) {
-	if !allowedSlashCommands.Contains(command) {
+	if !isAllowedSlashCommand(command) {
 		return FleetCommandReport{}, errors.Wrapf(
 			ctx,
 			ErrSlashCommandNotAllowed,
 			"command %q is not allowlisted (allowed: %s)",
 			command,
-			strings.Join(allowedSlashCommands, ", "),
+			allowedSlashCommandSummary(),
 		)
 	}
 	sessions, err := liveSessions(ctx, deps, only)
@@ -183,7 +182,8 @@ func fleetSlashCommandToolDefinition() any {
 			"never interrupted; a non-empty composer is refused. `delivered` means "+
 			"the command reached the session, not that its effect was observed. "+
 			"Same allowlist as run_slash_command: `/compact`, `/reload-plugins`, "+
-			"`/mcp reconnect tts`.",
+			"and `/mcp reconnect <server>` where `<server>` matches "+
+			"`^[a-z0-9][a-z0-9-]*$`.",
 		map[string]any{
 			"command": stringProp("the allowlisted command to deliver to every session"),
 			"sessions": map[string]any{

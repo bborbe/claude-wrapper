@@ -8,24 +8,53 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/bborbe/errors"
 )
 
-// allowedSlashCommands is every command run_slash_command will deliver.
+// allowedSlashCommands is every fixed slash command run_slash_command will
+// deliver.
 //
 // Fixed in code, exact match, no arguments: the tool writes a real command into
 // a live worker, so what it can run has to be reviewable as a diff rather than
 // supplied at call time — the same property the macro table rests on.
+var allowedSlashCommands = StringList{"/compact", "/reload-plugins"}
+
+// allowedMCPReconnectPattern is the one argument-bearing command the allowlist
+// admits: `/mcp reconnect <server>`.
 //
-// `/mcp reconnect tts` is here because `tts` is ONE shared HTTP MCP server
-// (`http://127.0.0.1:12000/mcp`): its LaunchAgent restarts it (`KeepAlive`,
-// `ThrottleInterval 30`), and every restart orphans every live session's
-// connection at once. Reconnect is the only remedy, and it is per session — so
-// without this entry the fleet remedy costs one keystroke per pane. A second
-// server is one more exact-match entry, added when it is needed.
-var allowedSlashCommands = StringList{"/compact", "/reload-plugins", "/mcp reconnect tts"}
+// A pattern rather than one entry per server because the server set is
+// configuration, not code: `tts`, `semantic-search`, `semantic-search-brogrammers`
+// and the next one are named in an MCP config file, so an exact-match list would
+// need a release before any of them could be reconnected. Every MCP server's
+// LaunchAgent restarts it (`KeepAlive`), and one restart orphans every live
+// session's connection at once, so the remedy has to be deliverable fleet-wide
+// in a single call.
+//
+// The admitted argument is a bare name token — lowercase letters, digits and
+// hyphens, starting with a letter or digit — and nothing else: no whitespace, no
+// shell metacharacter, no second word. What reaches a pane is therefore always a
+// reconnect of one name the harness itself resolves against the configured
+// servers, and the line cannot carry a second command. `$` is RE2's end-of-text
+// anchor, so a trailing newline does not match.
+var allowedMCPReconnectPattern = regexp.MustCompile(`^/mcp reconnect [a-z0-9][a-z0-9-]*$`)
+
+// isAllowedSlashCommand reports whether command may be written into a live
+// worker. The single-session path and the fleet path both call it, so the two
+// surfaces cannot drift.
+func isAllowedSlashCommand(command string) bool {
+	return allowedSlashCommands.Contains(command) || allowedMCPReconnectPattern.MatchString(command)
+}
+
+// allowedSlashCommandSummary renders the allowlist for a refusal message, so a
+// caller learns the pattern rather than a list now shorter than what is
+// admitted.
+func allowedSlashCommandSummary() string {
+	return strings.Join(allowedSlashCommands, ", ") +
+		", /mcp reconnect <server> where <server> matches ^[a-z0-9][a-z0-9-]*$"
+}
 
 // runSlashCommandToolDefinition is the MCP schema for run_slash_command.
 func runSlashCommandToolDefinition() any {
@@ -33,14 +62,17 @@ func runSlashCommandToolDefinition() any {
 		"Run one allowlisted slash command in a local worker, as a real command "+
 			"rather than a message. A HEADLESS worker receives it as a user turn on "+
 			"its stdin; a TAB worker has it typed into its pane. Allowlist: "+
-			"`/compact`, `/reload-plugins` — anything else is refused with `not "+
-			"allowlisted`. A2A and cluster workers are refused: this daemon holds "+
-			"neither their stdin nor a pane. Use it where `send_agent_message` would "+
-			"only hand back a `SendMessage` name, which delivers a peer message that "+
-			"runs no command.",
+			"`/compact`, `/reload-plugins`, and `/mcp reconnect <server>` where "+
+			"`<server>` matches `^[a-z0-9][a-z0-9-]*$` — anything else is "+
+			"refused with `not allowlisted`. A2A and cluster workers are refused: "+
+			"this daemon holds neither their stdin nor a pane. Use it where "+
+			"`send_agent_message` would only hand back a `SendMessage` name, which "+
+			"delivers a peer message that runs no command.",
 		map[string]any{
 			"agent_id": stringProp("id of the local worker to run the command in"),
-			"command":  stringProp("exactly `/compact` or `/reload-plugins`"),
+			"command": stringProp(
+				"exactly `/compact`, `/reload-plugins`, or `/mcp reconnect <server>`",
+			),
 		},
 		"agent_id", "command")
 }
@@ -67,13 +99,13 @@ func (s *RosterToolServer) runSlashCommand(
 	if body.AgentID == "" {
 		return "", errors.Errorf(ctx, "agent_id is required")
 	}
-	if !allowedSlashCommands.Contains(body.Command) {
+	if !isAllowedSlashCommand(body.Command) {
 		return "", errors.Wrapf(
 			ctx,
 			ErrSlashCommandNotAllowed,
 			"command %q is not allowlisted (allowed: %s)",
 			body.Command,
-			strings.Join(allowedSlashCommands, ", "),
+			allowedSlashCommandSummary(),
 		)
 	}
 	if handled, response, err := s.runSlashCommandOnStdin(ctx, body.AgentID, body.Command); handled {
