@@ -431,6 +431,9 @@ func (e *openExecutor) openTabRow(
 	verdict.SessionID = result.SessionID
 	verdict.PaneID = result.PaneID
 	verdict.Message = result.Note
+	// The tab opener binds a goal manager's page itself, before its start
+	// commands run, so a start command that never lands cannot cost the stamp.
+	verdict.Bind = result.Bind
 	return verdict
 }
 

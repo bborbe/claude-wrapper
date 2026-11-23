@@ -604,4 +604,42 @@ var _ = ginkgo.Describe("FormatOpenLogLine", func() {
 			"open: row=v/task/T role=- mode=- branch=refused path=none window=none reason=missing-row",
 		))
 	})
+
+	// The bind half is the endpoint's OWN record, and the only one that names the
+	// session. A tick-driven open must leave it in the log, or a criterion
+	// requiring the endpoint's bind could only be met by a hand-run POST.
+	ginkgo.It("renders the endpoint's bind, naming the session it bound", func() {
+		verdict := OpenVerdict{
+			Kind:   OpenKindGoal,
+			Vault:  "v",
+			Name:   "G",
+			Role:   RoleManager,
+			Mode:   SpawnModeInteractive,
+			Branch: OpenBranchCreate,
+			Path:   OpenPathTab,
+			Bind: &OpenBind{
+				Task:      "G",
+				SessionID: "sid-1",
+				Action:    OpenBindStamped,
+			},
+		}
+		gomega.Expect(FormatOpenLogLine(verdict)).To(gomega.Equal(
+			"open: row=v/goal/G role=manager mode=interactive branch=create path=tab " +
+				"window=none reason=- bind=stamped:sid-1",
+		))
+	})
+
+	// A row that bound nothing must not grow a `bind=` field: `bind=-:-` would
+	// read as a write that failed rather than one that was never attempted.
+	ginkgo.It("omits bind entirely when the row bound nothing", func() {
+		verdict := OpenVerdict{
+			Kind:   OpenKindGoal,
+			Vault:  "v",
+			Name:   "G",
+			Role:   RoleManager,
+			Branch: OpenBranchCreate,
+			Path:   OpenPathTab,
+		}
+		gomega.Expect(FormatOpenLogLine(verdict)).NotTo(gomega.ContainSubstring("bind="))
+	})
 })

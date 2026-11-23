@@ -580,8 +580,12 @@ var _ = ginkgo.Describe("OpenExecutor", func() {
 		f.executor.OpenRequest(ctx, []OpenRow{openTaskRow("A"), openTaskRow("H")}, "caller-1")
 
 		gomega.Expect(f.logs.lines).To(gomega.HaveLen(2))
+		// The headless row now renders the bind it performed, naming the session:
+		// that field is the endpoint's own record and the only one a reader can
+		// check without opening the verdict JSON.
 		gomega.Expect(f.logs.lines[0]).To(gomega.Equal(
-			"open: row=v1/task/A role=agent mode=headless branch=create path=headless window=none reason=-",
+			"open: row=v1/task/A role=agent mode=headless branch=create path=headless window=none " +
+				"reason=- bind=stamped:" + openExecTestUUID(500),
 		))
 		gomega.Expect(f.logs.lines[1]).To(gomega.Equal(
 			"open: row=v1/task/H role=human mode=interactive branch=create path=tab window=12 reason=-",

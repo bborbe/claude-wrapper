@@ -60,6 +60,11 @@ type OpenTabResult struct {
 	Launcher  string
 	// Note reports a start command that was not sent; empty when every one landed.
 	Note string
+	// Bind reports the page write the open performed itself, nil when it wrote
+	// nothing (a task row, a topic row, or an empty session id). It is written
+	// BEFORE the start commands run, so a start command that never lands cannot
+	// change it.
+	Bind *OpenBind
 }
 
 // OpenTabOpener opens a human row's Direct tab or a manager's Managers tab.
@@ -79,8 +84,9 @@ func NewOpenTabOpener(
 	managerLauncherScript string,
 	topicSpawnScript string,
 	exitRecord string,
+	binders ...OpenPageBinder,
 ) OpenTabOpener {
-	return &openTabOpener{
+	opener := &openTabOpener{
 		tabs:                  tabs,
 		registry:              registry,
 		vaults:                vaults,
@@ -93,6 +99,12 @@ func NewOpenTabOpener(
 		exitRecord:            exitRecord,
 		sleep:                 time.Sleep,
 	}
+	// Variadic rather than an eleventh positional parameter: every existing call
+	// site keeps compiling, and an opener built without a binder writes no bind.
+	if len(binders) > 0 {
+		opener.binder = binders[0]
+	}
+	return opener
 }
 
 type openTabOpener struct {
@@ -106,6 +118,9 @@ type openTabOpener struct {
 	managerLauncherScript string
 	topicSpawnScript      string
 	exitRecord            string
+	// binder stamps a goal manager's page at open time. Nil writes no bind, which
+	// is the historical behaviour for every row but a goal tab.
+	binder OpenPageBinder
 	// sleep is the registration poll's wait, injected so a test clock and the
 	// loop's notion of elapsed time are the same source.
 	sleep func(time.Duration)
@@ -152,8 +167,37 @@ func (o *openTabOpener) Open(
 	result := &OpenTabResult{PaneID: paneID, TabName: tabName, Launcher: launcher}
 	result.SessionID = o.resolveSessionID(tailCtx, request, tabName, preexisting)
 	o.postLedger(tailCtx, request, result)
+	// ⚠️ BEFORE sendStartCommands: by the time the start commands return, the
+	// child's own work-on-goal turn may already have stamped the page, and a bind
+	// read after that legitimately reports `appended` — indistinguishable from the
+	// model-turn dependency this write exists to remove.
+	result.Bind = o.bindPage(tailCtx, request, result.SessionID)
 	result.Note = o.sendStartCommands(tailCtx, request, paneID)
 	return result, nil
+}
+
+// bindPage records the opened session on the row's own page. A bind failure is
+// reported on the result rather than returned: the tab is already open, so a bind
+// error must not read to the caller as a failed open.
+func (o *openTabOpener) bindPage(
+	ctx context.Context,
+	request OpenTabRequest,
+	sessionID string,
+) *OpenBind {
+	if o.binder == nil {
+		return nil
+	}
+	bind, err := o.binder.BindOpenedPage(ctx, request, sessionID)
+	if err != nil {
+		log.Printf("WARNING: open tab: bind page %q failed: %v", request.Subject, err)
+		return &OpenBind{
+			Task:      request.Subject,
+			SessionID: sessionID,
+			Action:    OpenBindFailed,
+			Error:     err.Error(),
+		}
+	}
+	return bind
 }
 
 // validateOpenTabRequest refuses a request no tab can serve.

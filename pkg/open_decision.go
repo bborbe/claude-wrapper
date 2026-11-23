@@ -615,7 +615,7 @@ func FormatOpenLogLine(verdict OpenVerdict) string {
 	if verdict.WindowID != nil {
 		window = strconv.Itoa(*verdict.WindowID)
 	}
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"open: row=%s/%s/%s role=%s mode=%s branch=%s path=%s window=%s reason=%s",
 		verdict.Vault,
 		verdict.Kind,
@@ -627,6 +627,19 @@ func FormatOpenLogLine(verdict OpenVerdict) string {
 		window,
 		dashIfEmpty(verdict.Reason),
 	)
+	// `bind=<action>:<sid>` is the endpoint's own record of the page write it
+	// performed, and it NAMES the session. Without it a tick-driven open leaves no
+	// artifact a reader can check, so a criterion requiring the endpoint's bind
+	// could only be satisfied by a hand-run POST /api/1.0/open — never by the tick
+	// whose behaviour it is meant to certify.
+	if verdict.Bind != nil {
+		line += fmt.Sprintf(
+			" bind=%s:%s",
+			dashIfEmpty(verdict.Bind.Action),
+			dashIfEmpty(verdict.Bind.SessionID),
+		)
+	}
+	return line
 }
 
 // dashIfEmpty renders an undecided field as the log line's placeholder.
