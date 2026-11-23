@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.63.5
 
 - fix: **the push gate's feature-branch allow now reaches the wire, so a `git push` to an allowed branch shape no longer prompts.** `PushGateGuard.Evaluate` already returned `AllowDecision` for a fully parsed feature-shaped push, but `Registry.Evaluate` honours an allow only from a guard implementing `AllowAuthority`, and the guard did not — so every allowed push fell through to passthrough and the permission layer prompted. The guard now implements `MayAllow()`, joining the compound guard and the /tmp write guard as the guards that hold allow authority. Its allow still fires only when `WholeCallAllowable` holds for the whole command and every refspec is a known shape; master/main, force forms, ref deletions, tags and unknown shapes keep their deny. The rename remedy now also lists `dark-factory/` and `sentry-fix/`, which the guard already accepted. Every refspec must now be explicitly allowed for the whole call to be allowed, so a feature refspec cannot carry an exempt master refspec through on its allow. Change set: `pkg/hook/guard_push_gate.go`, `pkg/hook/hook.go`, `pkg/hook/guards_test.go`, `CHANGELOG.md`.
 
