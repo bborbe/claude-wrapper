@@ -36,7 +36,7 @@ Every other case keeps today's behaviour and today's label:
 - `UNKNOWN` (the liveness read failed) → skipped;
 - `none` (no session id) → skipped.
 
-The child-liveness map is built once per tick from `t.Sessions.List(ctx)` and passed into `decision()` as a `map[string]bool` (`true` = alive), computed in `t.classify` (`pkg/flagged_tick.go:864`). A session absent from the map is treated as "not provably gone" — the conservative direction, because opening a second session on a live task is the harm this rule exists to prevent. The map must not be built per row.
+The child-liveness map is built **once per tick** in `tickFromRows` (the `for _, row := range ordered` loop, `pkg/flagged_tick.go:1008`) from `t.Sessions.List(ctx)` (`:479`), and passed into `classify` (`:835`) and `decision` (`:1466`) as a `map[string]bool` (`true` = alive). It must not be built per row. A nil `t.Sessions` (a fixture that predates the field) yields an empty map. A session absent from the map is treated as "not provably gone" — the conservative direction, because opening a second session on a live task is the harm this rule exists to prevent. The map must not be built per row.
 
 No `FlaggedRow` field is added: threading a pid onto the row would give a child-table row `PID = 0`, and `pidAlive(0)` is false, which would mark every such row gone.
 
@@ -46,6 +46,7 @@ No `FlaggedRow` field is added: threading a pid onto the row would give a child-
 - `decision()` with a terminal ledger entry and a child record whose pid is alive returns skipped `not-absent-dead`.
 - `decision()` with a terminal ledger entry and no child record returns skipped `not-absent-dead`.
 - `decision()` with a terminal ledger entry and `row.Liveness == "UNKNOWN"` and no child record returns skipped `not-absent-dead`.
+- A `## Unreleased` bullet exists in `CHANGELOG.md` (`.maintainer.yaml` has `release.autoRelease: true`, so the github-releaser-agent cuts the tag from that bullet).
 - `make precommit` is green.
 - On the running daemon, the tick line's `rows=` names at least one row that carried `<id>: not-absent-dead` in the Detail line on the previous build.
 
