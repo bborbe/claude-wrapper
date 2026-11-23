@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -117,6 +118,11 @@ type KeepaliveEffect struct {
 	SessionID string
 	// Reason carries the refusal or the mechanism — `hold`, `capped`, `dead-pid`.
 	Reason string
+	// Blockers names the unresolved blockers that caused a `reason=blocked` skip.
+	// It is what makes the skip attributable: `reason=blocked` alone says a row was
+	// gated, not by what, and a bare skip is indistinguishable from a hold or a
+	// claim to anyone reading the log.
+	Blockers []string
 }
 
 // KeepaliveProcedure is one of the eight keep-alive acts.
@@ -216,6 +222,9 @@ func (j *KeepaliveJob) runOne(ctx context.Context, procedure KeepaliveProcedure)
 	}
 	if effect.Reason != "" {
 		kv = append(kv, "reason", effect.Reason)
+	}
+	if len(effect.Blockers) > 0 {
+		kv = append(kv, "blockers", strings.Join(effect.Blockers, ","))
 	}
 	return JobLine(KeepaliveJobName, procedure.Name(), kv...)
 }

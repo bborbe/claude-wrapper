@@ -136,6 +136,12 @@ const (
 type FlaggedTickResult struct {
 	// Opened holds the key of every row this tick opened.
 	Opened []string
+	// Binds holds `key=<action>:<sid>` for every row this tick opened whose
+	// endpoint bind wrote a page. It is the tick-path artifact for the endpoint's
+	// own write, and the only one that NAMES the session: without it a
+	// tick-driven open leaves nothing a reader can check, so a bind criterion
+	// could only be satisfied by a hand-run POST /api/1.0/open.
+	Binds []string
 	// Nudged holds the key of every row whose idle, already-held child this tick
 	// sent a new turn to. It is not Opened: no process was spawned.
 	Nudged []string
@@ -219,6 +225,13 @@ func (r FlaggedTickResult) Line() string {
 	)
 	if len(r.Nudged) > 0 {
 		line += fmt.Sprintf(" nudged=%d nudged_rows=%s", len(r.Nudged), strings.Join(r.Nudged, ","))
+	}
+	// `binds_rows=` carries the endpoint's own page write, per opened row, and
+	// names the session it bound. A tick that opened a manager but wrote no page
+	// has no entry here, so a missing bind is visible rather than inferred from
+	// the absence of a line.
+	if len(r.Binds) > 0 {
+		line += fmt.Sprintf(" binds=%d binds_rows=%s", len(r.Binds), strings.Join(r.Binds, ","))
 	}
 	if counts := formatCounts(r.Refused); counts != "" {
 		line += " refused_by_reason=" + counts
@@ -1134,6 +1147,11 @@ func (t *FlaggedTick) recordOpenVerdict(
 	case OpenBranchResume, OpenBranchCreate:
 		t.commitOpened(ctx, row, retryNotLanded, now)
 		result.Opened = append(result.Opened, row.Key())
+		if verdict.Bind != nil {
+			result.Binds = append(result.Binds, fmt.Sprintf(
+				"%s=%s:%s", row.Key(), verdict.Bind.Action, verdict.Bind.SessionID,
+			))
+		}
 		t.recordResumeDelay(result, row, ended, now)
 	case OpenBranchJump, OpenBranchLive, OpenBranchYours:
 		result.Skipped = append(result.Skipped, row.Key()+": "+reasonAlreadyLive)
