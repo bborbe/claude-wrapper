@@ -892,6 +892,9 @@ func mountOpenSurface(
 		// No exit recorder: the daemon ships no copy of the script, and an empty
 		// path omits the hook rather than naming one that does not exist.
 		"",
+		// Stamps a goal manager's page at open time, before its start commands
+		// run, so a start command that never lands cannot cost the stamp.
+		pkg.NewVaultCLIPageBinder(pkg.ExecCommandRunner{}),
 	)
 	executor := pkg.NewOpenExecutor(pkg.OpenExecutorDeps{
 		Vaults:           vaults,

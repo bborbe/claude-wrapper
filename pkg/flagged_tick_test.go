@@ -313,6 +313,26 @@ var _ = ginkgo.Describe("flagged tick: caps during a controller outage", func() 
 	})
 })
 
+// The tick path must leave the endpoint's bind in its own line. A criterion that
+// requires the endpoint's bind, naming the session, has no other artifact to read
+// on a tick-driven open — so an omitted field is the difference between a
+// checkable fix and one only a hand-run POST could satisfy.
+var _ = ginkgo.Describe("FlaggedTickResult.Line renders the endpoint's bind", func() {
+	ginkgo.It("prints binds_rows when an opened row bound a page", func() {
+		result := FlaggedTickResult{
+			Opened: []string{"v/goal/G"},
+			Binds:  []string{"v/goal/G=stamped:sid-1"},
+		}
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("binds=1"))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("binds_rows=v/goal/G=stamped:sid-1"))
+	})
+
+	ginkgo.It("omits binds when no opened row bound a page", func() {
+		result := FlaggedTickResult{Opened: []string{"v/task/T"}}
+		gomega.Expect(result.Line()).NotTo(gomega.ContainSubstring("binds="))
+	})
+})
+
 // ledgerWith supplies spawn times to the recently-spawned guard.
 type ledgerWith struct {
 	rows []LedgerRow
