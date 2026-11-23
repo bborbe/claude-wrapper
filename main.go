@@ -743,14 +743,12 @@ func startFleetFaces(
 	)
 	// The fleet-wide caps; shared with the flagged tick so both read one limit.
 	caps := pkg.NewSpawnCaps(ledger, heartbeats, registry, now, "", nil)
+	roster := pkg.NewRoster(
+		supervisor, ledger, pkg.NewRegistryLiveness(registry, heartbeats),
+		pkg.NewTranscriptReader(now), registry,
+	)
 	rosterServer := &pkg.RosterToolServer{
-		Roster: pkg.NewRoster(
-			supervisor,
-			ledger,
-			pkg.NewRegistryLiveness(registry, heartbeats),
-			pkg.NewTranscriptReader(now),
-			registry,
-		),
+		Roster:     roster,
 		Supervisor: supervisor,
 		Ledger:     ledger,
 		Decider:    decider,
@@ -765,8 +763,7 @@ func startFleetFaces(
 		Tabs:       tabs,
 		PaneJoiner: pkg.NewWeztermPaneJoiner(""),
 		Now:        now,
-		// The fleet-wide caps; shared with the flagged tick so both read one limit.
-		Caps: caps,
+		Caps:       caps,
 		// The id → name join send_agent_message needs: it holds the session id,
 		// the caller's `SendMessage` takes the registry name, and this maps one to the other.
 		Registry: registry,
@@ -778,6 +775,7 @@ func startFleetFaces(
 		// Answer-path guard on the live spawn path: spawn_agent refuses a headless
 		// spawn from a session whose probe reads non-OK (its parks would die).
 		Scripts: pkg.ExecScriptRunner{}, AnswerPathScript: openPaths.answerPath,
+		PermissionTierScript: expandHome(pkg.DefaultPermissionTierScript),
 		// The vault-cli bind of a spawned session to its task: spawn_agent writes the
 		// spawned id onto the task it was given, honouring vault-cli's ownership rule.
 		Runner: pkg.ExecCommandRunner{},

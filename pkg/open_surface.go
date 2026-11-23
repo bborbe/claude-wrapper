@@ -20,6 +20,9 @@ const (
 	DefaultAnswerPathCheckScript = "~/.claude/plugins/marketplaces/claude-supervisor/scripts/answer-path-check.py"
 	DefaultManagerLauncherScript = "~/.claude/plugins/marketplaces/claude-supervisor/scripts/manager-launcher.py"
 	DefaultTopicSpawnScript      = "~/.claude/plugins/marketplaces/claude-supervisor/scripts/topic-spawn.py"
+	// DefaultPermissionTierScript classifies a parked permission prompt's tier, so
+	// answer_permission can refuse an operator-tier gate instead of settling it.
+	DefaultPermissionTierScript = "~/.claude/plugins/marketplaces/claude-supervisor/scripts/permission-tier.py"
 )
 
 // MaxOpenBody is the open request's body cap — the same 1 MiB the MCP faces enforce.

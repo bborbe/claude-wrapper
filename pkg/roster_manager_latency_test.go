@@ -68,6 +68,10 @@ var _ = ginkgo.Describe("manager answer latency", func() {
 			Supervisor: supervisor,
 			Decider:    &PermissionDecider{Log: log, Now: fixedNow(answeredAt)},
 			Now:        fixedNow(answeredAt),
+			// The tier guard runs on the answer path; a manager-tier probe lets the
+			// latency write proceed, which is what this spec measures.
+			Scripts:              &fakeScriptRunner{results: map[string]ScriptResult{permissionTierTestScript: managerTierProbe()}},
+			PermissionTierScript: permissionTierTestScript,
 		}
 
 		recorder := postRPC(

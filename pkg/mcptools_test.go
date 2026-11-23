@@ -34,6 +34,10 @@ type toolSupervisor struct {
 	pendingTurns int
 	// permissionModes records every mode a set_permission_mode call asked for.
 	permissionModes []string
+	// question is the park Get reports, so a spec can drive the answer path.
+	question *Question
+	// answerCalls counts Answer calls, so a spec can prove a refusal preceded it.
+	answerCalls int
 }
 
 func (s *toolSupervisor) Spawn(_ context.Context, options SpawnOptions) (*Session, error) {
@@ -49,10 +53,15 @@ func (s *toolSupervisor) List(context.Context) ([]Session, error) {
 }
 
 func (s *toolSupervisor) Get(context.Context, string) (*Session, error) {
-	return &Session{ID: "s1", State: s.state, PendingTurns: s.pendingTurns}, nil
+	return &Session{ID: "s1", State: s.state, PendingTurns: s.pendingTurns, Question: s.question}, nil
 }
 
-func (s *toolSupervisor) Answer(context.Context, string, string, Answer) error { return nil }
+func (s *toolSupervisor) Answer(context.Context, string, string, Answer) error {
+	s.mutex.Lock()
+	s.answerCalls++
+	s.mutex.Unlock()
+	return nil
+}
 
 func (s *toolSupervisor) RegisterQuestion(context.Context, string, Question) error { return nil }
 
