@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.65.2
 
 - fix: **a flag whose provenance was never recorded is refused as unrecorded, with the one-command remedy, instead of as an agent-set flag that never opens.** `flag_set_by: unknown` is what `vault-cli task set … flag true` stamps when the write declares no actor; the tick folded it into `agent-set-flag`, so a legitimate operator row was refused forever and its tick line was indistinguishable from a correct refusal. `unknown`, `none` and an absent field are now class `unrecorded` and refuse with `flag-provenance-unrecorded`, whose reason names `vault-cli task set '<name>' flag true --by operator`; every other non-opening actor stays `agent-set-flag`. The task title in that remedy is **single-quoted for the shell** (`shellQuote`) rather than double-quoted: a title is attacker-influenced — any session may file a task — and one carrying `"`, `$(…)` or a backtick would otherwise close the interpolation and run as shell when the operator pasted the remedy. The tick line gains `provenance=operator:N;agent:N;unrecorded:N` so one tick distinguishes the three states. Change set: `pkg/flagged_refused.go`, `pkg/flagged_rows_vaultapi.go`, `pkg/flagged_rows_source.go`, `pkg/flagged_tick.go`, `pkg/flagged_refused_test.go`, `pkg/flagged_rows_vaultapi_test.go`, `pkg/flagged_tick_test.go`, `docs/eligibility-predicate.md`, `CHANGELOG.md`.
 
