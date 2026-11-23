@@ -17,6 +17,62 @@ import (
 // sets. An absent `flag_set_by` therefore admits nothing.
 var OpeningActors = []string{"operator", "legacy"}
 
+// UnrecordedActors are the `flag_set_by` values that mean "nobody recorded who set
+// this flag". `unknown` is what `vault-cli task set … flag true` stamps when the
+// write declares no actor (`--by` defaults to `unknown`); `none` and the empty
+// string are the same absence from other writers.
+//
+// This is a THIRD state, not an alias for `agent`. Folding it into the agent case
+// is the defect this set exists to prevent: a legitimate operator task whose flag
+// was re-stamped without an actor read exactly like an agent-set flag and was
+// refused forever, with no remedy visible anywhere in the tick line.
+var UnrecordedActors = []string{"", "unknown", "none"}
+
+// The three provenance classes the tick line reports.
+const (
+	ProvenanceOperator   = "operator"
+	ProvenanceAgent      = "agent"
+	ProvenanceUnrecorded = "unrecorded"
+)
+
+// RefusalProvenanceUnrecorded is the refusal token for a flag whose provenance was
+// never recorded. It is distinct from RefusalAgentSetFlag so the tick line can say
+// "missing" rather than "an agent set this".
+const RefusalProvenanceUnrecorded = "flag-provenance-unrecorded"
+
+// ProvenanceClass folds a raw `flag_set_by` into the three states the tick line
+// names. `legacy` is an operator row — it was dispositioned by the operator.
+func ProvenanceClass(setBy string) string {
+	value := strings.TrimSpace(setBy)
+	switch {
+	case slices.Contains(OpeningActors, value):
+		return ProvenanceOperator
+	case slices.Contains(UnrecordedActors, value):
+		return ProvenanceUnrecorded
+	default:
+		return ProvenanceAgent
+	}
+}
+
+// ProvenanceRefusal returns the refusal reason for a non-admitting provenance, or
+// the empty string when the flag admits.
+//
+// The unrecorded case carries the one command that clears it, because a refusal
+// with no visible remedy is indistinguishable from a permanent one. Only the
+// operator runs that command: an agent re-stamping `--by operator` would be
+// writing the operator's approval in their name.
+func ProvenanceRefusal(setBy, name string) string {
+	switch ProvenanceClass(setBy) {
+	case ProvenanceOperator:
+		return ""
+	case ProvenanceUnrecorded:
+		return RefusalProvenanceUnrecorded +
+			": no actor recorded; clear it with vault-cli task set \"" + name + "\" flag true --by operator"
+	default:
+		return RefusalAgentSetFlag
+	}
+}
+
 // yamlTrue is the TASK truthiness set — the unquoted scalars a YAML 1.1 loader resolves
 // to boolean true, `y`/`Y` included. `commands/open.md` reads `flag` off a parsed page as
 // a YAML boolean, so a quoted scalar is a STRING and FlagSet rejects it exactly as that
@@ -66,8 +122,9 @@ func FlagAdmits(block, kind string) bool {
 	return FlagSet(block, kind) && slices.Contains(OpeningActors, flagSetByOf(block))
 }
 
-// Refusals returns the provenance refusal a row carries: `agent-set-flag` when the flag
-// is SET but its provenance does not admit it, and nothing otherwise.
+// Refusals returns the provenance refusal a row carries: `agent-set-flag` when the
+// flag is SET and an agent set it, `flag-provenance-unrecorded` when it is SET and
+// nobody recorded the actor, and nothing otherwise.
 //
 // Identical at every tier. Before the 2026-11-10 operator ruling this returned nothing
 // for a goal or topic, so an agent-set flag on a goal opened a manager while the
@@ -82,10 +139,10 @@ func Refusals(kind, block string) []string {
 	if !FlagSet(block, kind) {
 		return []string{}
 	}
-	if FlagAdmits(block, kind) {
-		return []string{}
+	if reason := ProvenanceRefusal(flagSetByOf(block), "<name>"); reason != "" {
+		return []string{reason}
 	}
-	return []string{RefusalAgentSetFlag}
+	return []string{}
 }
 
 // flagSetByOf reads `flag_set_by` with quotes stripped — the empty string when the key
