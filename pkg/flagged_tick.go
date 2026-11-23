@@ -837,6 +837,7 @@ func (t *FlaggedTick) classify(
 	row FlaggedRow,
 	recent map[string]time.Time,
 	dead map[string]struct{},
+	childLive map[string]bool,
 	now time.Time,
 ) (string, rowAction, bool) {
 	// Provenance and blocked_by are checked FIRST, exactly as `decision` orders
@@ -861,7 +862,7 @@ func (t *FlaggedTick) classify(
 	if retryNotLanded {
 		t.logf("flagged-tick: spawn-not-landed row=%s — retrying once", row.Name)
 	}
-	if reason, refused, skipped := decision(row, recent, dead, now, fresh, retryNotLanded); refused || skipped {
+	if reason, refused, skipped := decision(row, recent, dead, childLive, now, fresh, retryNotLanded); refused || skipped {
 		if refused {
 			return reason, rowRefused, false
 		}
@@ -991,9 +992,11 @@ func (t *FlaggedTick) tickFromRows(
 	t.mergeChildSpawnTimes(ctx, recent)
 	t.mergeOpened(recent)
 	ended := endedAtBySession(ledger)
-	// Which sessions the ledger says are over. Used only to label a skip
-	// truthfully, never to change the decision — see reasonNotAbsentDead.
+	// Which sessions the ledger says are over. A terminal status alone does not
+	// admit a row — `childLive` must also prove the process gone. See decision().
 	dead := endedSessions(ledger)
+	// One session-store read per tick: a 50-row batch must not List 50 times.
+	childLive := t.childLiveness(ctx)
 	now := t.now()
 	// halted is the fleet-level refusal that ended this tick's opening pass. It
 	// is a reason string, not a bool, because the rows it leaves behind are still
@@ -1014,7 +1017,7 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
-		reason, action, retryNotLanded := t.classify(ctx, row, recent, dead, now)
+		reason, action, retryNotLanded := t.classify(ctx, row, recent, dead, childLive, now)
 		switch action {
 		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
@@ -1293,6 +1296,38 @@ func endedSessions(rows []LedgerRow) map[string]struct{} {
 	return out
 }
 
+// childLiveness maps a session id to whether its child process is still alive,
+// read once per tick from the wrapper's own session store.
+//
+// It exists for decision()'s "provably gone" test. A terminal ledger entry is
+// not proof of death: a session whose turn closed keeps running until it exits
+// (measured 2026-11-23 — `done` at 19:14:19, pid alive until 20:13:30). The
+// child table is the only source that answers "is the process still there".
+//
+// A session ABSENT from the map is not provably gone — only an explicit `false`
+// admits a row. A registry-only session has already been proved live by the
+// registry, and a missing record proves nothing.
+//
+// A nil Sessions (a fixture that predates the field) yields an empty map, which
+// admits nothing; that is the conservative direction.
+func (t *FlaggedTick) childLiveness(ctx context.Context) map[string]bool {
+	out := map[string]bool{}
+	if t.Sessions == nil {
+		return out
+	}
+	records, err := t.Sessions.List(ctx)
+	if err != nil {
+		return out
+	}
+	for _, record := range records {
+		if record.ID == "" {
+			continue
+		}
+		out[record.ID] = pidAlive(record.ChildPID)
+	}
+	return out
+}
+
 // endedAtBySession maps a session id to the instant its last turn ended, which
 // is the start of clock for the resume-delay measurement.
 //
@@ -1467,6 +1502,7 @@ func decision(
 	row FlaggedRow,
 	recent map[string]time.Time,
 	dead map[string]struct{},
+	childLive map[string]bool,
 	now time.Time,
 	fresh bool,
 	retryNotLanded bool,
@@ -1490,14 +1526,9 @@ func decision(
 	// left alone. `none` is what `--no-liveness` reports for every row, so the
 	// permissive form would have reopened the entire fleet.
 	if row.Liveness != "ABSENT" && !fresh {
-		// The ledger knows whether this session ended; the predicate's liveness
-		// claim does not. When the two disagree, say so in the reason instead of
-		// repeating the predicate's assertion. The DECISION is unchanged — see
-		// reasonNotAbsentDead.
-		if _, ended := dead[row.SessionID]; ended {
-			return reasonNotAbsentDead, false, true
+		if reason, skip := skipNotAbsent(row, dead, childLive); skip {
+			return reason, false, true
 		}
-		return reasonNotAbsent, false, true
 	}
 	if row.Branch == "jump" {
 		return reasonAlreadyLive, false, true
@@ -1519,6 +1550,36 @@ func decision(
 		}
 	}
 	return "", false, false
+}
+
+// skipNotAbsent decides whether a row whose liveness is not ABSENT is skipped,
+// and with which reason. It returns skip=false only when the row is provably
+// gone — the ledger says its session ended AND the session store holds a child
+// record whose pid is dead.
+//
+// A terminal ledger entry alone is NOT proof of death: a session whose turn
+// closed keeps running and reads LIVE until it exits (measured 2026-11-23 —
+// `done` at 19:14:19, pid alive until 20:13:30). And a missing child record
+// proves nothing — a registry-only session has already been proved live by the
+// registry — so only an explicit dead pid admits the row.
+func skipNotAbsent(
+	row FlaggedRow,
+	dead map[string]struct{},
+	childLive map[string]bool,
+) (reason string, skip bool) {
+	if _, ended := dead[row.SessionID]; !ended {
+		return reasonNotAbsent, true
+	}
+	// UNKNOWN means the liveness read failed. The ledger's terminal status does
+	// not override that, so the row stays skipped — the permissive form would
+	// reopen the whole fleet under `--no-liveness`.
+	if row.Liveness == "UNKNOWN" {
+		return reasonNotAbsentDead, true
+	}
+	if alive, known := childLive[row.SessionID]; known && !alive {
+		return "", false
+	}
+	return reasonNotAbsentDead, true
 }
 
 // orderFlaggedRows puts Direct (`role: human`) rows first.
