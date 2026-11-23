@@ -5,6 +5,7 @@
 package hook_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -491,6 +492,13 @@ var _ = Describe("PushGateGuard", func() {
 		Entry("a fix branch", "git push origin fix/x", withMaintainer, false, true),
 		Entry("a Seibert ticket branch", "git push origin BRO-21462-fix", withMaintainer, false, true),
 		Entry("an environment branch", "git push origin dev", withMaintainer, false, true),
+		Entry("the staging branch", "git push origin staging", withMaintainer, false, true),
+		Entry("a dark-factory branch", "git push origin dark-factory/x", withMaintainer, false, true),
+		Entry("a sentry-fix branch", "git push origin sentry-fix/x", withMaintainer, false, true),
+		Entry("a feature push carrying an exempt master refspec",
+			"git push origin feat/x master", withoutMaintainer, false, false),
+		Entry("a feature push carrying a gated master refspec",
+			"git push origin feat/x master", withMaintainer, true, false),
 		Entry("a force push", "git push --force origin feat/x", withMaintainer, true, false),
 		Entry("a ref deletion", "git push origin :feat/x", withMaintainer, true, false),
 		Entry("a tag", "git push origin v1.2.3", withMaintainer, true, false),
@@ -528,6 +536,83 @@ var _ = Describe("PushGateGuard", func() {
 		Expect(guard.Evaluate(input).Reason).To(ContainSubstring(
 			"No operator approval is needed for this."))
 	})
+
+	// wire runs one PreToolUse payload through a registry and returns stdout, so a
+	// test proves what the binary actually emits rather than what a guard decides.
+	// The single-guard registry isolates this guard; the default-registry case below
+	// proves the real chain honours it too.
+	wire := func(registry *hook.Registry, command string, cwd string) string {
+		GinkgoHelper()
+		payload, err := json.Marshal(map[string]any{
+			"hook_event_name": "PreToolUse",
+			"tool_name":       "Bash",
+			"tool_input":      map[string]string{"command": command},
+			"cwd":             cwd,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var out strings.Builder
+		Expect(hook.Run(
+			context.Background(), registry, strings.NewReader(string(payload)), &out,
+		)).To(Succeed())
+		return out.String()
+	}
+
+	// wireDecision decodes the permission decision the binary emitted, so the
+	// assertion does not depend on field order or JSON escaping.
+	wireDecision := func(out string) string {
+		GinkgoHelper()
+		var envelope struct {
+			HookSpecificOutput struct {
+				PermissionDecision string `json:"permissionDecision"`
+			} `json:"hookSpecificOutput"`
+		}
+		Expect(json.Unmarshal([]byte(out), &envelope)).To(Succeed())
+		return envelope.HookSpecificOutput.PermissionDecision
+	}
+
+	It("holds allow authority", func() {
+		Expect(guard.MayAllow()).To(BeTrue())
+	})
+
+	It("is honoured by the default registry", func() {
+		input := bashInput("git push -u origin feat/x")
+		input.Cwd = withMaintainer
+		decision := hook.NewDefaultRegistry().Evaluate(input)
+		Expect(decision.Allow).To(BeTrue())
+		// Pin the origin: the compound guard also holds authority, so Allow alone
+		// would not prove this guard's allow survived the chain.
+		Expect(decision.Reason).To(ContainSubstring("Feature-branch push cleared"))
+	})
+
+	It("emits the feature-branch allow on the wire", func() {
+		out := wire(
+			hook.NewRegistry(hook.NewPushGateGuard()), "git push -u origin feat/x", withMaintainer,
+		)
+		Expect(wireDecision(out)).To(Equal("allow"))
+		Expect(out).To(ContainSubstring("Feature-branch push cleared"))
+	})
+
+	It("emits no allow when a feature refspec carries an exempt master refspec", func() {
+		out := wire(
+			hook.NewRegistry(hook.NewPushGateGuard()),
+			"git push origin feat/x master", withoutMaintainer,
+		)
+		Expect(wireDecision(out)).To(Equal(""))
+	})
+
+	DescribeTable("emits a deny on the wire for each protected arm",
+		func(command string) {
+			out := wire(hook.NewRegistry(hook.NewPushGateGuard()), command, withMaintainer)
+			Expect(wireDecision(out)).To(Equal("deny"))
+		},
+		Entry("master", "git push origin master"),
+		Entry("a feature push carrying a master refspec", "git push origin feat/x master"),
+		Entry("force", "git push --force origin feat/x"),
+		Entry("ref deletion", "git push origin :feat/x"),
+		Entry("a tag", "git push origin v1.2.3"),
+		Entry("HEAD", "git push origin HEAD"),
+		Entry("an unknown branch shape", "git push origin scratch/verify"),
+	)
 })
 
 var _ = Describe("CdGitChainGuard", func() {
