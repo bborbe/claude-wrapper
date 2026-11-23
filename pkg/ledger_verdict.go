@@ -25,7 +25,7 @@ import (
 // error, so there is no event loop to protect, and leaving the write in flight
 // would let it land after a retry's re-open.
 func (c *child) recordFailedTurn(turn uint64, writeErr error) {
-	if c.ledger == nil {
+	if !c.canWriteVerdict() {
 		return
 	}
 	//nolint:errchkjson // a map of strings and a bool cannot fail to encode
@@ -53,10 +53,11 @@ func (c *child) recordFailedTurn(turn uint64, writeErr error) {
 // history and files no verdict either, so the turn's outcome was dropped by the
 // restart. context.WithoutCancel keeps the write alive across the shutdown; the
 // ledger client's own 15 s timeout still bounds it.
+//
+// Every caller reaches this through canWriteVerdict, which refuses a nil c.ctx,
+// so there is no nil branch here — a background-context fallback would be
+// business logic reaching for a context nobody propagated.
 func (c *child) verdictContext() context.Context {
-	if c.ctx == nil {
-		return context.Background()
-	}
 	return context.WithoutCancel(c.ctx)
 }
 

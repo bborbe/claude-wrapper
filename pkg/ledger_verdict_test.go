@@ -353,8 +353,8 @@ var _ = ginkgo.Describe("terminal ledger verdicts", func() {
 	// received` — before the drain runs, so a verdict written with that context
 	// failed to reach the store, and the successor replays the result as history
 	// and files nothing either: the turn's outcome was dropped by the restart.
-	// Measured 2026-11-23 in ~/Library/Logs/claude-wrapper/stderr.log: a drain at
-	// 14:47:20 followed by `ledger verdict for session 5df08d81 … failed: …
+	// Measured 2026-11-23 in the wrapper's stderr log (Library/Logs/claude-wrapper/stderr.log):
+	// a drain at 14:47:20 followed by `ledger verdict for session 5df08d81 … failed: …
 	// terminated signal received`.
 	ginkgo.It("files a turn's verdict even after the process context is cancelled", func() {
 		release := filepath.Join(dir, "release-turn")
