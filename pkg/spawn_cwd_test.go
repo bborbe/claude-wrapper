@@ -461,3 +461,35 @@ var _ = ginkgo.Describe("vaultCLILister", func() {
 		gomega.Expect(vaults[0].Name).To(gomega.Equal("v"))
 	})
 })
+
+var _ = ginkgo.Describe("taskText", func() {
+	ginkgo.It("reads a task page from the lowercase tasks folder the older vaults use", func() {
+		vault := ginkgo.GinkgoT().TempDir()
+		const title = "Check Unassigned Tasks - 2026W48-mon"
+		gomega.Expect(os.MkdirAll(filepath.Join(vault, "tasks"), 0o755)).To(gomega.Succeed())
+		gomega.Expect(os.WriteFile(
+			filepath.Join(vault, "tasks", title+".md"), []byte("body"), 0o600,
+		)).To(gomega.Succeed())
+
+		gomega.Expect(taskText(vault, title)).To(gomega.Equal("body"))
+	})
+
+	ginkgo.It("still reads the 25 Tasks and 24 Tasks folders", func() {
+		vault := ginkgo.GinkgoT().TempDir()
+		for _, folder := range []string{"25 Tasks", "24 Tasks"} {
+			gomega.Expect(os.MkdirAll(filepath.Join(vault, folder), 0o755)).To(gomega.Succeed())
+			gomega.Expect(os.WriteFile(
+				filepath.Join(vault, folder, folder+".md"), []byte(folder), 0o600,
+			)).To(gomega.Succeed())
+			gomega.Expect(taskText(vault, folder)).To(gomega.Equal(folder))
+		}
+	})
+
+	// The opener and the row lister must probe the same folders. They were two
+	// hand-kept lists and they drifted: `tasks` reached the lister but not the
+	// opener, so a row read from `tasks/` was refused `missing-row`.
+	ginkgo.It("probes exactly the folders the row lister probes", func() {
+		gomega.Expect(taskFolders).To(gomega.Equal(taskDirsFromKindDirs()))
+		gomega.Expect(taskFolders).To(gomega.ContainElement("tasks"))
+	})
+})
