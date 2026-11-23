@@ -154,9 +154,9 @@ func (g *PushGateGuard) evaluatePush(segment string, repo string) (Decision, boo
 	}
 	root, _ := repoRoot(repo)
 	// Every refspec must be explicitly allowed. A refspec the guard declined to
-	// bless — a master push the repo exempts, an unresolvable target — returns
-	// neither allow nor deny, and it must not ride a sibling's allow: the whole-call
-	// allow would then cover a refspec the guard never approved.
+	// bless — a master push the repo exempts — returns neither allow nor deny, and
+	// it must not ride a sibling's allow: the whole-call allow would then cover a
+	// refspec the guard never approved.
 	allAllowed := true
 	for _, spec := range positional[1:] {
 		decision, ok := g.evaluateRefspec(spec, positional[0], root)

@@ -592,6 +592,14 @@ var _ = Describe("PushGateGuard", func() {
 		Expect(out).To(ContainSubstring("Feature-branch push cleared"))
 	})
 
+	It("emits no allow when a feature refspec carries an exempt master refspec", func() {
+		out := wire(
+			hook.NewRegistry(hook.NewPushGateGuard()),
+			"git push origin feat/x master", withoutMaintainer,
+		)
+		Expect(wireDecision(out)).To(Equal(""))
+	})
+
 	DescribeTable("emits a deny on the wire for each protected arm",
 		func(command string) {
 			out := wire(hook.NewRegistry(hook.NewPushGateGuard()), command, withMaintainer)
