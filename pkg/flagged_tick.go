@@ -1314,6 +1314,24 @@ func endedSessions(rows []LedgerRow) map[string]struct{} {
 	return out
 }
 
+// sessionStore returns the wrapper's durable child table, resolving it from the
+// state directory when none was injected.
+//
+// main.go wires no Sessions, so in the daemon the field is always nil — a caller
+// that treated nil as "no children" would read an empty table forever. Resolving
+// here is what mergeChildSpawnTimes already did inline.
+func (t *FlaggedTick) sessionStore(ctx context.Context) SessionStore {
+	if t.Sessions != nil {
+		return t.Sessions
+	}
+	dir, err := SessionRoot(ctx, "", t.Home, t.Getenv)
+	if err != nil {
+		t.logf("flagged-tick: session state dir unavailable: %v", err)
+		return nil
+	}
+	return NewSessionStore(dir)
+}
+
 // childLiveness maps a session id to whether its child process is still alive,
 // read once per tick from the wrapper's own session store.
 //
@@ -1326,19 +1344,24 @@ func endedSessions(rows []LedgerRow) map[string]struct{} {
 // admits a row. A registry-only session has already been proved live by the
 // registry, and a missing record proves nothing.
 //
-// A nil Sessions (a fixture that predates the field) yields an empty map, which
-// admits nothing; that is the conservative direction.
+// An unreadable store yields an empty map, which admits nothing: a failed read
+// must not be read as "every child is gone".
 func (t *FlaggedTick) childLiveness(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
-	if t.Sessions == nil {
+	store := t.sessionStore(ctx)
+	if store == nil {
 		return out
 	}
-	records, err := t.Sessions.List(ctx)
+	records, err := store.List(ctx)
 	if err != nil {
+		t.logf("flagged-tick: child table read failed, no row is provably gone: %v", err)
 		return out
 	}
 	for _, record := range records {
-		if record.ID == "" {
+		// A pid of 0 names no process. Treat the record as unknown rather than
+		// gone: admitting it would open a second session on a child that may
+		// simply not have written its pid yet.
+		if record.ID == "" || record.ChildPID <= 0 {
 			continue
 		}
 		out[record.ID] = pidAlive(record.ChildPID)
@@ -1426,14 +1449,9 @@ func recentlySpawned(rows []LedgerRow) map[string]time.Time {
 // the ledger cannot. A record whose child pid is gone is not a spawn to stay away
 // from, and a record with no pid check would suppress a row forever.
 func (t *FlaggedTick) mergeChildSpawnTimes(ctx context.Context, out map[string]time.Time) {
-	store := t.Sessions
+	store := t.sessionStore(ctx)
 	if store == nil {
-		dir, err := SessionRoot(ctx, "", t.Home, t.Getenv)
-		if err != nil {
-			t.logf("flagged-tick: session state dir unavailable, recently-spawned guard is ledger-only: %v", err)
-			return
-		}
-		store = NewSessionStore(dir)
+		return
 	}
 	records, err := store.List(ctx)
 	if err != nil {
