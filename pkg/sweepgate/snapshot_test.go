@@ -112,6 +112,37 @@ var _ = ginkgo.Describe("resolves the tracked set from a fixture vault", func() 
 		gomega.Expect(err).To(gomega.HaveOccurred())
 	})
 
+	// The page-type conjunct is the guard a topic page carries and a goal page does
+	// not. Without these two cases, removing the conjunct leaves every other test
+	// green: the ambiguity test above supplies `page_type: topic`, so the topic
+	// branch is still taken and the both-match refusal still fires. These are the
+	// only pins on the conjunct.
+	ginkgo.It("refuses a topic page that carries no page_type: topic", func() {
+		vault := ginkgo.GinkgoT().TempDir()
+		gomega.Expect(os.MkdirAll(filepath.Join(vault, "23 Topics"), 0o750)).To(gomega.Succeed())
+		topic := filepath.Join(vault, "23 Topics", "Untyped.md")
+		gomega.Expect(os.WriteFile(topic, []byte("---\nstatus: in_progress\n---\n"), 0o600)).
+			To(gomega.Succeed())
+		_, _, err := ResolveSubject(ctx, vault, "Untyped")
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("no subject page"))
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Untyped"))
+	})
+
+	// The positive half of the same guard: the identical page WITH the conjunct
+	// resolves as a topic. Without it the refusal above would also pass on a
+	// resolver that refused every topic page.
+	ginkgo.It("resolves a topic page that carries page_type: topic", func() {
+		vault := ginkgo.GinkgoT().TempDir()
+		gomega.Expect(os.MkdirAll(filepath.Join(vault, "23 Topics"), 0o750)).To(gomega.Succeed())
+		topic := filepath.Join(vault, "23 Topics", "Typed.md")
+		gomega.Expect(os.WriteFile(topic, []byte("---\npage_type: topic\n---\n\n## Goals\n"), 0o600)).
+			To(gomega.Succeed())
+		branch, _, err := ResolveSubject(ctx, vault, "Typed")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(branch).To(gomega.Equal("topic"))
+	})
+
 	ginkgo.It("reads the task mtime from the descriptor", func() {
 		task, ok, err := ReadTask(ctx, filepath.Join(fixtureVault(), "25 Tasks", "Next Task.md"))
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
