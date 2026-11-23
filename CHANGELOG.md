@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.63.4
 
 - fix: **the flagged tick no longer refuses a seibert-agent task it has just read as `missing-row`.** The row lister (`kindDirs`, `pkg/flagged_rows_vaultapi.go`) probes `25 Tasks`, `24 Tasks` and `tasks`, but the open path's `taskText` kept its own hand-written list of only `25 Tasks` and `24 Tasks`. The older vaults — `seibert-agent` among them — have no `25 Tasks` folder at all, so every flagged row from them reached the tick and was then refused `missing-row: no task page named "…" in vault "seibert-agent"` although the page sat in `tasks/`. `taskFolders` is now derived from `kindDirs` via `taskDirsFromKindDirs`, so the two cannot drift again, and a spec pins the three folders plus the equality of the two lists.
 
