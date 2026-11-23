@@ -989,7 +989,7 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 		// refusal tokens alone cannot distinguish the three states. The counts can.
 		result := FlaggedTickResult{
 			Considered: 3,
-			ProvenanceCounts: map[string]int{
+			ProvenanceCounts: map[Provenance]int{
 				ProvenanceOperator:   1,
 				ProvenanceAgent:      1,
 				ProvenanceUnrecorded: 1,

@@ -61,7 +61,7 @@ var _ = ginkgo.Describe("Refusals", func() {
 	})
 
 	ginkgo.It("names the three provenance classes", func() {
-		for actor, want := range map[string]string{
+		for actor, want := range map[string]Provenance{
 			"operator": ProvenanceOperator,
 			"legacy":   ProvenanceOperator,
 			"agent":    ProvenanceAgent,

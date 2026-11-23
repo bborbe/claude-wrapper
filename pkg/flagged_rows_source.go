@@ -50,7 +50,7 @@ type FlaggedRow struct {
 	// tick line can name all three states in one run: a refusal token marks only
 	// the refused rows, and an operator-set row is opened with no marker of its
 	// own. Empty when the source did not compute it (the exec source, a fixture).
-	Provenance string `json:"-"`
+	Provenance Provenance `json:"-"`
 }
 
 // Key is the row's identity in the log line and in the ledger join.

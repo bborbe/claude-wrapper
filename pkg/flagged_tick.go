@@ -181,7 +181,7 @@ type FlaggedTickResult struct {
 	// distinguishable in ONE line: a refusal token marks only the refused rows, and
 	// an operator-set row is opened with no provenance marker of its own. Rows whose
 	// source computed no class (the exec source, a fixture) are not counted.
-	ProvenanceCounts map[string]int
+	ProvenanceCounts map[Provenance]int
 }
 
 // liveCountSourceReporter is the narrow half of SpawnCaps the tick logs.
@@ -296,12 +296,12 @@ func formatCounts(entries []string) string {
 
 // formatProvenance renders the three provenance classes in a fixed order so the
 // line is stable across runs of the same tick. A class with no rows is omitted.
-func formatProvenance(counts map[string]int) string {
+func formatProvenance(counts map[Provenance]int) string {
 	if len(counts) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, 3)
-	for _, class := range []string{ProvenanceOperator, ProvenanceAgent, ProvenanceUnrecorded} {
+	for _, class := range AvailableProvenances {
 		if count := counts[class]; count > 0 {
 			parts = append(parts, fmt.Sprintf("%s:%d", class, count))
 		}
@@ -957,7 +957,7 @@ func countProvenance(result *FlaggedTickResult, rows []FlaggedRow) {
 			continue
 		}
 		if result.ProvenanceCounts == nil {
-			result.ProvenanceCounts = map[string]int{}
+			result.ProvenanceCounts = map[Provenance]int{}
 		}
 		result.ProvenanceCounts[row.Provenance]++
 	}

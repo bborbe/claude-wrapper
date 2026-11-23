@@ -28,12 +28,27 @@ var OpeningActors = []string{"operator", "legacy"}
 // refused forever, with no remedy visible anywhere in the tick line.
 var UnrecordedActors = []string{"", "unknown", "none"}
 
-// The three provenance classes the tick line reports.
+// Provenance is the closed set of provenance states a flagged row may carry.
+type Provenance string
+
+// Recognised Provenance values. AvailableProvenances mirrors this set.
 const (
-	ProvenanceOperator   = "operator"
-	ProvenanceAgent      = "agent"
-	ProvenanceUnrecorded = "unrecorded"
+	ProvenanceOperator   Provenance = "operator"
+	ProvenanceAgent      Provenance = "agent"
+	ProvenanceUnrecorded Provenance = "unrecorded"
 )
+
+// AvailableProvenances lists every Provenance value the tick reports.
+var AvailableProvenances = []Provenance{
+	ProvenanceOperator,
+	ProvenanceAgent,
+	ProvenanceUnrecorded,
+}
+
+// String returns the provenance as its wire value.
+func (p Provenance) String() string {
+	return string(p)
+}
 
 // RefusalProvenanceUnrecorded is the refusal token for a flag whose provenance was
 // never recorded. It is distinct from RefusalAgentSetFlag so the tick line can say
@@ -42,7 +57,7 @@ const RefusalProvenanceUnrecorded = "flag-provenance-unrecorded"
 
 // ProvenanceClass folds a raw `flag_set_by` into the three states the tick line
 // names. `legacy` is an operator row — it was dispositioned by the operator.
-func ProvenanceClass(setBy string) string {
+func ProvenanceClass(setBy string) Provenance {
 	value := strings.TrimSpace(setBy)
 	switch {
 	case slices.Contains(OpeningActors, value):
