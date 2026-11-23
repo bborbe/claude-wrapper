@@ -51,8 +51,10 @@ named no page). The `task` field carries the row's subject, so on a goal tab row
 title.
 `action` is `stamped` (the page had no `claude_session_id`, so the endpoint wrote it), `appended`
 (the page already carried a `claude_session_id` — this session's own child, or another session's —
-so the endpoint only appended to `metrics_sessions`) or `failed` (with `error` set; the child is
-already live, so a bind failure never fails the open).
+so the endpoint wrote nothing) or `failed` (with `error` set; the child is already live, so a bind
+failure never fails the open). On a **task** row `appended` also appends the session to
+`metrics_sessions`; a **goal** page has no metrics subcommand (`vault-cli goal` offers none), so a
+goal bind never appends one — it reads and, at most, stamps.
 
 **Goal tab rows bind.** A goal manager's page stamp used to depend entirely on its
 `/vault-cli:work-on-goal` start turn, and that turn may never run — measured 2026-11-23 20:51:49,
