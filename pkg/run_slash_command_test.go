@@ -65,12 +65,19 @@ var _ = ginkgo.Describe("RosterToolServer.runSlashCommand", func() {
 			gomega.Expect(err).To(gomega.HaveOccurred())
 			gomega.Expect(stderrors.Is(err, ErrSlashCommandNotAllowed)).To(gomega.BeTrue())
 			gomega.Expect(err.Error()).To(gomega.ContainSubstring("not allowlisted"))
+			// The refusal names the pattern, so a caller learns what is admitted
+			// rather than reading a list that is shorter than the admitted set.
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("^[a-z0-9][a-z0-9-]*$"))
 			gomega.Expect(supervisor.sent).To(gomega.BeEmpty())
 			gomega.Expect(tabs.texts).To(gomega.BeEmpty())
 		},
 		ginkgo.Entry("clear", "/clear"),
 		ginkgo.Entry("exit", "/exit"),
 		ginkgo.Entry("an argument appended to an allowed command", "/compact now"),
+		ginkgo.Entry("a reconnect with no server", "/mcp reconnect"),
+		ginkgo.Entry("a reconnect with a second argument", "/mcp reconnect tts --force"),
+		ginkgo.Entry("a reconnect with an uppercase name", "/mcp reconnect TTS"),
+		ginkgo.Entry("a reconnect with a shell separator", "/mcp reconnect tts; rm -rf /"),
 		ginkgo.Entry("plain text", "hello"),
 		ginkgo.Entry("empty", ""),
 	)
@@ -91,6 +98,7 @@ var _ = ginkgo.Describe("RosterToolServer.runSlashCommand", func() {
 		},
 		ginkgo.Entry("compact", "/compact"),
 		ginkgo.Entry("reload-plugins", "/reload-plugins"),
+		ginkgo.Entry("reconnect of a configured MCP server", "/mcp reconnect semantic-search"),
 	)
 
 	ginkgo.It("refuses a headless worker that is running a sequence, writing nothing", func() {

@@ -36,21 +36,48 @@ func outcomes(results []FleetCommandResult) map[string]FleetOutcome {
 	return byID
 }
 
-var _ = ginkgo.Describe("allowedSlashCommands", func() {
-	ginkgo.It("accepts /mcp reconnect tts and refuses every near miss", func() {
-		gomega.Expect(allowedSlashCommands.Contains("/mcp reconnect tts")).To(gomega.BeTrue())
-		// Exact match, no arguments: a prefix or an argument-bearing spelling is a
-		// different command and must stay refused.
-		for _, nearMiss := range []string{
-			"/mcp reconnect",
-			"/mcp reconnect other",
-			"/mcp reconnect tts --force",
-			"/mcp reconnect tts; rm -rf /",
-		} {
-			gomega.Expect(allowedSlashCommands.Contains(nearMiss)).
-				To(gomega.BeFalse(), "%q must not be allowlisted", nearMiss)
-		}
-	})
+var _ = ginkgo.Describe("isAllowedSlashCommand", func() {
+	ginkgo.DescribeTable("admits the fixed commands and every well-formed reconnect",
+		func(command string) {
+			gomega.Expect(isAllowedSlashCommand(command)).
+				To(gomega.BeTrue(), "%q must be allowlisted", command)
+		},
+		ginkgo.Entry("compact", "/compact"),
+		ginkgo.Entry("reload-plugins", "/reload-plugins"),
+		ginkgo.Entry("a reconnect of the shared tts server", "/mcp reconnect tts"),
+		ginkgo.Entry("a reconnect of a hyphenated server", "/mcp reconnect semantic-search"),
+		ginkgo.Entry(
+			"a reconnect of a doubly hyphenated server",
+			"/mcp reconnect semantic-search-brogrammers",
+		),
+		ginkgo.Entry("a one-character name", "/mcp reconnect a"),
+		ginkgo.Entry("a name starting with a digit", "/mcp reconnect 2fa"),
+	)
+
+	// The argument is a bare name token, so the line written into a pane can only
+	// ever be a reconnect of one configured server: no whitespace, no shell
+	// metacharacter, no second word.
+	ginkgo.DescribeTable("refuses every near miss",
+		func(command string) {
+			gomega.Expect(isAllowedSlashCommand(command)).
+				To(gomega.BeFalse(), "%q must not be allowlisted", command)
+		},
+		ginkgo.Entry("no server", "/mcp reconnect"),
+		ginkgo.Entry("a trailing space", "/mcp reconnect "),
+		ginkgo.Entry("a leading space", " /mcp reconnect tts"),
+		ginkgo.Entry("uppercase", "/mcp reconnect TTS"),
+		ginkgo.Entry("an underscore", "/mcp reconnect semantic_search"),
+		ginkgo.Entry("a path segment", "/mcp reconnect ../x"),
+		ginkgo.Entry("a slash", "/mcp reconnect tts/x"),
+		ginkgo.Entry("a second argument", "/mcp reconnect tts --force"),
+		ginkgo.Entry("a shell separator", "/mcp reconnect tts; rm -rf /"),
+		ginkgo.Entry("a trailing newline", "/mcp reconnect tts\necho pwned"),
+		ginkgo.Entry("clear", "/clear"),
+		ginkgo.Entry("exit", "/exit"),
+		ginkgo.Entry("an argument appended to a fixed command", "/compact now"),
+		ginkgo.Entry("plain text", "hello"),
+		ginkgo.Entry("empty", ""),
+	)
 })
 
 var _ = ginkgo.Describe("RunFleetCommand", func() {
@@ -179,7 +206,7 @@ var _ = ginkgo.Describe("RunFleetCommand", func() {
 		slash := &reloadSlash{}
 		_, err := RunFleetCommand(
 			ctx, reloadDeps(registry, &reloadRoster{}, slash, &reloadMarkers{}),
-			"/mcp reconnect other", nil,
+			"/clear", nil,
 		)
 		gomega.Expect(errors.Is(err, ErrSlashCommandNotAllowed)).To(gomega.BeTrue())
 		gomega.Expect(slash.calls).To(gomega.BeEmpty())
