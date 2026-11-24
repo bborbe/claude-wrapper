@@ -192,3 +192,50 @@ var _ = ginkgo.Describe("IdleReaperJob.reportLate", func() {
 		}))
 	})
 })
+
+// ⚠️ SC3(a): the `idle-close` kind must assert the ACT, not a rendered line.
+// A job that reports `closed` while calling nothing passes every line
+// assertion, and the reaper criterion exists to catch exactly that stub.
+// This spec goes RED if IdleReaperJob.stop stops calling the supervisor.
+var _ = ginkgo.Describe("IdleReaperJob closes", func() {
+	ginkgo.It("stops the session it closes, by id", func() {
+		age := 600
+		sup := &idleSupervisor{sessions: []Session{{
+			ID:                  "idle-1",
+			Mode:                SpawnModeHeadless,
+			State:               StateIdle,
+			LastEventAgeSeconds: &age,
+		}}}
+		job := &IdleReaperJob{Supervisor: sup, Floor: time.Second, Logf: func(string, ...any) {}}
+
+		result, err := job.Tick(context.Background())
+
+		gomega.Expect(err).To(gomega.Not(gomega.HaveOccurred()))
+		gomega.Expect(result.Closed).To(gomega.Equal([]string{"idle-1"}))
+		gomega.Expect(sup.stopped).To(gomega.Equal([]string{"idle-1"}),
+			"the act is the Stop call, not the closed line")
+	})
+})
+
+// idleSupervisor fakes only what Tick reads: List, Get (stillReapable) and Stop.
+type idleSupervisor struct {
+	Supervisor
+	sessions []Session
+	stopped  []string
+}
+
+func (s *idleSupervisor) List(context.Context) ([]Session, error) { return s.sessions, nil }
+
+func (s *idleSupervisor) Get(_ context.Context, id string) (*Session, error) {
+	for i := range s.sessions {
+		if s.sessions[i].ID == id {
+			return &s.sessions[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *idleSupervisor) Stop(_ context.Context, id string) error {
+	s.stopped = append(s.stopped, id)
+	return nil
+}
