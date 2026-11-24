@@ -110,7 +110,12 @@ func keepaliveOpener(surface *pkg.OpenSurface) pkg.KeepaliveOpener {
 }
 
 // keepaliveScript resolves a script under SupervisorScriptsDir.
-func keepaliveScript(name string) pkg.KeepaliveScriptRunner {
+//
+// A package VAR, not a func, so a fixture can substitute a runner and assert the
+// EXACT arguments a decide step hands a script — the only way to catch a wrong
+// argument (a vault NAME where the script wants a PATH) that still exits 0 and
+// prints a plausible verdict.
+var keepaliveScript = func(name string) pkg.KeepaliveScriptRunner {
 	return pkg.NewKeepaliveScriptRunner(pkg.SupervisorScriptsDir + "/" + name)
 }
 
@@ -194,7 +199,7 @@ func newKeepaliveProcedures(
 	return []pkg.KeepaliveProcedure{
 		&pkg.LapsedManagerProcedure{
 			Action:  "lapsed-topic-manager",
-			Decide:  newManagerDecide(topicLister, "topic"),
+			Decide:  newManagerDecide(topicLister, filtered, "topic"),
 			Claim:   claim,
 			Hold:    hold,
 			Act:     act,
@@ -211,7 +216,7 @@ func newKeepaliveProcedures(
 			Now:     now,
 		},
 		&pkg.DeadWorkerProcedure{
-			Decisions: newWorkerDecisions(taskLister),
+			Decisions: newWorkerDecisions(taskLister, filtered),
 			Claim:     claim,
 			Hold:      hold,
 			Act:       act,
@@ -316,8 +321,32 @@ func newPendingDrain(
 	}
 }
 
+// keepaliveVaultPath resolves a vault NAME — what the page refs carry, because
+// the open surface validates a row against the configured vault NAMES — to its
+// configured PATH.
+//
+// ⚠️ The keep-alive scripts (`topic-keepalive.py`, `worker-keepalive.py`) open the
+// vault DIRECTORY: each does `os.path.abspath(os.path.expanduser(--vault))`, so a
+// bare name resolves against the daemon's own cwd, the directory does not exist,
+// and every decision comes back `cannot-tell` — measured 2026-11-24: 364
+// `lapsed-topic-manager` and 363 `dead-worker` lines, every one `cannot-tell`, so
+// the tick had never acted on a manager or a worker. Passing the name where a
+// path is wanted fails silently, which is the whole defect class.
+//
+// A name that is not configured is returned unchanged rather than dropped: the
+// script then reports its own `cannot-tell`, which is visible, where an empty
+// argument would be a different failure the caller could not read.
+func keepaliveVaultPath(vaults []pkg.Vault, name string) string {
+	for _, vault := range vaults {
+		if vault.Name == name {
+			return vault.Path
+		}
+	}
+	return name
+}
+
 // newManagerDecide returns the first topic page's keepalive verdict.
-func newManagerDecide(lister *pkg.KeepaliveLister, branch string) func(context.Context) (pkg.LapsedManagerDecision, error) {
+func newManagerDecide(lister *pkg.KeepaliveLister, vaults []pkg.Vault, branch string) func(context.Context) (pkg.LapsedManagerDecision, error) {
 	return func(ctx context.Context) (pkg.LapsedManagerDecision, error) {
 		refs, err := lister.Select(ctx)
 		if err != nil {
@@ -327,7 +356,7 @@ func newManagerDecide(lister *pkg.KeepaliveLister, branch string) func(context.C
 			return pkg.LapsedManagerDecision{Verdict: "leave"}, nil
 		}
 		ref := refs[0]
-		out, _, runErr := keepaliveScript("topic-keepalive.py")(ctx, "--vault", ref.Vault, "--subject", ref.Name, "--branch", branch)
+		out, _, runErr := keepaliveScript("topic-keepalive.py")(ctx, "--vault", keepaliveVaultPath(vaults, ref.Vault), "--subject", ref.Name, "--branch", branch)
 		if runErr != nil {
 			return pkg.LapsedManagerDecision{}, runErr
 		}
@@ -360,7 +389,7 @@ func newTopiclessDecide(filtered []pkg.Vault) func(context.Context) (pkg.LapsedM
 }
 
 // newWorkerDecisions runs worker-keepalive.py per task page.
-func newWorkerDecisions(lister *pkg.KeepaliveLister) func(context.Context) ([]pkg.DeadWorkerDecision, error) {
+func newWorkerDecisions(lister *pkg.KeepaliveLister, vaults []pkg.Vault) func(context.Context) ([]pkg.DeadWorkerDecision, error) {
 	return func(ctx context.Context) ([]pkg.DeadWorkerDecision, error) {
 		refs, err := lister.Select(ctx)
 		if err != nil {
@@ -368,7 +397,7 @@ func newWorkerDecisions(lister *pkg.KeepaliveLister) func(context.Context) ([]pk
 		}
 		decisions := make([]pkg.DeadWorkerDecision, 0, len(refs))
 		for _, ref := range refs {
-			out, _, runErr := keepaliveScript("worker-keepalive.py")(ctx, "--vault", ref.Vault, "--task", ref.Name)
+			out, _, runErr := keepaliveScript("worker-keepalive.py")(ctx, "--vault", keepaliveVaultPath(vaults, ref.Vault), "--task", ref.Name)
 			if runErr != nil {
 				return nil, runErr
 			}
