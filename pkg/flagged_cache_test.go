@@ -236,12 +236,27 @@ var _ = ginkgo.Describe("flagged row served-set age", func() {
 })
 
 var _ = ginkgo.Describe("phase-locking the refresh read", func() {
-	ginkgo.It("sleeps to just before the next tick", func() {
-		gomega.Expect(refreshWait(DefaultFlaggedTickInterval)).
+	ginkgo.It("leads the tick by the last read's cost plus the grace", func() {
+		// A sub-second read leads by the grace alone.
+		gomega.Expect(refreshLead(0, DefaultFlaggedTickInterval)).To(gomega.Equal(serveGrace))
+		// A two-minute read leads by two minutes plus the grace, so it still
+		// finishes about the grace before the tick.
+		gomega.Expect(refreshLead(2*time.Minute, DefaultFlaggedTickInterval)).
+			To(gomega.Equal(2*time.Minute + serveGrace))
+	})
+
+	ginkgo.It("caps the lead at half the interval", func() {
+		gomega.Expect(refreshLead(20*time.Minute, DefaultFlaggedTickInterval)).
+			To(gomega.Equal(DefaultFlaggedTickInterval / 2))
+	})
+
+	ginkgo.It("sleeps so the next read starts lead-before-tick", func() {
+		lead := refreshLead(0, DefaultFlaggedTickInterval)
+		gomega.Expect(refreshWait(DefaultFlaggedTickInterval, lead)).
 			To(gomega.Equal(DefaultFlaggedTickInterval - serveGrace))
 	})
 
-	ginkgo.It("halves a short interval instead of going negative", func() {
-		gomega.Expect(refreshWait(40 * time.Second)).To(gomega.Equal(20 * time.Second))
+	ginkgo.It("never returns a negative wait", func() {
+		gomega.Expect(refreshWait(40*time.Second, 2*time.Minute)).To(gomega.Equal(time.Duration(0)))
 	})
 })

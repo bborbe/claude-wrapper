@@ -32,8 +32,13 @@ recent successful read. A failed read never discards the last good set; it costs
 freshness, not the tick.
 
 **The read is phase-locked to the tick.** It is started `serveGrace` (30
-seconds) before each tick, so the set a tick decides on was read shortly before
-it, not one interval earlier. Before 2026-11-24 the read and the tick shared one
+seconds) *plus the last read's own measured duration* before each tick, so a
+read of the observed cost finishes about the grace before the tick and the set a
+tick decides on was read shortly before it, not one interval earlier. The lead
+adapts because the predicate's cost has ranged from sub-second (vault-api) to
+18.8 minutes (the old subprocess probes); a fixed 30-second lead would land a
+slower read after the tick it was meant to feed. It is capped at half the
+interval. Before 2026-11-24 the read and the tick shared one
 period, and a row flagged just after a read waited for the next read *and* the
 tick after it — up to two intervals. Measured: a row flagged at 13:19:41 was
 absent from the 13:30:46 tick because the read behind it started at ~13:15:48.
