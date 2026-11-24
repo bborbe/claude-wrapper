@@ -48,8 +48,12 @@ const (
 	OutcomeSkipNotLive      = "skip:not-live"
 	OutcomeSkipNoPane       = "skip:no-pane"
 	OutcomeSkipOpenCard     = "skip:open-card"
-	OutcomeDryRun           = "dry-run"
-	OutcomeDelivered        = "delivered"
+	// OutcomeSkipUnanchored is a session no task, goal or topic names. The wake
+	// asks it to take the next unchecked subtask on its anchored task, and it has
+	// none, so the wake is unactionable by construction.
+	OutcomeSkipUnanchored = "skip:unanchored"
+	OutcomeDryRun         = "dry-run"
+	OutcomeDelivered      = "delivered"
 )
 
 // FleetPusherRow is one session's outcome in one tick.
@@ -108,6 +112,9 @@ type FleetPusher struct {
 	Tabs     TabClient
 	Cards    OpenCardReader
 	Subject  SubjectStateReader
+	// Anchors answers whether any page anchors a session. nil means "unanchored is
+	// not a skip reason", so a caller that wired none never skips on this ground.
+	Anchors  AnchorReader
 	Now      libtime.CurrentDateTimeGetter
 	Interval time.Duration
 	// HeartbeatPath is the file the watchdog reads. Empty disables the write.
@@ -202,10 +209,13 @@ func (p *FleetPusher) Tick(ctx context.Context) FleetPusherResult {
 	}
 
 	openCards, cardsReadable := p.openCards(ctx)
+	// One anchor read per tick, not one per session: three index reads per live
+	// session every interval is a vault walk this tick does not need.
+	anchored, anchorsKnown := p.anchoredSessions(ctx)
 
 	result := FleetPusherResult{Sessions: len(ids), Rows: make([]FleetPusherRow, 0, len(ids))}
 	for _, id := range ids {
-		row := p.rowFor(ctx, id, byID, panes, openCards, cardsReadable)
+		row := p.rowFor(ctx, id, byID, panes, openCards, cardsReadable, anchored, anchorsKnown)
 		result.Rows = append(result.Rows, row)
 		if row.Outcome == OutcomeDelivered {
 			result.Delivered++
@@ -253,6 +263,8 @@ func (p *FleetPusher) rowFor(
 	panes map[int]string,
 	openCards map[string]struct{},
 	cardsReadable bool,
+	anchored map[string]bool,
+	anchorsKnown bool,
 ) FleetPusherRow {
 	row := FleetPusherRow{SessionID: id}
 	entry, listed := byID[id]
@@ -286,12 +298,9 @@ func (p *FleetPusher) rowFor(
 		row.Outcome = OutcomeSkipSelf
 		return row
 	}
-	if !cardsReadable {
-		row.Outcome = OutcomeSkipOpenCard
-		return row
-	}
-	if _, carded := openCards[id]; carded {
-		row.Outcome = OutcomeSkipOpenCard
+	subjectState, skipped := p.preScreenSkip(ctx, id, openCards, cardsReadable, anchored, anchorsKnown)
+	if skipped != "" {
+		row.Outcome = skipped
 		return row
 	}
 
@@ -300,7 +309,6 @@ func (p *FleetPusher) rowFor(
 	if readErr == nil {
 		screen = &text
 	}
-	subjectState := p.subjectState(ctx, id)
 	verdict := PaneGuardVerdict(screen, false, subjectState)
 	if !IsWakeVerdict(verdict) {
 		row.Outcome = verdict
@@ -320,6 +328,42 @@ func (p *FleetPusher) rowFor(
 	return row
 }
 
+// preScreenSkip decides every skip that needs no screen read, and returns the
+// subject state for the guard that runs after one.
+//
+// The subject checks come first on purpose: a stood-down subject's reason must
+// never be masked by an open card, which is the outcome a probe looks for. The
+// anchor check comes after the cards because a card is the more actionable reason
+// for the operator.
+//
+// A session nothing anchors has no "next unchecked subtask" to take, so the wake
+// is unactionable by construction. An unreadable vault fails OPEN: one wasted turn
+// is cheaper than stranding every anchored session for the length of an outage,
+// and the wake text authorises nothing.
+func (p *FleetPusher) preScreenSkip(
+	ctx context.Context,
+	id string,
+	openCards map[string]struct{},
+	cardsReadable bool,
+	anchored map[string]bool,
+	anchorsKnown bool,
+) (subjectState string, outcome string) {
+	subjectState = p.subjectState(ctx, id)
+	if verdict, decided := subjectVerdict(subjectState); decided {
+		return subjectState, verdict
+	}
+	if !cardsReadable {
+		return subjectState, OutcomeSkipOpenCard
+	}
+	if _, carded := openCards[id]; carded {
+		return subjectState, OutcomeSkipOpenCard
+	}
+	if anchorsKnown && !anchored[id] {
+		return subjectState, OutcomeSkipUnanchored
+	}
+	return subjectState, ""
+}
+
 // subjectState reads the session's manager state, failing closed on a resolved
 // subject whose state cannot be read.
 func (p *FleetPusher) subjectState(ctx context.Context, id string) string {
@@ -334,6 +378,25 @@ func (p *FleetPusher) subjectState(ctx context.Context, id string) string {
 		return ""
 	}
 	return state
+}
+
+// anchoredSessions reads the tick's anchored set once.
+//
+// A nil reader, a read error and an empty index all report "unknown", which the
+// caller treats as anchored: the check is opt-in, and neither an unwired reader
+// nor a vault-api outage may silently skip every session. The empty case is caught
+// in the reader, which still has the row count; by here it is indistinguishable
+// from a real "nothing anchors anything".
+func (p *FleetPusher) anchoredSessions(ctx context.Context) (map[string]bool, bool) {
+	if p.Anchors == nil {
+		return nil, false
+	}
+	anchored, err := p.Anchors.AnchoredSessions(ctx)
+	if err != nil {
+		p.logf("job=fleet-pusher action=anchors outcome=failed error=%v", err)
+		return nil, false
+	}
+	return anchored, true
 }
 
 func (p *FleetPusher) message() string {

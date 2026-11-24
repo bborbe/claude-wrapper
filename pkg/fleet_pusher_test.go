@@ -108,6 +108,19 @@ func (f *fakeSubject) State(_ context.Context, id string) (string, bool, error) 
 	return state, ok, nil
 }
 
+// fakeAnchor is an AnchorReader serving a fixed anchored set.
+type fakeAnchor struct {
+	anchored map[string]bool
+	err      error
+}
+
+func (f *fakeAnchor) AnchoredSessions(context.Context) (map[string]bool, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.anchored, nil
+}
+
 func pusherFor(
 	registry SessionRegistry,
 	joiner PaneJoiner,
@@ -294,6 +307,96 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 			gomega.Expect(row.Outcome).To(gomega.ContainSubstring(sendErr.Error()))
 			gomega.Expect(result.Delivered).To(gomega.Equal(0))
 			gomega.Expect(result.Skipped).To(gomega.Equal(1))
+		})
+
+		ginkgo.Describe("retired and unanchored sessions", func() {
+			// SC1. The keeper refuses to restart a stood-down subject; the pusher must
+			// refuse to wake it, or the retirement is only half real.
+			ginkgo.It("skips a stood-down subject and names the stand-down", func() {
+				tabs := &fakeTabs{before: "❯ \n", after: "✻ Thinking… (3s\n❯ \n"}
+				pusher := pusherFor(
+					&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+					&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+				)
+				pusher.Subject = &fakeSubject{states: map[string]string{"s1": SubjectStateStopped}}
+				pusher.Send = true
+				result := pusher.Tick(context.Background())
+				row := result.Rows[0]
+				gomega.Expect(row.Outcome).To(gomega.Equal(VerdictSkipStopped))
+				gomega.Expect(row.Line()).To(gomega.ContainSubstring("outcome=skip:stopped"))
+				gomega.Expect(result.Delivered).To(gomega.Equal(0))
+				gomega.Expect(tabs.sent).To(gomega.BeEmpty())
+			})
+
+			// The reason must survive an open card: a probe that looks for skip:stopped
+			// would otherwise read skip:open-card and conclude the rule never fired.
+			ginkgo.It("reports the stand-down ahead of an open card", func() {
+				pusher := pusherFor(
+					&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+					&fakeJoiner{panes: map[int]string{1: "11"}}, &fakeTabs{before: "❯ \n"},
+					&fakeCards{ids: map[string]struct{}{"s1": {}}},
+				)
+				pusher.Subject = &fakeSubject{states: map[string]string{"s1": SubjectStateStopped}}
+				gomega.Expect(pusher.Tick(context.Background()).Rows[0].Outcome).
+					To(gomega.Equal(VerdictSkipStopped))
+			})
+
+			// SC4. The wake asks for "the next unchecked subtask on your anchored
+			// task"; a session nothing anchors cannot act on it.
+			ginkgo.It("skips a session nothing anchors", func() {
+				tabs := &fakeTabs{before: "❯ \n", after: "✻ Thinking… (3s\n❯ \n"}
+				pusher := pusherFor(
+					&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+					&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+				)
+				pusher.Anchors = &fakeAnchor{anchored: map[string]bool{"s1": false}}
+				pusher.Send = true
+				result := pusher.Tick(context.Background())
+				gomega.Expect(result.Rows[0].Outcome).To(gomega.Equal(OutcomeSkipUnanchored))
+				gomega.Expect(result.Delivered).To(gomega.Equal(0))
+				gomega.Expect(tabs.sent).To(gomega.BeEmpty())
+			})
+
+			// DoD4's positive control: without it, a build that skipped every session
+			// would satisfy SC1, SC2 and SC4 — all three are negative criteria.
+			ginkgo.It("still delivers to an anchored session", func() {
+				tabs := &fakeTabs{before: "❯ \n", after: "✻ Thinking… (3s\n❯ \n"}
+				pusher := pusherFor(
+					&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+					&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+				)
+				pusher.Anchors = &fakeAnchor{anchored: map[string]bool{"s1": true}}
+				pusher.Send = true
+				result := pusher.Tick(context.Background())
+				gomega.Expect(result.Rows[0].Outcome).To(gomega.Equal(OutcomeDelivered))
+				gomega.Expect(tabs.sent["11"]).To(gomega.BeNumerically(">", 0))
+			})
+
+			// A vault outage must not stop the fleet: the anchor check fails OPEN.
+			ginkgo.It("delivers when the anchor check cannot be read", func() {
+				tabs := &fakeTabs{before: "❯ \n", after: "✻ Thinking… (3s\n❯ \n"}
+				pusher := pusherFor(
+					&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+					&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+				)
+				pusher.Anchors = &fakeAnchor{err: errors.New("vault-api unavailable")}
+				pusher.Send = true
+				gomega.Expect(pusher.Tick(context.Background()).Rows[0].Outcome).
+					To(gomega.Equal(OutcomeDelivered))
+			})
+
+			// A caller that wired no anchor reader must keep waking: the check is
+			// opt-in, never an implicit skip-everything.
+			ginkgo.It("delivers when no anchor reader is wired", func() {
+				tabs := &fakeTabs{before: "❯ \n", after: "✻ Thinking… (3s\n❯ \n"}
+				pusher := pusherFor(
+					&fakeFleetRegistry{entries: []RegistryEntry{{SessionID: "s1", PID: 1}}},
+					&fakeJoiner{panes: map[int]string{1: "11"}}, tabs, &fakeCards{},
+				)
+				pusher.Send = true
+				gomega.Expect(pusher.Tick(context.Background()).Rows[0].Outcome).
+					To(gomega.Equal(OutcomeDelivered))
+			})
 		})
 
 		// The guard's wake:suggestion verdict must be deliverable. A long-idle pane

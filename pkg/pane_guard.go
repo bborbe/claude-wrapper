@@ -38,6 +38,12 @@ const (
 	VerdictSkipMachineWait = "skip:machine-wait"
 	// VerdictSkipSleeping is a subject that is date-gated asleep.
 	VerdictSkipSleeping = "skip:sleeping"
+	// VerdictSkipStopped is a subject the operator deliberately stood down.
+	//
+	// Distinct from skip:sleeping: a sleep is a dated gate that ends by itself,
+	// while a stand-down is a recorded retirement the keeper already refuses to
+	// restart. Waking it costs a turn on a session that has nothing to do.
+	VerdictSkipStopped = "skip:stopped"
 	// VerdictSkipStateUnreadable is a subject that resolved but whose state could
 	// not be read — the one place this guard fails closed.
 	VerdictSkipStateUnreadable = "skip:state-unreadable"
@@ -47,6 +53,11 @@ const (
 
 // SubjectStateSleeping is `manager-liveness.py --state`'s asleep value.
 const SubjectStateSleeping = "SLEEPING"
+
+// SubjectStateStopped is `manager-liveness.py --state`'s stood-down value: the
+// subject has a stand-down marker, so it was retired deliberately rather than
+// having lapsed.
+const SubjectStateStopped = "STOPPED"
 
 // SubjectStateUnreadable is "a subject resolved but its state could not be read".
 // Distinct from an empty string, which means no subject resolved at all.
@@ -142,6 +153,8 @@ func subjectVerdict(subjectState string) (string, bool) {
 	switch subjectState {
 	case SubjectStateSleeping:
 		return VerdictSkipSleeping, true
+	case SubjectStateStopped:
+		return VerdictSkipStopped, true
 	case SubjectStateUnreadable:
 		return VerdictSkipStateUnreadable, true
 	}
