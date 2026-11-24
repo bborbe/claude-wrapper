@@ -92,7 +92,36 @@ const (
 	// and a slow read is a liveness delay while a killed read is a tick that did
 	// nothing at all. The bound exists to abandon a hung read, never a slow one.
 	predicateTimeout = 25 * time.Minute
+
+	// serveGrace is how long before a tick the refresh read is started, so the
+	// set a tick serves was read shortly before it rather than at the previous
+	// tick. Without it the read and the tick share one period: a row flagged just
+	// after a read waits for the next read AND the tick after it — up to two
+	// intervals. Measured 2026-11-24: a row flagged at 13:19:41 was absent from
+	// the 13:30:46 tick because the read behind it started at ~13:15:48, and the
+	// next tick that saw it was 13:46:12.
+	//
+	// It is a margin, not the read's budget. A read slower than the grace lands
+	// after the tick, which then serves the previous set and reports its age
+	// (`rows_age=`) instead of refusing to tick.
+	serveGrace = 30 * time.Second
 )
+
+// servedSetMaxAge is the oldest row set a tick may serve before it says so: one
+// interval plus the grace the read is started inside.
+func servedSetMaxAge(interval time.Duration) time.Duration {
+	return interval + serveGrace
+}
+
+// refreshWait is how long the refresh loop sleeps after a read so the next read
+// finishes shortly before the next tick. It never returns a zero or negative
+// duration: an interval no longer than twice the grace halves instead.
+func refreshWait(interval time.Duration) time.Duration {
+	if interval <= 2*serveGrace {
+		return interval / 2
+	}
+	return interval - serveGrace
+}
 
 // The refusal and skip reasons, named so the log line is greppable and so a
 // test asserts on the same string the operator reads.
@@ -598,6 +627,10 @@ type flaggedRowCache struct {
 	// set is fresh — and stop saying it the moment a real read replaces it.
 	persistedAt time.Time
 	fromDisk    bool
+	// rowsAt is when the served rows were read (the read's start), and is what
+	// `rows_age=` reports and the served-set bound is checked against. A set
+	// loaded from disk carries the time it was written there.
+	rowsAt time.Time
 }
 
 // store records one read.
@@ -613,7 +646,7 @@ type flaggedRowCache struct {
 //
 // A failed FIRST read leaves set=false on purpose: there is no good row set yet, so
 // the tick keeps logging `skipped` rather than fabricating an empty one.
-func (c *flaggedRowCache) store(rows []FlaggedRow, err error, took time.Duration) {
+func (c *flaggedRowCache) store(rows []FlaggedRow, err error, took time.Duration, at time.Time) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.readFor = took
@@ -621,7 +654,7 @@ func (c *flaggedRowCache) store(rows []FlaggedRow, err error, took time.Duration
 		c.lastErr = err
 		return
 	}
-	c.rows, c.lastErr, c.set = rows, nil, true
+	c.rows, c.lastErr, c.set, c.rowsAt = rows, nil, true, at
 	c.fromDisk = false
 }
 
@@ -638,7 +671,7 @@ func (c *flaggedRowCache) seedFromDisk(rows []FlaggedRow, readAt time.Time) {
 	if c.set {
 		return
 	}
-	c.rows, c.persistedAt, c.fromDisk, c.set = rows, readAt, true, true
+	c.rows, c.persistedAt, c.fromDisk, c.set, c.rowsAt = rows, readAt, true, true, readAt
 }
 
 // persistedAge reports when the row set on disk was read, and whether the cache
@@ -660,6 +693,26 @@ func (c *flaggedRowCache) snapshot() (
 	return c.rows, c.readFor, c.set, c.lastErr
 }
 
+// servedAge reports how long ago the served row set was read. ok is false only
+// when no set has landed yet, so a tick that serves nothing does not report an
+// age it cannot know.
+func (c *flaggedRowCache) servedAge(now time.Time) (time.Duration, bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	if !c.set {
+		return 0, false
+	}
+	return now.Sub(c.rowsAt), true
+}
+
+// intervalOrDefault is the tick interval this daemon runs on.
+func (t *FlaggedTick) intervalOrDefault() time.Duration {
+	if t.Interval <= 0 {
+		return DefaultFlaggedTickInterval
+	}
+	return t.Interval
+}
+
 // Run ticks until the context ends.
 //
 // The first tick fires immediately rather than after one interval: a daemon that
@@ -667,10 +720,7 @@ func (c *flaggedRowCache) snapshot() (
 // waiting a full interval to do it is a liveness gap the restart itself created.
 // Until the first read returns the tick logs `skipped` rather than blocking.
 func (t *FlaggedTick) Run(ctx context.Context) error {
-	interval := t.Interval
-	if interval <= 0 {
-		interval = DefaultFlaggedTickInterval
-	}
+	interval := t.intervalOrDefault()
 	cache := &flaggedRowCache{}
 	stateDir := t.flaggedCacheDir(ctx)
 	t.seedCacheFromDisk(cache, stateDir, interval)
@@ -757,7 +807,7 @@ func (t *FlaggedTick) refreshLoop(
 		// Measure even a failed read: a kill at predicateTimeout is the worst case
 		// the cost measurement exists to catch, so dropping it would bias the p95
 		// down exactly on the slow reads.
-		cache.store(rows, err, t.now().Sub(started))
+		cache.store(rows, err, t.now().Sub(started), started)
 		if err == nil {
 			// Persist only a successful read, and treat a failed write as a lost
 			// optimisation rather than a tick failure: the in-process cache still
@@ -766,10 +816,13 @@ func (t *FlaggedTick) refreshLoop(
 				t.logf("flagged-tick cache save failed: %v", saveErr)
 			}
 		}
+		// Sleep to just before the NEXT tick rather than a full interval from this
+		// read: the read must finish before the tick that serves it, or a flag
+		// landing after it waits two intervals instead of one.
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(interval):
+		case <-time.After(refreshWait(interval)):
 		}
 	}
 }
@@ -811,7 +864,19 @@ func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
 	// this exists to catch, so reporting only successful reads would bias the p95
 	// down exactly where it matters. It is emitted on the tick line, not the detail
 	// line, so a grep for it counts ticks.
-	t.logf("%s read_duration=%s", result.Line(), readFor.Round(time.Second))
+	// rows_age= is the served set's age, not the read's cost: read_duration says
+	// how long the read took, rows_age says how old the data it produced is. A
+	// set older than the bound gets its own line, so "served a stale set" is
+	// greppable and countable rather than inferred from read_duration.
+	ageField := "unknown"
+	if age, aged := cache.servedAge(t.now()); aged {
+		ageField = age.Round(time.Second).String()
+		if maxAge := servedSetMaxAge(t.intervalOrDefault()); age > maxAge {
+			t.logf("flagged-tick stale rows: served set read %s ago, over the %s bound",
+				age.Truncate(time.Second), maxAge)
+		}
+	}
+	t.logf("%s read_duration=%s rows_age=%s", result.Line(), readFor.Round(time.Second), ageField)
 	// The detail line is logged separately so it carries its own timestamp: a
 	// newline embedded in one Printf would leave the second line unprefixed and
 	// harder to pair with the tick it belongs to.
