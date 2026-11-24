@@ -39,18 +39,30 @@ wrapper executes those rules. It does not re-decide them.
 | `path` | `headless` · `tab` · `none` |
 | `window_key`, `window_id` | role-map key and id; set only when `path` is `tab` |
 | `session_id`, `pane_id` | set when known |
-| `bind` | the endpoint's own task bind, or `null`; see below |
+| `bind` | the endpoint's own page bind — a task row or a goal tab row — or `null`; see below |
 | `reason`, `remedy` | set only when `branch` is `refused` |
 | `message` | free text: the refusal's detail, or a best-effort start-command note on an opened tab |
 
 A field that is not decided for a row (a row refused at the page read has no role yet) is the empty string; `window_id` is null unless the row opened a tab.
 
 `bind` is an object `{task, session_id, action}` — plus `error` when `action` is `failed` — or
-`null` when the row bound nothing (a tab row, a refused row, or an open that named no task).
-`action` is `stamped` (the task had no `claude_session_id`, so the endpoint wrote it), `appended`
-(the task already carried a `claude_session_id` — this session's own child, or another session's —
-so the endpoint only appended to `metrics_sessions`) or `failed` (with `error` set; the child is
-already live, so a bind failure never fails the open).
+`null` when the row bound nothing (a task tab row, a topic tab row, a refused row, or an open that
+named no page). The `task` field carries the row's subject, so on a goal tab row it is the goal's
+title.
+`action` is `stamped` (the page had no `claude_session_id`, so the endpoint wrote it), `appended`
+(the page already carried a `claude_session_id` — this session's own child, or another session's —
+so the endpoint wrote nothing) or `failed` (with `error` set; the child is already live, so a bind
+failure never fails the open). On a **task** row `appended` also appends the session to
+`metrics_sessions`; a **goal** page has no metrics subcommand (`vault-cli goal` offers none), so a
+goal bind never appends one — it reads and, at most, stamps.
+
+**Goal tab rows bind.** A goal manager's page stamp used to depend entirely on its
+`/vault-cli:work-on-goal` start turn, and that turn may never run — measured 2026-11-23 20:51:49,
+the start command was not sent (`the keystrokes reached the pty but the Enter did not take effect`)
+and the goal page kept no `claude_session_id` while its manager ran. The tab opener now writes the
+bind itself, **before** its start commands run, so a start command that never lands cannot change
+it. That ordering is why a fresh goal page reads `stamped` rather than `appended`: the endpoint's
+write lands first.
 
 ⚠️ **`appended` does not mean "someone else owned it".** The opening turn is sent inside the spawn,
 before the bind reads the owner, and that turn is `/vault-cli:work-on-task "<task>"` — which stamps
@@ -74,8 +86,10 @@ and is not new — `spawn_agent`'s resume path already produced it.
 Each verdict also writes one log line:
 
 ```
-open: row=<vault>/<kind>/<name> role=<r> mode=<m> branch=<b> path=<p> window=<id|none> reason=<reason|->
+open: row=<vault>/<kind>/<name> role=<r> mode=<m> branch=<b> path=<p> window=<id|none> reason=<reason|-> bind=<action>:<sid>
 ```
+
+`bind=<action>:<sid>` carries the endpoint's own page write and names the session it bound, so a tick-driven open leaves an artifact a reader can check without the verdict JSON. It is omitted entirely when the verdict's `bind` is null — a row that bound nothing must never read as a failed write.
 
 ## Response
 
