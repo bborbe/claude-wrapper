@@ -788,6 +788,7 @@ func startFleetFaces(
 		ledger,
 		now,
 		parked,
+		ownVault,
 		stateDir,
 	)
 
@@ -1331,6 +1332,7 @@ func startFlaggedTick(
 	ledger pkg.LedgerReader,
 	now libtime.CurrentDateTimeGetter,
 	parked pkg.ParkedHold,
+	ownVault pkg.DaemonVault,
 	stateDir string,
 ) {
 	if interval <= 0 {
@@ -1356,10 +1358,14 @@ func startFlaggedTick(
 		Caps:       caps,
 		Chain:      pkg.NewRegistryChainProbe(registry),
 		Ledger:     ledger,
-		Parked:     parked,
-		CacheDir:   stateDir,
-		Now:        now,
-		Interval:   interval,
+		// The same vault family the open executor refuses on, applied at row
+		// SELECTION: a foreign row is skipped here and never enters the open batch,
+		// so this daemon spends no attempt on a row only another daemon can serve.
+		OwnVault: ownVault,
+		Parked:   parked,
+		CacheDir: stateDir,
+		Now:      now,
+		Interval: interval,
 	}
 	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
 		tick.Idle = nudger

@@ -1792,6 +1792,65 @@ var _ = ginkgo.Describe("flagged tick opens through the open decision", func() {
 		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
 	})
 
+	// SC1 of "A Foreign-Vault Daemon Claims Rows It Must Refuse": a foreign row
+	// must be dropped at SELECTION. The row here is fully openable — a page, a
+	// role, a create branch — so only the vault family can stop it, and deleting
+	// the selection gate makes this spec open it (proved by mutation).
+	ginkgo.It("skips a foreign-vault row at selection and never opens it", func() {
+		writeOpenPage(f.dir, openTaskTestFolder, "Foreign Row", "role: agent")
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Foreign Row",
+			Role: RoleAgent, Mode: SpawnModeHeadless,
+			Liveness: "none", Branch: "create",
+		}
+		tick := newOpenTick([]FlaggedRow{row})
+		tick.OwnVault = DaemonVault{Name: "private-personal"}
+
+		result, err := tick.Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("line=%s\n", result.Line())
+		gomega.Expect(result.Opened).To(gomega.BeEmpty())
+		gomega.Expect(result.Skipped).
+			To(gomega.ConsistOf(row.Key() + ": " + reasonForeignVault))
+		gomega.Expect(result.Line()).To(gomega.ContainSubstring("skipped_by_reason=foreign-vault:1"))
+		gomega.Expect(result.Line()).NotTo(gomega.ContainSubstring("refused_by_reason=vault-mismatch"))
+		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
+		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("opens a row from its own vault family", func() {
+		writeOpenPage(f.dir, openTaskTestFolder, "Own Row", "role: agent")
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Own Row",
+			Role: RoleAgent, Mode: SpawnModeHeadless,
+			Liveness: "none", Branch: "create",
+		}
+		tick := newOpenTick([]FlaggedRow{row})
+		tick.OwnVault = DaemonVault{Name: "v1-satellite"}
+
+		result, err := tick.Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Opened).To(gomega.ConsistOf(row.Key()))
+		gomega.Expect(f.headless.requests).To(gomega.HaveLen(1))
+	})
+
+	ginkgo.It("leaves the gate off when the daemon named no vault", func() {
+		writeOpenPage(f.dir, openTaskTestFolder, "Ungated Row", "role: agent")
+		row := FlaggedRow{
+			Kind: "task", Vault: "v1", Name: "Ungated Row",
+			Role: RoleAgent, Mode: SpawnModeHeadless,
+			Liveness: "none", Branch: "create",
+		}
+
+		result, err := newOpenTick([]FlaggedRow{row}).Tick(ctx)
+
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.Opened).To(gomega.ConsistOf(row.Key()))
+		gomega.Expect(f.headless.requests).To(gomega.HaveLen(1))
+	})
+
 	ginkgo.It("carries the readiness first step on a task row", func() {
 		writeOpenPage(f.dir, openTaskTestFolder, "Ready", "role: agent")
 		row := FlaggedRow{
