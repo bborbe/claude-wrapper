@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.65.9
 
 - test: **the `drive-reap` reaper fixture asserts the ACT, not just the result kind.** The spec asserted `drv[0].Kind == "drive-reap"` and nothing else, so a `livenessReaper` that returned `{Kind: "drive-reap", Closed: true}` **without calling `Supervisor.Stop`** satisfied it and closed nothing — the same shape the no-kill row guards against on the restart path. It now asserts `sup.stopped == ["dead-worker"]`, and the manager reap runs first on the same supervisor and stops nothing, so that id can only come from the drive reap. Proved discriminating: deleting the `Stop` call in `livenessReaper.Reap` turns exactly two specs red — this one and `manager-reap closes a not-live child-table manager`. Change set: `pkg/keepalive_reaper_test.go`, `CHANGELOG.md`.
 
