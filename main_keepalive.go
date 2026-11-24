@@ -364,6 +364,19 @@ func newManagerDecide(lister *pkg.KeepaliveLister, vaults []pkg.Vault, branch st
 		if parseErr != nil {
 			return pkg.LapsedManagerDecision{}, parseErr
 		}
+		// ⚠️ ADVANCE, or this leg examines the same page for the life of the
+		// daemon. `Select` rotates from a persisted cursor, but `Advance` was
+		// never called from anywhere in production: the cursor file did not
+		// exist on 2026-11-24, so every tick loaded an EMPTY map and
+		// `RotatePages` started at index 0 again — measured 11:23, 11:38 and
+		// 11:53 all evaluating the same topic, one manager decision per tick
+		// for the whole fleet. Advancing on the evaluated page (whatever its
+		// verdict) is what makes the rotation real; a failure here is reported
+		// rather than swallowed, because a silently unadvanced cursor is the
+		// defect this call exists to remove.
+		if advanceErr := lister.Advance(ctx, map[string]string{ref.Vault: ref.Name}); advanceErr != nil {
+			return pkg.LapsedManagerDecision{}, advanceErr
+		}
 		return pkg.LapsedManagerDecision{Verdict: verdict, SessionID: ref.SessionID, Vault: ref.Vault, Name: ref.Name, Branch: branch}, nil
 	}
 }
@@ -396,6 +409,7 @@ func newWorkerDecisions(lister *pkg.KeepaliveLister, vaults []pkg.Vault) func(co
 			return nil, err
 		}
 		decisions := make([]pkg.DeadWorkerDecision, 0, len(refs))
+		lastEvaluated := make(map[string]string, len(refs))
 		for _, ref := range refs {
 			out, _, runErr := keepaliveScript("worker-keepalive.py")(ctx, "--vault", keepaliveVaultPath(vaults, ref.Vault), "--task", ref.Name)
 			if runErr != nil {
@@ -406,6 +420,14 @@ func newWorkerDecisions(lister *pkg.KeepaliveLister, vaults []pkg.Vault) func(co
 				return nil, parseErr
 			}
 			decisions = append(decisions, pkg.DeadWorkerDecision{Vault: ref.Vault, Task: ref.Name, SessionID: ref.SessionID, Verdict: verdict})
+			// The LAST page evaluated for this vault becomes its cursor, so the
+			// next tick starts after it. Without this the selection restarts at
+			// index 0 every tick and any page past the per-vault cap is never
+			// examined at all.
+			lastEvaluated[ref.Vault] = ref.Name
+		}
+		if advanceErr := lister.Advance(ctx, lastEvaluated); advanceErr != nil {
+			return nil, advanceErr
 		}
 		return decisions, nil
 	}
