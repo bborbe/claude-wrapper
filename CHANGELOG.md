@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.65.10
 
 - fix: **the keep-alive tick advances its rotation cursor, so it stops re-examining the same page forever.** `KeepaliveLister.Advance` existed and was called from **nowhere** in production: the cursor file did not exist on 2026-11-24, so every tick loaded an empty map and `RotatePages` started at index 0 again. Measured in `~/Library/Logs/claude-wrapper/stderr.log`: `action=lapsed-topic-manager` evaluated the **same** page at 11:23:11, 11:38:11 and 11:53:11 — one manager decision per tick for the whole fleet, and every page past the per-vault cap never examined at all. `newManagerDecide` now advances to the evaluated page (whatever its verdict) and `newWorkerDecisions` advances each vault to its last evaluated page; an `Advance` failure is returned rather than swallowed, because a silently unadvanced cursor is the defect. The fixture asserts the **Save** (`recordingCursor`), not that `Select` was called — a tick that never rotates passes the latter. Change set: `main_keepalive.go`, `main_keepalive_cursor_test.go`, `CHANGELOG.md`.
   ⚠️ **Known limit, filed separately:** `RotatePages` orders selected pages per vault, so `refs[0]` is always the FIRST vault's current page — the manager leg therefore evaluates only one vault's pages, however well its cursor rotates. Fixing that needs a round-robin across vaults, a larger change than this one.
