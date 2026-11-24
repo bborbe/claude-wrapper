@@ -1,0 +1,53 @@
+# Vault coverage — which vaults a daemon serves
+
+The flagged tick can only open a row whose vault a running daemon serves. The
+guard is **per vault family**: a daemon started with `-sweep-gate-vault` (or
+`-vault`) for one vault admits every vault sharing that prefix, and drops rows
+from another family at selection as `foreign-vault` (see `pkg/vault_guard.go`,
+`pkg/flagged_tick.go`).
+
+A vault in a family no daemon serves can never have a row opened, and the failure
+is silent: every daemon reports healthy while the row stays dark for the whole
+window.
+
+## The served set (recorded 2026-11-24)
+
+| Daemon | Named vault | Family served | Vaults covered |
+|---|---|---|---|
+| `de.bborbe.claude-wrapper` | `private-personal` | `private` | private-personal, private-boss, private-family, private-gaming, private-starcitizen, private-trading, private-agent |
+| `de.bborbe.claude-wrapper-brogrammers` | `seibert-brogrammers` | `seibert` | seibert-brogrammers, seibert-agent, seibert-personal, seibert-data |
+| `de.bborbe.claude-wrapper-soak` | — | — | not a serving daemon (runs `sample.sh once`) |
+
+The `assistant` family (assistant-data, assistant-personal, assistant-brogrammers)
+has no serving daemon. `assistant-data/24 Tasks` is empty and the other two have
+no task folder, so the gap is latent — but nothing fails if a flagged row appears.
+
+## The check
+
+```bash
+claude-wrapper -vault-coverage-check -served-vault-families=private,seibert
+```
+
+- exit `0` — every configured vault holding a flagged row is in a served family
+- exit `1` — at least one such vault is not; each is printed as
+  `UNSERVED vault=<name> family=<family> flagged_page=<path>`
+- exit `2` — the check could not run: no served families named, a named family
+  matches no configured vault (a typo would read as covered), the vault config
+  could not be read, or a folder/file in an unserved vault could not be read
+
+An empty `-served-vault-families` is refused rather than answered: a check told
+nothing would pass on every vault and read as evidence the coverage was verified.
+A served family that matches no configured vault is refused for the same reason.
+
+The check reads the same `flag:` predicate (`FlagSet`) and the same task/goal/topic
+folders the flagged tick uses, so a spelling it accepts cannot be one the tick
+refuses. An unreadable folder is an error, not "no flagged row".
+
+⚠️ It is **operator-run today** — no launchd job or precommit step invokes it yet.
+Wire it into a periodic job before treating its silence as a standing guarantee.
+
+## Adding a vault
+
+Add it to the table above and to the `-served-vault-families` value wherever the
+check runs. A vault in a new family needs a daemon started for that family, or the
+check will (correctly) fail the moment the vault holds a flagged row.
