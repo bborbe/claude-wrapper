@@ -886,6 +886,16 @@ func (t *FlaggedTick) classify(
 	// private daemon otherwise re-claims a `seibert-*` row on every one of the
 	// owning daemon's 15-minute intervals, and the row's whole dark period is
 	// spent in refused attempts.
+	//
+	// ⚠️ The comparison is NAME-ONLY, and that is a deliberate narrowing of what
+	// the open-time guard accepts. A FlaggedRow carries the vault's name and never
+	// its path, so this call passes an empty target path and `RefuseForeignVault`
+	// falls back to the family compare instead of its same-path allowance. A
+	// daemon whose own vault name resolves to a different family than the vault
+	// names its rows carry is therefore a misconfiguration that now opens nothing
+	// — which is the honest outcome, and visible as every row skipping
+	// `foreign-vault`. Both production daemons resolve a real configured name
+	// (`private-personal`, `seibert-brogrammers`), so the two agree.
 	if err := RefuseForeignVault(ctx, t.OwnVault, row.Vault, ""); err != nil {
 		return reasonForeignVault, rowSkipped, false
 	}

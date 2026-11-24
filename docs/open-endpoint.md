@@ -165,6 +165,14 @@ skip reason is deliberately NOT `vault-mismatch`: the two count in different fie
 "you asked me for something that is not mine". The open-time refusal stays as the backstop for
 `POST /api/1.0/open` and `open_rows`, which name a row explicitly.
 
+The selection-time compare is **name-only**, a deliberate narrowing: a flagged row carries the
+vault's name and never its path, so the tick's call passes an empty target path and
+`RefuseForeignVault` falls back to the family compare rather than its same-path allowance. A
+daemon whose own vault name resolves to a different family than the names its rows carry
+therefore opens nothing (every row skips `foreign-vault`) — the honest outcome for a
+misconfiguration, and a visible one. Both production daemons resolve a real configured name, so
+the two comparisons agree.
+
 The same guard sits on the headless spawn path (`spawn_agent` and `SpawnOpenHeadless`), which
 resolves the target vault from `vault` or `cwd` and refuses a family mismatch identically.
 
