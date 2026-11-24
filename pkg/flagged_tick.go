@@ -113,36 +113,17 @@ func servedSetMaxAge(interval time.Duration) time.Duration {
 	return interval + serveGrace
 }
 
-// refreshLead is how long before the next tick the next read is started: the
-// last read's own measured duration plus serveGrace, so a read of the observed
-// cost finishes about serveGrace before the tick.
+// nextRefreshStart is when the read after one that began at `prev` starts: exactly
+// one tick interval later.
 //
-// A fixed grace is not enough. The predicate's cost has ranged from sub-second
-// (vault-api) to 18.8 minutes (the old subprocess probes), and a lead shorter
-// than the read means the read lands after the tick it was meant to feed — the
-// tick then serves the previous set and says so via `rows_age=`. Deriving the
-// lead from the last read keeps the start re-locked to the tick every cycle
-// instead of assuming a cost.
-//
-// It is clamped to half the interval so a pathologically slow read cannot push
-// the next start past the tick it is aimed at.
-func refreshLead(last time.Duration, interval time.Duration) time.Duration {
-	lead := last + serveGrace
-	if half := interval / 2; lead > half {
-		return half
-	}
-	return lead
-}
-
-// refreshWait is how long the refresh loop sleeps after a read so the next read
-// starts refreshLead before the next tick. It never returns a negative
-// duration.
-func refreshWait(interval, lead time.Duration) time.Duration {
-	wait := interval - lead
-	if wait < 0 {
-		return 0
-	}
-	return wait
+// The read's own cost is deliberately NOT an input. A schedule derived from the
+// cost drifts: subtracting the duration from the wait makes start-to-start
+// `interval - lead`, so the read fires more often than the tick and slides out
+// of phase. Start-to-start is the tick interval, full stop; a read slower than
+// `serveGrace` lands after its tick, which then serves the previous set and
+// reports its age via `rows_age=` rather than being hidden.
+func nextRefreshStart(prev time.Time, interval time.Duration) time.Time {
+	return prev.Add(interval)
 }
 
 // The refusal and skip reasons, named so the log line is greppable and so a
@@ -820,17 +801,31 @@ func (t *FlaggedTick) seedCacheFromDisk(
 }
 
 // refreshLoop keeps the row set warm, off the tick's critical path.
+//
+// The first read starts serveGrace before the SECOND tick, not at the first: a
+// read that starts on a tick finishes after it, so that tick would serve a set
+// read a moment earlier and the next tick would serve one read before it — the
+// two-interval wait this phase-lock exists to remove. Every later read starts
+// one interval after the previous one, so start-to-start is exactly the tick
+// interval and the read begins serveGrace before the tick it feeds.
 func (t *FlaggedTick) refreshLoop(
 	ctx context.Context, cache *flaggedRowCache, interval time.Duration, stateDir string,
 ) {
+	next := t.now().Add(interval - serveGrace)
 	for {
+		if wait := next.Sub(t.now()); wait > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+		}
 		started := t.now()
 		rows, err := t.readRows(ctx)
 		// Measure even a failed read: a kill at predicateTimeout is the worst case
 		// the cost measurement exists to catch, so dropping it would bias the p95
 		// down exactly on the slow reads.
-		took := t.now().Sub(started)
-		cache.store(rows, err, took, started)
+		cache.store(rows, err, t.now().Sub(started), started)
 		if err == nil {
 			// Persist only a successful read, and treat a failed write as a lost
 			// optimisation rather than a tick failure: the in-process cache still
@@ -839,25 +834,10 @@ func (t *FlaggedTick) refreshLoop(
 				t.logf("flagged-tick cache save failed: %v", saveErr)
 			}
 		}
-		// Sleep so the NEXT read starts refreshLead before the next tick: the read
-		// must finish before the tick that serves it, or a flag landing after it
-		// waits two intervals instead of one.
-		//
-		// The wait is measured from the read's START, not from its completion. A
-		// fixed sleep after the read would add the read's own duration to the
-		// cadence every cycle, and after enough cycles the read would start after
-		// the tick it is meant to feed. Subtracting `took` makes the start cadence
-		// exactly `interval - lead`, independent of the read's cost.
-		lead := refreshLead(took, interval)
-		wait := refreshWait(interval, lead) - took
-		if wait < 0 {
-			wait = 0
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
+		// One interval after this read started, never one interval after it
+		// finished: the latter adds the read's cost to the cadence every cycle and
+		// slides the read out of phase with the tick.
+		next = nextRefreshStart(started, interval)
 	}
 }
 

@@ -31,14 +31,14 @@ The read is expensive (measured 18.8 minutes wall against 75 seconds of CPU on
 recent successful read. A failed read never discards the last good set; it costs
 freshness, not the tick.
 
-**The read is phase-locked to the tick.** It is started `serveGrace` (30
-seconds) *plus the last read's own measured duration* before each tick, so a
-read of the observed cost finishes about the grace before the tick and the set a
-tick decides on was read shortly before it, not one interval earlier. The lead
-adapts because the predicate's cost has ranged from sub-second (vault-api) to
-18.8 minutes (the old subprocess probes); a fixed 30-second lead would land a
-slower read after the tick it was meant to feed. It is capped at half the
-interval. Before 2026-11-24 the read and the tick shared one
+**The read is phase-locked to the tick.** The first read starts `serveGrace`
+(30 seconds) before the second tick, and every later read starts exactly one
+tick interval after the previous one — so start-to-start is the tick interval
+whatever a read costs, and each read begins `serveGrace` before the tick it
+feeds. The read's own cost is deliberately **not** part of the schedule:
+deriving the cadence from it makes the read fire more often than the tick and
+slide out of phase. A read slower than `serveGrace` lands after its tick, which
+then serves the previous set and reports the age via `rows_age=`. Before 2026-11-24 the read and the tick shared one
 period, and a row flagged just after a read waited for the next read *and* the
 tick after it — up to two intervals. Measured: a row flagged at 13:19:41 was
 absent from the 13:30:46 tick because the read behind it started at ~13:15:48.

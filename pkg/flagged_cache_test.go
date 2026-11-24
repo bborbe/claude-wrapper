@@ -236,27 +236,37 @@ var _ = ginkgo.Describe("flagged row served-set age", func() {
 })
 
 var _ = ginkgo.Describe("phase-locking the refresh read", func() {
-	ginkgo.It("leads the tick by the last read's cost plus the grace", func() {
-		// A sub-second read leads by the grace alone.
-		gomega.Expect(refreshLead(0, DefaultFlaggedTickInterval)).To(gomega.Equal(serveGrace))
-		// A two-minute read leads by two minutes plus the grace, so it still
-		// finishes about the grace before the tick.
-		gomega.Expect(refreshLead(2*time.Minute, DefaultFlaggedTickInterval)).
-			To(gomega.Equal(2*time.Minute + serveGrace))
+	start := time.Date(2026, 11, 24, 13, 0, 0, 0, time.UTC)
+
+	ginkgo.It("keeps start-to-start at one interval whatever each read costs", func() {
+		// The read's cost must not enter the schedule: a cadence derived from it
+		// drifts, and the read fires more often than the tick. Measured 2026-11-24
+		// on the previous shape: start-to-start was interval - lead, so the read
+		// ran 1.2x-2.9x more often on an expensive predicate.
+		costs := []time.Duration{
+			0,
+			400 * time.Millisecond,
+			2 * time.Minute,
+			18*time.Minute + 48*time.Second,
+			90 * time.Second,
+		}
+		at := start
+		for i, cost := range costs {
+			next := nextRefreshStart(at, DefaultFlaggedTickInterval)
+			gomega.Expect(next.Sub(at)).To(
+				gomega.Equal(DefaultFlaggedTickInterval),
+				"read %d (cost %s) moved the start by %s, not %s",
+				i, cost, next.Sub(at), DefaultFlaggedTickInterval,
+			)
+			at = next
+		}
 	})
 
-	ginkgo.It("caps the lead at half the interval", func() {
-		gomega.Expect(refreshLead(20*time.Minute, DefaultFlaggedTickInterval)).
-			To(gomega.Equal(DefaultFlaggedTickInterval / 2))
-	})
-
-	ginkgo.It("sleeps so the next read starts lead-before-tick", func() {
-		lead := refreshLead(0, DefaultFlaggedTickInterval)
-		gomega.Expect(refreshWait(DefaultFlaggedTickInterval, lead)).
-			To(gomega.Equal(DefaultFlaggedTickInterval - serveGrace))
-	})
-
-	ginkgo.It("never returns a negative wait", func() {
-		gomega.Expect(refreshWait(40*time.Second, 2*time.Minute)).To(gomega.Equal(time.Duration(0)))
+	ginkgo.It("starts the first read inside the first interval, not at the first tick", func() {
+		// A read started at the first tick finishes after it, so that tick serves
+		// a set read a moment earlier and the next tick serves one read before it.
+		first := start.Add(DefaultFlaggedTickInterval - serveGrace)
+		gomega.Expect(first.After(start)).To(gomega.BeTrue())
+		gomega.Expect(first.Before(start.Add(DefaultFlaggedTickInterval))).To(gomega.BeTrue())
 	})
 })
