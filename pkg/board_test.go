@@ -55,7 +55,11 @@ type fakeBoardStore struct {
 	attempts  []string
 	openCalls int
 	answers   []string
-	answerErr error
+	// answerRequestIDs records the request id each close named, so a spec can
+	// assert the card was stamped with the gate it settled rather than only that
+	// something answered it.
+	answerRequestIDs []string
+	answerErr        error
 }
 
 func (s *fakeBoardStore) Open(ctx context.Context) ([]BoardItem, error) {
@@ -69,8 +73,10 @@ func (s *fakeBoardStore) Answer(
 	answeredBy string,
 	resolvedBy string,
 	decision string,
+	requestID string,
 ) error {
 	s.answers = append(s.answers, itemID+"="+answeredBy+":"+decision)
+	s.answerRequestIDs = append(s.answerRequestIDs, requestID)
 	return s.answerErr
 }
 
@@ -306,34 +312,48 @@ var _ = ginkgo.Describe("board delivery", func() {
 })
 
 var _ = ginkgo.Describe("answer close", func() {
-	ginkgo.Describe("openPermissionCards", func() {
-		ginkgo.It("returns the one open permission card for a producer", func() {
-			cards := openPermissionCards([]BoardItem{
-				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
-				{ItemID: "b", State: "answered", AnswerMechanism: "permission", ProducerID: "s1"},
-			}, "s1")
+	ginkgo.Describe("settledCards", func() {
+		park := &Question{
+			RequestID:   "req-1",
+			Kind:        AnswerKindPermission,
+			ToolName:    "Bash",
+			RequestedAt: time.Now(),
+		}
+
+		ginkgo.It("returns the one open permission card for the answered park", func() {
+			cards := settledCards([]BoardItem{
+				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1", RequestID: "req-1"},
+				{ItemID: "b", State: "answered", AnswerMechanism: "permission", ProducerID: "s1", RequestID: "req-1"},
+			}, "s1", park)
 			gomega.Expect(cards).To(gomega.HaveLen(1))
 			gomega.Expect(cards[0].ItemID).To(gomega.Equal("a"))
 		})
 
-		ginkgo.It("returns both when the producer holds two open permission cards", func() {
-			cards := openPermissionCards([]BoardItem{
-				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
-				{ItemID: "b", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
-			}, "s1")
+		ginkgo.It("returns both when two open cards match the park", func() {
+			cards := settledCards([]BoardItem{
+				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1", RequestID: "req-1"},
+				{ItemID: "b", State: "open", AnswerMechanism: "permission", ProducerID: "s1", RequestID: "req-1"},
+			}, "s1", park)
 			gomega.Expect(cards).To(gomega.HaveLen(2))
 		})
 
 		ginkgo.It("ignores another producer's card", func() {
-			cards := openPermissionCards([]BoardItem{
-				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s2"},
-			}, "s1")
+			cards := settledCards([]BoardItem{
+				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s2", RequestID: "req-1"},
+			}, "s1", park)
+			gomega.Expect(cards).To(gomega.BeEmpty())
+		})
+
+		ginkgo.It("ignores a card that names a different request", func() {
+			cards := settledCards([]BoardItem{
+				{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1", RequestID: "other"},
+			}, "s1", park)
 			gomega.Expect(cards).To(gomega.BeEmpty())
 		})
 	})
 
 	ginkgo.Describe("boardStore.Answer", func() {
-		ginkgo.It("posts answered_by, resolved_by and decision", func() {
+		ginkgo.It("posts answered_by, resolved_by, decision and the settled request id", func() {
 			var got map[string]string
 			var path string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -345,8 +365,30 @@ var _ = ginkgo.Describe("answer close", func() {
 			defer server.Close()
 
 			store := NewBoardStore(server.URL, nil)
-			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow")).To(gomega.Succeed())
+			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow", "req-1")).To(gomega.Succeed())
 			gomega.Expect(path).To(gomega.Equal("/api/1.0/attention/item-1/answer"))
+			gomega.Expect(got).To(gomega.Equal(map[string]string{
+				"answered_by": "supervisor",
+				"resolved_by": "mgr-1",
+				"decision":    "allow",
+				"request_id":  "req-1",
+			}))
+		})
+
+		// A card class with no park behind it omits the field rather than sending
+		// an empty string: the store's own "no gate recorded" state is the absent
+		// key, and "" would read as a recorded value.
+		ginkgo.It("omits request_id when no gate is named", func() {
+			var got map[string]string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&got)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
+
+			store := NewBoardStore(server.URL, nil)
+			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow", "")).To(gomega.Succeed())
 			gomega.Expect(got).To(gomega.Equal(map[string]string{
 				"answered_by": "supervisor",
 				"resolved_by": "mgr-1",
@@ -361,7 +403,7 @@ var _ = ginkgo.Describe("answer close", func() {
 			defer server.Close()
 
 			store := NewBoardStore(server.URL, nil)
-			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow")).To(gomega.Succeed())
+			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow", "")).To(gomega.Succeed())
 		})
 
 		ginkgo.It("fails on a server error", func() {
@@ -371,31 +413,109 @@ var _ = ginkgo.Describe("answer close", func() {
 			defer server.Close()
 
 			store := NewBoardStore(server.URL, nil)
-			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow")).ToNot(gomega.Succeed())
+			gomega.Expect(store.Answer(context.Background(), "item-1", "supervisor", "mgr-1", "allow", "")).ToNot(gomega.Succeed())
 		})
 	})
 })
 
 var _ = ginkgo.Describe("closeSettledCard", func() {
-	ginkgo.It("closes the producer's sole open permission card", func() {
+	// settledPark is the park the answer settles: the current one, so a legacy
+	// card raised for it is not stale.
+	settledPark := func() *Question {
+		return &Question{
+			RequestID:   "req-1",
+			Kind:        AnswerKindPermission,
+			ToolName:    "Bash",
+			RequestedAt: time.Now(),
+		}
+	}
+	// freshCard is a legacy hook card — no request id — raised for settledPark.
+	freshCard := func(itemID string) BoardItem {
+		return BoardItem{
+			ItemID:          itemID,
+			State:           "open",
+			AnswerMechanism: "permission",
+			ProducerID:      "s1",
+			Payload:         "Bash: ls -la",
+			CreatedAt:       time.Now().Format(time.RFC3339),
+		}
+	}
+
+	ginkgo.It("closes the card that names the answered request id", func() {
 		store := &fakeBoardStore{items: []BoardItem{
-			{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
+			{
+				ItemID: "a", State: "open", AnswerMechanism: "permission",
+				ProducerID: "s1", RequestID: "req-1",
+			},
 		}}
 		server := &RosterToolServer{Board: store}
 
-		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+		server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.Equal([]string{"a=supervisor:allow"}))
+		gomega.Expect(store.answerRequestIDs).To(gomega.Equal([]string{"req-1"}))
+	})
+
+	// SC2 — the defect this task exists to fix. The producer holds ONE open
+	// operator-tier card, and a benign answer for a DIFFERENT request arrives. A
+	// close keyed on the producer alone stamped that card answered; it must stay
+	// open. The single-card fixture is what discriminates: with two open cards the
+	// pre-change code already skipped, so a two-card fixture would pass untouched.
+	ginkgo.It("leaves an operator-tier card open when a different request is answered", func() {
+		store := &fakeBoardStore{items: []BoardItem{
+			{
+				ItemID: "operator-card", State: "open", AnswerMechanism: "permission",
+				ProducerID: "s1", RequestID: "operator-req",
+			},
+		}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
+	})
+
+	// The live shape: the hook's permission card carries no request id, so the join
+	// is the park it was raised for. A card that predates this park belongs to an
+	// earlier gate and must not be stamped by this answer.
+	ginkgo.It("leaves a stale card open even when it names the same tool", func() {
+		stale := freshCard("old")
+		stale.CreatedAt = time.Now().Add(-time.Hour).Format(time.RFC3339)
+		store := &fakeBoardStore{items: []BoardItem{stale}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("leaves a card open when it names a different tool", func() {
+		card := freshCard("write-card")
+		card.Payload = "Write: /etc/hosts"
+		store := &fakeBoardStore{items: []BoardItem{card}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("closes a fresh legacy card raised for this park", func() {
+		store := &fakeBoardStore{items: []BoardItem{freshCard("a")}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
 
 		gomega.Expect(store.answers).To(gomega.Equal([]string{"a=supervisor:allow"}))
 	})
 
-	ginkgo.It("closes nothing when the producer holds two open permission cards", func() {
-		store := &fakeBoardStore{items: []BoardItem{
-			{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
-			{ItemID: "b", State: "open", AnswerMechanism: "permission", ProducerID: "s1"},
-		}}
+	ginkgo.It("closes nothing when two cards match the park", func() {
+		first := freshCard("a")
+		second := freshCard("b")
+		store := &fakeBoardStore{items: []BoardItem{first, second}}
 		server := &RosterToolServer{Board: store}
 
-		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+		server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
 
 		gomega.Expect(store.answers).To(gomega.BeEmpty())
 	})
@@ -403,28 +523,37 @@ var _ = ginkgo.Describe("closeSettledCard", func() {
 	ginkgo.It("does nothing when the board is not wired", func() {
 		server := &RosterToolServer{}
 		gomega.Expect(func() {
-			server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+			server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
 		}).ToNot(gomega.Panic())
+	})
+
+	ginkgo.It("does nothing when the answer settles no park", func() {
+		store := &fakeBoardStore{items: []BoardItem{freshCard("a")}}
+		server := &RosterToolServer{Board: store}
+
+		server.closeSettledCard(context.Background(), "s1", nil, "allow", "mgr-1")
+
+		gomega.Expect(store.answers).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("does nothing when the store cannot be read", func() {
 		store := &fakeBoardStore{openErr: stderrors.New("store down")}
 		server := &RosterToolServer{Board: store}
 
-		server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+		server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
 
 		gomega.Expect(store.answers).To(gomega.BeEmpty())
 	})
 
 	ginkgo.It("swallows an answer error without panicking", func() {
 		store := &fakeBoardStore{
-			items:     []BoardItem{{ItemID: "a", State: "open", AnswerMechanism: "permission", ProducerID: "s1"}},
+			items:     []BoardItem{freshCard("a")},
 			answerErr: stderrors.New("store rejected"),
 		}
 		server := &RosterToolServer{Board: store}
 
 		gomega.Expect(func() {
-			server.closeSettledCard(context.Background(), "s1", "allow", "mgr-1")
+			server.closeSettledCard(context.Background(), "s1", settledPark(), "allow", "mgr-1")
 		}).ToNot(gomega.Panic())
 	})
 })

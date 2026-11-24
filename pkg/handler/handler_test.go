@@ -61,6 +61,11 @@ type fakeSupervisor struct {
 	// a model change reports what the session said AFTER the run rather than
 	// what it said before it.
 	getModels []string
+	// question is the park Get reports, so a spec can drive the answer route's
+	// tier gate. Nil is the unparked case every other spec relies on.
+	question *pkg.Question
+	// answerCalls counts Answer calls, so a spec can prove a refusal preceded it.
+	answerCalls int
 }
 
 // popModel returns the next queued model, or "" once the queue is empty.
@@ -91,10 +96,13 @@ func (f *fakeSupervisor) Get(_ context.Context, id string) (*pkg.Session, error)
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	return &pkg.Session{ID: id, State: pkg.StateIdle, Model: f.popModel()}, nil
+	return &pkg.Session{
+		ID: id, State: pkg.StateIdle, Model: f.popModel(), Question: f.question,
+	}, nil
 }
 
 func (f *fakeSupervisor) Answer(_ context.Context, _, _ string, _ pkg.Answer) error {
+	f.answerCalls++
 	return f.getErr
 }
 

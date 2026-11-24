@@ -65,8 +65,9 @@ func Session(
 	supervisor pkg.Supervisor,
 	sequencer pkg.Sequencer,
 	locks *pkg.SessionLocks,
+	guards ...pkg.PermissionTierGuard,
 ) http.Handler {
-	routes := Routes(supervisor, sequencer, locks)
+	routes := Routes(supervisor, sequencer, locks, guards...)
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
 		rest := strings.TrimPrefix(req.URL.Path, "/api/1.0/sessions/")
@@ -689,6 +690,7 @@ func handleAnswer(
 	resp http.ResponseWriter,
 	req *http.Request,
 	supervisor pkg.Supervisor,
+	guard pkg.PermissionTierGuard,
 	id string,
 ) {
 	// Every session route clears the server's WriteTimeout before doing any work.
@@ -708,6 +710,25 @@ func handleAnswer(
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		writeError(resp, http.StatusBadRequest, errors.Wrapf(ctx, err, "decode body failed"))
 		return
+	}
+	// ⚠️ The tier gate sits on the ANSWER, before Supervisor.Answer settles the
+	// park, and it applies on THIS route exactly as it does on answer_permission
+	// and answer_pending. Before this check a manager that reached the park over
+	// REST settled an operator-tier gate with no tier check at all.
+	//
+	// A session this process cannot read is left to the answer path, which reports
+	// the missing request; a park it CAN read is classified, and a refusal stops the
+	// answer before it lands.
+	if body.RequestID != "" {
+		if session, getErr := supervisor.Get(ctx, id); getErr == nil && session != nil {
+			if refusal := pkg.RefuseSettledAnswer(
+				ctx, guard, session.Question, body.RequestID, id,
+			); refusal != "" {
+				writeError(resp, http.StatusForbidden,
+					errors.Errorf(ctx, "answer refused: %s", refusal))
+				return
+			}
+		}
 	}
 	if err := supervisor.Answer(ctx, id, body.RequestID, answerFrom(body)); err != nil {
 		writeError(resp, statusFor(err), err)

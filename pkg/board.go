@@ -57,6 +57,19 @@ type BoardItem struct {
 	Answer     *BoardAnswer  `json:"answer"`
 	ResolvedBy string        `json:"resolved_by"`
 	CreatedAt  string        `json:"created_at"`
+	// RequestID is the permission gate this card's answer settled — the wrapper's
+	// own request id, not the store's item id. The store stamps it on the
+	// open → answered transition from the answer body, so it is absent while the
+	// card is open and on every card answered before the route carried it.
+	//
+	// It is the per-request identity `closeSettledCard` matches on: a producer
+	// answers many parks over its life, so a card joined only by producer can be
+	// stamped by an answer for a different gate.
+	RequestID string `json:"request_id,omitempty"`
+	// Payload is the card's operator-facing content. A permission card's payload
+	// is `<ToolName>: <detail>`, which is what lets a card that carries no
+	// RequestID still be joined to the park it was raised for.
+	Payload string `json:"payload"`
 }
 
 // BoardAnswer is one answer unit inside an item.
@@ -84,7 +97,12 @@ type BoardStore interface {
 	// is how a manager's `answer_permission` closes the card that otherwise stays
 	// open for a gate already settled. `decision` is `allow`/`deny` for a
 	// permission card and empty for other kinds.
-	Answer(ctx context.Context, itemID string, answeredBy string, resolvedBy string, decision string) error
+	//
+	// requestID names the permission gate the answer settled. It is optional — an
+	// empty value is the pre-route call every other card class still makes — and
+	// when present the store stamps it on the item, so the card records WHICH gate
+	// it settled rather than only that someone answered it.
+	Answer(ctx context.Context, itemID string, answeredBy string, resolvedBy string, decision string, requestID string) error
 }
 
 // NewBoardStore creates a store client.
@@ -154,6 +172,7 @@ func (s *boardStore) Answer(
 	answeredBy string,
 	resolvedBy string,
 	decision string,
+	requestID string,
 ) error {
 	body := map[string]string{"answered_by": answeredBy}
 	if resolvedBy != "" {
@@ -161,6 +180,12 @@ func (s *boardStore) Answer(
 	}
 	if decision != "" {
 		body["decision"] = decision
+	}
+	// The gate this answer settled. Sent only when known: an absent field is the
+	// store's own "no gate recorded" state, which is what every card class that
+	// has no permission park behind it leaves it as.
+	if requestID != "" {
+		body["request_id"] = requestID
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

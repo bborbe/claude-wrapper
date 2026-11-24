@@ -634,7 +634,16 @@ func newMux(
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", handler.Healthz())
 	mux.Handle("/api/1.0/sessions", handler.Sessions(supervisor))
-	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer, locks))
+	// The permission-tier guard every answer surface applies. Wired once and handed
+	// to both faces, so `answer_pending` and the REST `answer` route classify a park
+	// exactly as `answer_permission` does and neither can settle an operator-tier
+	// gate. A daemon that failed to wire it would refuse permission answers rather
+	// than let an unclassified gate through.
+	tierGuard := pkg.PermissionTierGuard{
+		Scripts:              pkg.ExecScriptRunner{},
+		PermissionTierScript: expandHome(pkg.DefaultPermissionTierScript),
+	}
+	mux.Handle("/api/1.0/sessions/", handler.Session(supervisor, sequencer, locks, tierGuard))
 	// The ONE authoritative liveness verdict per session. Python scripts and the
 	// LLM fleet round each derived liveness separately and disagreed; this route
 	// is the single source, and it is binary — live or not-live, never unknown.
@@ -655,6 +664,7 @@ func newMux(
 		Sequencer:   sequencer,
 		Locks:       locks,
 		TurnTimeout: mcpTurnTimeout,
+		TierGuard:   tierGuard,
 	})
 	// Loopback-gated: a heap profile carries session content and
 	// /debug/pprof/cmdline publishes this process's argv, so the debug surface
