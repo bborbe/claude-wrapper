@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.65.6
 
 - fix: **a flagged row whose session ended is admitted to the open batch instead of being skipped forever.** `decision()` skipped every row whose liveness was not `ABSENT`, labelling a terminal-ledger row `not-absent-dead` and never acting on it, so such a row could never open. The ledger's terminal status alone is not proof of death — a session whose turn closed keeps running and reads `LIVE` until it exits (measured 2026-11-23: `done` at 19:14:19, pid alive until 20:13:30) — so the row is now admitted only when the ledger says ended **and** the session store holds a child record whose `ChildPID` is dead (`pidAlive`, `pkg/session_registry.go`). The child-liveness map is read once per tick. `UNKNOWN` (a failed liveness read) and a missing child record both stay skipped. Change set: `pkg/flagged_tick.go`, `pkg/flagged_decision_provably_gone_test.go`, `CHANGELOG.md`.
 
