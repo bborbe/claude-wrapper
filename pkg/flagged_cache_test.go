@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -122,7 +123,7 @@ var _ = ginkgo.Describe("flagged row cache persistence", func() {
 			tick := &FlaggedTick{Now: fixedNow(readAt.Add(5 * time.Minute)), Logf: func(string, ...any) {}}
 			fresh := []FlaggedRow{rowWith("agent", "headless", "Fresh")}
 			cache := &flaggedRowCache{}
-			cache.store(fresh, nil, time.Second)
+			cache.store(fresh, nil, time.Second, readAt)
 
 			tick.seedCacheFromDisk(cache, dir, DefaultFlaggedTickInterval)
 
@@ -159,5 +160,113 @@ var _ = ginkgo.Describe("flagged row cache persistence", func() {
 			gomega.Expect(lines).NotTo(gomega.ContainElement(
 				gomega.ContainSubstring("flagged-tick skipped")))
 		})
+	})
+})
+
+var _ = ginkgo.Describe("flagged row served-set age", func() {
+	// The defect this covers (2026-11-24): a row flagged just after a refresh
+	// read was absent from the tick that followed, and only reached a tick after
+	// the NEXT read — up to two intervals. read_duration could not show it,
+	// because it measures the read's cost, not the served set's age.
+	base := time.Date(2026, 11, 24, 13, 18, 17, 0, time.UTC)
+
+	ginkgo.It("reports rows_age= and tracks two different read ages", func() {
+		cache := &flaggedRowCache{}
+		cache.store([]FlaggedRow{}, nil, 0, base)
+
+		var first []string
+		firstTick := &FlaggedTick{
+			Reopener: &recordingReopener{},
+			Now:      fixedNow(base.Add(10 * time.Second)),
+			Logf: func(format string, args ...any) {
+				first = append(first, fmt.Sprintf(format, args...))
+			},
+		}
+		firstTick.tickAndLog(context.Background(), cache)
+
+		var second []string
+		secondTick := &FlaggedTick{
+			Reopener: &recordingReopener{},
+			Now:      fixedNow(base.Add(5 * time.Minute)),
+			Logf: func(format string, args ...any) {
+				second = append(second, fmt.Sprintf(format, args...))
+			},
+		}
+		secondTick.tickAndLog(context.Background(), cache)
+
+		// Two different ages, so a hardcoded constant cannot satisfy this.
+		gomega.Expect(strings.Join(first, "\n")).To(gomega.ContainSubstring("rows_age=10s"))
+		gomega.Expect(strings.Join(second, "\n")).To(gomega.ContainSubstring("rows_age=5m0s"))
+	})
+
+	ginkgo.It("names a served set older than the bound", func() {
+		cache := &flaggedRowCache{}
+		cache.store([]FlaggedRow{}, nil, 0, base)
+		var lines []string
+		tick := &FlaggedTick{
+			Reopener: &recordingReopener{},
+			Interval: DefaultFlaggedTickInterval,
+			Now:      fixedNow(base.Add(DefaultFlaggedTickInterval + 2*time.Minute)),
+			Logf: func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			},
+		}
+
+		tick.tickAndLog(context.Background(), cache)
+
+		gomega.Expect(strings.Join(lines, "\n")).To(gomega.ContainSubstring("stale rows"))
+	})
+
+	ginkgo.It("does not name a served set inside the bound", func() {
+		cache := &flaggedRowCache{}
+		cache.store([]FlaggedRow{}, nil, 0, base)
+		var lines []string
+		tick := &FlaggedTick{
+			Reopener: &recordingReopener{},
+			Now:      fixedNow(base.Add(serveGrace)),
+			Logf: func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			},
+		}
+
+		tick.tickAndLog(context.Background(), cache)
+
+		gomega.Expect(strings.Join(lines, "\n")).NotTo(gomega.ContainSubstring("stale rows"))
+	})
+})
+
+var _ = ginkgo.Describe("phase-locking the refresh read", func() {
+	start := time.Date(2026, 11, 24, 13, 0, 0, 0, time.UTC)
+
+	ginkgo.It("keeps start-to-start at one interval whatever each read costs", func() {
+		// The read's cost must not enter the schedule: a cadence derived from it
+		// drifts, and the read fires more often than the tick. Measured 2026-11-24
+		// on the previous shape: start-to-start was interval - lead, so the read
+		// ran 1.2x-2.9x more often on an expensive predicate.
+		costs := []time.Duration{
+			0,
+			400 * time.Millisecond,
+			2 * time.Minute,
+			18*time.Minute + 48*time.Second,
+			90 * time.Second,
+		}
+		at := start
+		for i, cost := range costs {
+			next := nextRefreshStart(at, DefaultFlaggedTickInterval)
+			gomega.Expect(next.Sub(at)).To(
+				gomega.Equal(DefaultFlaggedTickInterval),
+				"read %d (cost %s) moved the start by %s, not %s",
+				i, cost, next.Sub(at), DefaultFlaggedTickInterval,
+			)
+			at = next
+		}
+	})
+
+	ginkgo.It("starts the first read inside the first interval, not at the first tick", func() {
+		// A read started at the first tick finishes after it, so that tick serves
+		// a set read a moment earlier and the next tick serves one read before it.
+		first := start.Add(DefaultFlaggedTickInterval - serveGrace)
+		gomega.Expect(first.After(start)).To(gomega.BeTrue())
+		gomega.Expect(first.Before(start.Add(DefaultFlaggedTickInterval))).To(gomega.BeTrue())
 	})
 })

@@ -1083,8 +1083,8 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 
 		ginkgo.It("keeps the last good row set when a read fails", func() {
 			cache := &flaggedRowCache{}
-			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 0)
-			cache.store(nil, killed, 0)
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 0, time.Now())
+			cache.store(nil, killed, 0, time.Now())
 
 			rows, _, ok, stale := cache.snapshot()
 			ginkgo.GinkgoWriter.Printf("rows=%d stale=%v ok=%t\n", len(rows), stale, ok)
@@ -1102,10 +1102,10 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 			}
 			cache := &flaggedRowCache{}
 
-			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 0)
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 0, time.Now())
 			tick.tickAndLog(context.Background(), cache)
 
-			cache.store(nil, killed, 0)
+			cache.store(nil, killed, 0, time.Now())
 			before := len(lines)
 			tick.tickAndLog(context.Background(), cache)
 			after := strings.Join(lines[before:], "\n")
@@ -1127,7 +1127,7 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 				lines = append(lines, fmt.Sprintf(format, args...))
 			}
 			cache := &flaggedRowCache{}
-			cache.store(nil, killed, 0)
+			cache.store(nil, killed, 0, time.Now())
 			tick.tickAndLog(context.Background(), cache)
 
 			// No good row set yet, so there is nothing to serve: `skipped` stays
@@ -1146,7 +1146,7 @@ var _ = ginkgo.Describe("flagged tick log line", func() {
 				lines = append(lines, fmt.Sprintf(format, args...))
 			}
 			cache := &flaggedRowCache{}
-			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 95*time.Second)
+			cache.store([]FlaggedRow{rowWith("agent", "headless", "good-row")}, nil, 95*time.Second, time.Now())
 			tick.tickAndLog(context.Background(), cache)
 
 			joined := strings.Join(lines, "\n")

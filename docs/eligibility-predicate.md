@@ -20,8 +20,45 @@ error.
 | Read cost | one list request + one record read per eligible task |
 | Ownership | vault-api owns the index; claude-wrapper owns the rules |
 
-The tick bounds the read with a timeout (`predicateTimeout`, 10 minutes) and
+The tick bounds the read with a timeout (`predicateTimeout`, 25 minutes) and
 abandons a hung read rather than stalling every later tick.
+
+## The row cache and the served-set bound
+
+The read is expensive (measured 18.8 minutes wall against 75 seconds of CPU on
+2026-11-12), so it does not run on the tick's critical path. `refreshLoop`
+(`pkg/flagged_tick.go`) keeps the row set warm and the tick serves the most
+recent successful read. A failed read never discards the last good set; it costs
+freshness, not the tick.
+
+**The read is phase-locked to the tick.** The first read starts `serveGrace`
+(30 seconds) before the second tick, and every later read starts exactly one
+tick interval after the previous one — so start-to-start is the tick interval
+whatever a read costs, and each read begins `serveGrace` before the tick it
+feeds. The read's own cost is deliberately **not** part of the schedule:
+deriving the cadence from it makes the read fire more often than the tick and
+slide out of phase. A read slower than `serveGrace` lands after its tick, which
+then serves the previous set and reports the age via `rows_age=`. Before 2026-11-24 the read and the tick shared one
+period, and a row flagged just after a read waited for the next read *and* the
+tick after it — up to two intervals. Measured: a row flagged at 13:19:41 was
+absent from the 13:30:46 tick because the read behind it started at ~13:15:48.
+
+**Maximum served-set age: one tick interval plus `serveGrace`**
+(`servedSetMaxAge`). The bound is a **log threshold, not a refusal**: a read
+slower than the grace still lands late, and the tick serves the previous set
+rather than skipping. The tick line therefore carries `rows_age=`, and a set
+older than the bound also logs:
+
+```
+flagged-tick stale rows: served set read <age> ago, over the <bound> bound
+```
+
+`rows_age=` is the served set's age; `read_duration=` is how long the read took.
+They answer different questions — a fast read can still serve an old set.
+
+A row set persisted by a previous process is separately bounded by
+`cacheMaxAge` (`2 × ReadTimeout + interval`, 65 minutes today) when it is
+restored at start; an older one is refused and logged as `cache refused`.
 
 ## Fields the tick consumes
 
