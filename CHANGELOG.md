@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.66.0
 
 - feat: **a `-vault-coverage-check` that fails when a configured vault holding flagged rows sits in a family no daemon serves.** The guard is per-FAMILY, so a vault outside every served family can never have a row opened — silently, while every daemon reports healthy. Measured 2026-11-24: the `assistant` family has no serving daemon and holds no tasks, so the gap is latent; nothing would have failed when one appeared. The check compares `vault-cli config list` against the recorded `-served-vault-families` set and prints each offending vault with one flagged task as evidence; an empty served set is refused rather than answered, since a check told nothing would pass on every vault. `docs/vault-coverage.md` records the served set.
 
