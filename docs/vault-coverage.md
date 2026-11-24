@@ -30,12 +30,21 @@ claude-wrapper -vault-coverage-check -served-vault-families=private,seibert
 
 - exit `0` — every configured vault holding a flagged row is in a served family
 - exit `1` — at least one such vault is not; each is printed as
-  `UNSERVED vault=<name> family=<family> flagged_task=<path>`
-- exit `2` — the check could not run (no served families named, or the vault
-  config could not be read)
+  `UNSERVED vault=<name> family=<family> flagged_page=<path>`
+- exit `2` — the check could not run: no served families named, a named family
+  matches no configured vault (a typo would read as covered), the vault config
+  could not be read, or a folder/file in an unserved vault could not be read
 
 An empty `-served-vault-families` is refused rather than answered: a check told
 nothing would pass on every vault and read as evidence the coverage was verified.
+A served family that matches no configured vault is refused for the same reason.
+
+The check reads the same `flag:` predicate (`FlagSet`) and the same task/goal/topic
+folders the flagged tick uses, so a spelling it accepts cannot be one the tick
+refuses. An unreadable folder is an error, not "no flagged row".
+
+⚠️ It is **operator-run today** — no launchd job or precommit step invokes it yet.
+Wire it into a periodic job before treating its silence as a standing guarantee.
 
 ## Adding a vault
 

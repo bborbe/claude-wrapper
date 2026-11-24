@@ -1099,7 +1099,12 @@ func runFleetPusherOnce(
 // The served set is the operator's recorded deployment fact (--served-vault-families),
 // not something this process can derive: each daemon knows only its own family.
 func runVaultCoverageCheck(ctx context.Context, servedCSV string) int {
-	served := splitSessions(servedCSV)
+	served := make([]string, 0)
+	for _, part := range strings.Split(servedCSV, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			served = append(served, trimmed)
+		}
+	}
 	if len(served) == 0 {
 		fmt.Fprintln(os.Stderr,
 			"vault-coverage-check: --served-vault-families is required, e.g. 'private,seibert'")
@@ -1117,8 +1122,8 @@ func runVaultCoverageCheck(ctx context.Context, servedCSV string) int {
 	}
 	for _, issue := range issues {
 		fmt.Fprintf(os.Stderr,
-			"UNSERVED vault=%s family=%s flagged_task=%q — no daemon serves family %q\n",
-			issue.Vault, issue.Family, issue.Task, issue.Family)
+			"UNSERVED vault=%s family=%s flagged_page=%q — no daemon serves family %q\n",
+			issue.Vault, issue.Family, issue.Page, issue.Family)
 	}
 	if len(issues) > 0 {
 		fmt.Fprintf(os.Stderr,
