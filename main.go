@@ -59,6 +59,21 @@ var daemonVaultFlag = flag.String("vault", "",
 	"vault name this daemon serves; a spawn or open into another vault family is refused. "+
 		"Defaults to the vault of -sweep-gate-vault")
 
+// vaultCoverageCheckFlag runs the vault-coverage check and exits, so the check
+// runs beside the live daemons without binding a listener.
+var vaultCoverageCheckFlag = flag.Bool("vault-coverage-check", false,
+	"report configured vaults whose flagged rows sit in a family no daemon serves, then exit")
+
+// servedVaultFamiliesFlag is the recorded set of vault families a daemon serves.
+//
+// It is the "one readable place" the coverage check reads: the families a live
+// daemon answers for, comma-separated (e.g. "private,seibert"). It is a flag
+// rather than a derived read because a single daemon knows only its own family —
+// the union is a deployment fact, not something any one process can observe.
+var servedVaultFamiliesFlag = flag.String("served-vault-families", "",
+	"comma-separated vault families a running daemon serves, e.g. 'private,seibert'; "+
+		"required by -vault-coverage-check")
+
 func registerFlaggedTickFlags() flaggedTickFlags {
 	return flaggedTickFlags{
 		interval: flag.Duration("flagged-tick-interval", pkg.DefaultFlaggedTickInterval,
@@ -1050,6 +1065,9 @@ func runOneShotMode(
 ) bool {
 	maybeRunReloadFleetCLI(ctx, reloadFleetConfig)
 	maybeRunFleetSlashCommandCLI(ctx, fleetSlashCommandConfig)
+	if *vaultCoverageCheckFlag {
+		os.Exit(runVaultCoverageCheck(ctx, *servedVaultFamiliesFlag))
+	}
 	if *sweepGate.mode != "" {
 		os.Exit(runSweepGateMode(ctx, sweepGateConfigFromFlags(sweepGate), *sweepGate.mode))
 	}
@@ -1072,6 +1090,51 @@ func runFleetPusherOnce(
 	pusher.Sessions = splitSessions(sessions)
 	pusher.Send = send
 	pusher.TickOnce(ctx)
+}
+
+// runVaultCoverageCheck reports every configured vault whose flagged rows no
+// daemon serves. It returns the exit code: 0 when every such vault is served, 1
+// when one is not, 2 when the check itself could not run.
+//
+// The served set is the operator's recorded deployment fact (--served-vault-families),
+// not something this process can derive: each daemon knows only its own family.
+func runVaultCoverageCheck(ctx context.Context, servedCSV string) int {
+	served := make([]string, 0)
+	for _, part := range strings.Split(servedCSV, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			served = append(served, trimmed)
+		}
+	}
+	if len(served) == 0 {
+		fmt.Fprintln(os.Stderr,
+			"vault-coverage-check: --served-vault-families is required, e.g. 'private,seibert'")
+		return 2
+	}
+	vaults, err := pkg.NewVaultCLILister().List(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vault-coverage-check: read vault config failed: %v\n", err)
+		return 2
+	}
+	issues, err := pkg.CheckVaultCoverage(ctx, vaults, served)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vault-coverage-check: %v\n", err)
+		return 2
+	}
+	for _, issue := range issues {
+		fmt.Fprintf(os.Stderr,
+			"UNSERVED vault=%s family=%s flagged_page=%q — no daemon serves family %q\n",
+			issue.Vault, issue.Family, issue.Page, issue.Family)
+	}
+	if len(issues) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"vault-coverage-check: FAIL — %d configured vault(s) hold flagged rows in an "+
+				"unserved family\n", len(issues))
+		return 1
+	}
+	fmt.Fprintf(os.Stdout,
+		"vault-coverage-check: OK — served families %s cover every configured vault holding "+
+			"flagged rows\n", strings.Join(served, ","))
+	return 0
 }
 
 // runReloadFleetCLI POSTs a fleet reload to the running daemon and prints the

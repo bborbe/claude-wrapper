@@ -21,6 +21,7 @@ import (
 type Vault struct {
 	Name            string `json:"name"`
 	Path            string `json:"path"`
+	TasksDir        string `json:"tasks_dir"`
 	ClaudeScript    string `json:"claude_script"`
 	WorkerLauncher  string `json:"worker_launcher"`
 	ManagerLauncher string `json:"manager_launcher"`
