@@ -819,10 +819,19 @@ func (t *FlaggedTick) refreshLoop(
 		// Sleep to just before the NEXT tick rather than a full interval from this
 		// read: the read must finish before the tick that serves it, or a flag
 		// landing after it waits two intervals instead of one.
+		//
+		// The wait is measured from the read's START, not from its completion. A
+		// fixed sleep after the read would add the read's own duration to the
+		// cadence every cycle, and after a few hundred cycles the read would start
+		// after the tick it is meant to feed.
+		wait := refreshWait(interval) - t.now().Sub(started)
+		if wait < 0 {
+			wait = 0
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(refreshWait(interval)):
+		case <-time.After(wait):
 		}
 	}
 }
