@@ -18,14 +18,14 @@ import (
 )
 
 // SubjectStateReader answers the one subject question the wake guard consumes:
-// is this session's manager date-gated asleep?
+// has this session's manager been retired — stood down, or date-gated asleep?
 //
 // It is a NARROW port of `manager-liveness.py --state`, not the whole classifier:
-// the guard acts only on `SLEEPING` (refuse the wake) and `UNREADABLE` (fail
-// closed), so those are the two states this reader can produce. Every other
-// manager state — OK, STALE, STOPPED, UNARMED — is reported as the empty string,
-// which the guard treats exactly as it treats a session with no subject record:
-// the screen decides.
+// the guard acts only on `STOPPED` (a deliberate retirement), `SLEEPING` (refuse
+// the wake) and `UNREADABLE` (fail closed), so those are the three states this
+// reader can produce. Every other manager state — OK, STALE, UNARMED — is reported
+// as the empty string, which the guard treats exactly as it treats a session with
+// no subject record: the screen decides.
 type SubjectStateReader interface {
 	// State returns the subject state for a session.
 	//
@@ -95,6 +95,16 @@ func (r *subjectStateReader) State(
 	if err != nil {
 		return "", true, err
 	}
+	// A stand-down outranks a sleep. It is a deliberate retirement the keeper
+	// already refuses to restart, so the pusher must not wake it — reading the
+	// marker here keeps both mechanisms on one source instead of two.
+	marker, err := readStoppedMarker(ctx, stateDir, baseSlug(record.Subject))
+	if err != nil {
+		return "", true, err
+	}
+	if marker != "" {
+		return SubjectStateStopped, true, nil
+	}
 	until, ok, err := readSleepMarker(ctx, stateDir, slug)
 	if err != nil {
 		return "", true, err
@@ -127,6 +137,29 @@ func (r *subjectStateReader) stateDirectory(ctx context.Context) (string, error)
 		return "", errors.Wrapf(ctx, err, "resolve home dir failed")
 	}
 	return filepath.Join(home, ".claude", "state", "sweep-gate"), nil
+}
+
+// readStoppedMarker returns the stand-down marker that retires subjectSlug, or ""
+// when none exists.
+//
+// It probes the same four tiers `FileSubjectReader.Stopped` does, because a
+// manager can have been stood down as a goal, a topic, a fleet subject or a task.
+//
+// ⚠️ Only "not found" means "not stood down". Any other stat error is returned so
+// the caller's guard fails CLOSED: swallowing it would read as "still live" and
+// wake a subject the operator deliberately retired.
+func readStoppedMarker(ctx context.Context, stateDir, subjectSlug string) (string, error) {
+	for _, branch := range standdownBranches {
+		name := branch + "--" + subjectSlug + ".stopped"
+		_, err := os.Stat(filepath.Join(stateDir, name))
+		if err == nil {
+			return name, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", errors.Wrapf(ctx, err, "stat stand-down marker %s", name)
+		}
+	}
+	return "", nil
 }
 
 // readSleepMarker returns the instant a `<slug>.sleeping` marker names.

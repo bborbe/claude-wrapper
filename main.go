@@ -1015,11 +1015,14 @@ func newFleetPusher(
 	now libtime.CurrentDateTimeGetter,
 ) *pkg.FleetPusher {
 	return &pkg.FleetPusher{
-		Registry:    registry,
-		Joiner:      pkg.NewWeztermPaneJoiner(""),
-		Tabs:        tabs,
-		Cards:       pkg.NewBoardOpenCards(store),
-		Subject:     pkg.NewSubjectStateReader("", "", now),
+		Registry: registry,
+		Joiner:   pkg.NewWeztermPaneJoiner(""),
+		Tabs:     tabs,
+		Cards:    pkg.NewBoardOpenCards(store),
+		Subject:  pkg.NewSubjectStateReader("", "", now),
+		Anchors: pkg.VaultAPIAnchorReader{
+			Client: pkg.HTTPVaultAPIClient{BaseURL: *flaggedTickVaultAPIURL},
+		},
 		Now:         now,
 		SelfSession: os.Getenv("CLAUDE_CODE_SESSION_ID"),
 		SelfPane:    os.Getenv("WEZTERM_PANE"),

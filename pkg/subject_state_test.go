@@ -8,67 +8,72 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"time"
 
+	libtime "github.com/bborbe/time"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
 
+// writeRecord writes a worker-manager record for sessionID.
+func writeRecord(dir, sessionID, subject, branch string) error {
+	return os.WriteFile(
+		filepath.Join(dir, sessionID+".json"),
+		[]byte(`{"subject":"`+subject+`","branch":"`+branch+`"}`),
+		0o600,
+	)
+}
+
 var _ = ginkgo.Describe("SubjectStateReader", func() {
-	var workerDir, stateDir string
-	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	var records, state string
 
 	ginkgo.BeforeEach(func() {
-		root := ginkgo.GinkgoT().TempDir()
-		workerDir = filepath.Join(root, "worker-manager")
-		stateDir = filepath.Join(root, "sweep-gate")
-		gomega.Expect(os.MkdirAll(workerDir, 0o755)).To(gomega.Succeed())
-		gomega.Expect(os.MkdirAll(stateDir, 0o755)).To(gomega.Succeed())
+		records = ginkgo.GinkgoT().TempDir()
+		state = ginkgo.GinkgoT().TempDir()
 	})
 
-	writeRecord := func(sessionID, body string) {
+	// SC1's read half: a stand-down marker is the state the pusher was blind to.
+	ginkgo.It("reports a subject with a stand-down marker as STOPPED", func() {
+		gomega.Expect(writeRecord(records, "s1", "Trading Strategy Factory", "topic")).
+			To(gomega.Succeed())
 		gomega.Expect(os.WriteFile(
-			filepath.Join(workerDir, sessionID+".json"), []byte(body), 0o644,
+			filepath.Join(state, "topic--trading-strategy-factory.stopped"),
+			[]byte("2026-11-23T20:51:26+01:00"), 0o600,
 		)).To(gomega.Succeed())
-	}
 
-	ginkgo.It("reports SLEEPING when a future sleep marker names the subject", func() {
-		writeRecord("s1", `{"subject":"Foo","branch":"goal"}`)
-		gomega.Expect(os.WriteFile(
-			filepath.Join(stateDir, "goal--foo.sleeping"),
-			[]byte(now.Add(time.Hour).Format(time.RFC3339)), 0o644,
-		)).To(gomega.Succeed())
-		reader := NewSubjectStateReader(workerDir, stateDir, fixedNow(now))
-		state, resolved, err := reader.State(context.Background(), "s1")
+		reader := NewSubjectStateReader(records, state, libtime.NewCurrentDateTime())
+		got, resolved, err := reader.State(context.Background(), "s1")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(resolved).To(gomega.BeTrue())
-		gomega.Expect(state).To(gomega.Equal(SubjectStateSleeping))
+		gomega.Expect(got).To(gomega.Equal(SubjectStateStopped))
 	})
 
-	ginkgo.It("reports awake for a past sleep marker", func() {
-		writeRecord("s1", `{"subject":"Foo","branch":"goal"}`)
+	// The marker is probed on every tier, because a manager can be retired as a
+	// goal, a topic, a fleet subject or a task.
+	ginkgo.It("finds a stand-down recorded on a different tier", func() {
+		gomega.Expect(writeRecord(records, "s1", "Some Subject", "goal")).To(gomega.Succeed())
 		gomega.Expect(os.WriteFile(
-			filepath.Join(stateDir, "goal--foo.sleeping"),
-			[]byte(now.Add(-time.Hour).Format(time.RFC3339)), 0o644,
+			filepath.Join(state, "task--some-subject.stopped"), []byte("x"), 0o600,
 		)).To(gomega.Succeed())
-		reader := NewSubjectStateReader(workerDir, stateDir, fixedNow(now))
-		state, resolved, err := reader.State(context.Background(), "s1")
+
+		reader := NewSubjectStateReader(records, state, libtime.NewCurrentDateTime())
+		got, _, err := reader.State(context.Background(), "s1")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(got).To(gomega.Equal(SubjectStateStopped))
+	})
+
+	ginkgo.It("reports no state for a subject with no marker", func() {
+		gomega.Expect(writeRecord(records, "s1", "Some Subject", "goal")).To(gomega.Succeed())
+
+		reader := NewSubjectStateReader(records, state, libtime.NewCurrentDateTime())
+		got, resolved, err := reader.State(context.Background(), "s1")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(resolved).To(gomega.BeTrue())
-		gomega.Expect(state).To(gomega.BeEmpty())
+		gomega.Expect(got).To(gomega.BeEmpty())
 	})
 
-	ginkgo.It("resolves no subject when the session has no record", func() {
-		reader := NewSubjectStateReader(workerDir, stateDir, fixedNow(now))
-		_, resolved, err := reader.State(context.Background(), "s-none")
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(resolved).To(gomega.BeFalse())
-	})
-
-	ginkgo.It("resolves no subject when the record carries no subject or branch", func() {
-		writeRecord("s1", `{"subject":"","branch":""}`)
-		reader := NewSubjectStateReader(workerDir, stateDir, fixedNow(now))
-		_, resolved, err := reader.State(context.Background(), "s1")
+	ginkgo.It("resolves nothing for a session with no record", func() {
+		reader := NewSubjectStateReader(records, state, libtime.NewCurrentDateTime())
+		_, resolved, err := reader.State(context.Background(), "absent")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(resolved).To(gomega.BeFalse())
 	})
