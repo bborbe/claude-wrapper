@@ -108,17 +108,17 @@ func (f *fakeSubject) State(_ context.Context, id string) (string, bool, error) 
 	return state, ok, nil
 }
 
-// fakeAnchor is an AnchorReader with a fixed answer per session.
+// fakeAnchor is an AnchorReader serving a fixed anchored set.
 type fakeAnchor struct {
 	anchored map[string]bool
 	err      error
 }
 
-func (f *fakeAnchor) Anchored(_ context.Context, id string) (bool, error) {
+func (f *fakeAnchor) AnchoredSessions(context.Context) (map[string]bool, error) {
 	if f.err != nil {
-		return false, f.err
+		return nil, f.err
 	}
-	return f.anchored[id], nil
+	return f.anchored, nil
 }
 
 func pusherFor(
@@ -309,10 +309,6 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 			gomega.Expect(result.Skipped).To(gomega.Equal(1))
 		})
 
-		// The guard's wake:suggestion verdict must be deliverable. A long-idle pane
-		// always shows Claude Code's dim next-prompt suggestion, which the spawn
-		// path's ComposerReady deliberately refuses; the wake path must accept it or
-		// every suggestion-verdict wake times out. This pins the readiness seam.
 		ginkgo.Describe("retired and unanchored sessions", func() {
 			// SC1. The keeper refuses to restart a stood-down subject; the pusher must
 			// refuse to wake it, or the retirement is only half real.
@@ -403,6 +399,10 @@ var _ = ginkgo.Describe("FleetPusher", func() {
 			})
 		})
 
+		// The guard's wake:suggestion verdict must be deliverable. A long-idle pane
+		// always shows Claude Code's dim next-prompt suggestion, which the spawn
+		// path's ComposerReady deliberately refuses; the wake path must accept it or
+		// every suggestion-verdict wake times out. This pins the readiness seam.
 		ginkgo.It("delivers into a dim-placeholder composer the spawn path refuses", func() {
 			placeholder := "❯ \x1b[0;2mTry \"how does this work?\"\x1b[0m\n"
 			tabs := &fakeTabs{before: placeholder, after: "✻ Thinking… (3s\n❯ \n"}

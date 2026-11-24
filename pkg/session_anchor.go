@@ -14,16 +14,24 @@ import (
 // order. It matches the kinds `kindDirs` and the vault-api's plural paths serve.
 var anchorKinds = []string{"task", "goal", "topic"}
 
-// AnchorReader answers whether any page names a session as its anchor.
+// terminalAnchorStatuses are the statuses whose page still names a session but
+// offers it no next subtask. A session anchored only to one of these gets the
+// same unactionable wake as an unanchored one.
+var terminalAnchorStatuses = map[string]bool{
+	"completed": true,
+	"aborted":   true,
+}
+
+// AnchorReader answers which sessions a page anchors.
 //
 // The wake text says "take the next unchecked subtask on your anchored task", so
-// a session nothing anchors cannot act on it. This port answers that question
-// through the same shared resolver every other ownership filter uses, rather than
-// walking the vault a fourth time.
+// a session nothing anchors cannot act on it. The port answers for the whole fleet
+// in one read rather than per session: the pusher asks once per tick, and a
+// per-session port would walk the vault three times for every live session.
 type AnchorReader interface {
-	// Anchored reports whether a task, goal or topic records sessionID as its
-	// `claude_session_id`.
-	Anchored(ctx context.Context, sessionID string) (bool, error)
+	// AnchoredSessions returns every session id some non-terminal task, goal or
+	// topic records as its `claude_session_id`.
+	AnchoredSessions(ctx context.Context) (map[string]bool, error)
 }
 
 // VaultAPIAnchorReader answers it from the local vault-api's unfiltered rows.
@@ -31,33 +39,41 @@ type VaultAPIAnchorReader struct {
 	Client VaultAPIClient
 }
 
-// Anchored reports whether any task, goal or topic records sessionID.
+// AnchoredSessions returns every anchored session id.
 //
 // It reads ListAll, not List: an anchored goal or topic is usually not itself
 // eligible to open, so the filtered rows would answer "nothing anchors this" for
 // every manager session — the exact opposite of the truth.
 //
-// A nil client answers "anchored", so a caller that wired none cannot silently
-// skip every session. The first read error is returned rather than a partial
-// "not anchored": the caller fails OPEN, and a partial answer must never be
-// mistaken for a complete one.
-func (r VaultAPIAnchorReader) Anchored(ctx context.Context, sessionID string) (bool, error) {
-	if sessionID == "" {
-		return false, nil
-	}
+// ⚠️ A nil client, an empty index and a read error all return an error or nil
+// rather than an empty set. An empty set is a legitimate answer ("nothing anchors
+// anything"), and the caller cannot tell it from a vault-api that served zeros —
+// so returning it on a failure would dark-fleet every session with no guard. The
+// caller fails OPEN on error; an empty success therefore has to be refused here,
+// where the row count is still visible.
+func (r VaultAPIAnchorReader) AnchoredSessions(
+	ctx context.Context,
+) (map[string]bool, error) {
 	if r.Client == nil {
-		return true, nil
+		return nil, errors.New(ctx, "no vault-api client wired for the anchor check")
 	}
+	anchored := map[string]bool{}
+	rows := 0
 	for _, kind := range anchorKinds {
-		rows, err := r.Client.ListAll(ctx, kind)
+		items, err := r.Client.ListAll(ctx, kind)
 		if err != nil {
-			return false, errors.Wrapf(ctx, err, "list %s rows for the anchor check", kind)
+			return nil, errors.Wrapf(ctx, err, "list %s rows for the anchor check", kind)
 		}
-		for _, row := range rows {
-			if row.SessionID == sessionID {
-				return true, nil
+		rows += len(items)
+		for _, item := range items {
+			if item.SessionID == "" || terminalAnchorStatuses[item.Status] {
+				continue
 			}
+			anchored[item.SessionID] = true
 		}
 	}
-	return false, nil
+	if rows == 0 {
+		return nil, errors.New(ctx, "the anchor index served no rows at all")
+	}
+	return anchored, nil
 }

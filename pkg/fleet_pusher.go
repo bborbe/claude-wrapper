@@ -209,10 +209,13 @@ func (p *FleetPusher) Tick(ctx context.Context) FleetPusherResult {
 	}
 
 	openCards, cardsReadable := p.openCards(ctx)
+	// One anchor read per tick, not one per session: three index reads per live
+	// session every interval is a vault walk this tick does not need.
+	anchored, anchorsKnown := p.anchoredSessions(ctx)
 
 	result := FleetPusherResult{Sessions: len(ids), Rows: make([]FleetPusherRow, 0, len(ids))}
 	for _, id := range ids {
-		row := p.rowFor(ctx, id, byID, panes, openCards, cardsReadable)
+		row := p.rowFor(ctx, id, byID, panes, openCards, cardsReadable, anchored, anchorsKnown)
 		result.Rows = append(result.Rows, row)
 		if row.Outcome == OutcomeDelivered {
 			result.Delivered++
@@ -260,6 +263,8 @@ func (p *FleetPusher) rowFor(
 	panes map[int]string,
 	openCards map[string]struct{},
 	cardsReadable bool,
+	anchored map[string]bool,
+	anchorsKnown bool,
 ) FleetPusherRow {
 	row := FleetPusherRow{SessionID: id}
 	entry, listed := byID[id]
@@ -293,7 +298,7 @@ func (p *FleetPusher) rowFor(
 		row.Outcome = OutcomeSkipSelf
 		return row
 	}
-	subjectState, skipped := p.preScreenSkip(ctx, id, openCards, cardsReadable)
+	subjectState, skipped := p.preScreenSkip(ctx, id, openCards, cardsReadable, anchored, anchorsKnown)
 	if skipped != "" {
 		row.Outcome = skipped
 		return row
@@ -340,6 +345,8 @@ func (p *FleetPusher) preScreenSkip(
 	id string,
 	openCards map[string]struct{},
 	cardsReadable bool,
+	anchored map[string]bool,
+	anchorsKnown bool,
 ) (subjectState string, outcome string) {
 	subjectState = p.subjectState(ctx, id)
 	if verdict, decided := subjectVerdict(subjectState); decided {
@@ -351,9 +358,7 @@ func (p *FleetPusher) preScreenSkip(
 	if _, carded := openCards[id]; carded {
 		return subjectState, OutcomeSkipOpenCard
 	}
-	if anchored, err := p.anchored(ctx, id); err != nil {
-		p.logf("job=fleet-pusher action=anchors outcome=failed session=%s error=%v", id, err)
-	} else if !anchored {
+	if anchorsKnown && !anchored[id] {
 		return subjectState, OutcomeSkipUnanchored
 	}
 	return subjectState, ""
@@ -375,15 +380,23 @@ func (p *FleetPusher) subjectState(ctx context.Context, id string) string {
 	return state
 }
 
-// anchored reports whether any page anchors this session.
+// anchoredSessions reads the tick's anchored set once.
 //
-// A nil reader answers "anchored": the check is opt-in, and a caller that wired
-// none must not silently skip every session.
-func (p *FleetPusher) anchored(ctx context.Context, id string) (bool, error) {
+// A nil reader, a read error and an empty index all report "unknown", which the
+// caller treats as anchored: the check is opt-in, and neither an unwired reader
+// nor a vault-api outage may silently skip every session. The empty case is caught
+// in the reader, which still has the row count; by here it is indistinguishable
+// from a real "nothing anchors anything".
+func (p *FleetPusher) anchoredSessions(ctx context.Context) (map[string]bool, bool) {
 	if p.Anchors == nil {
-		return true, nil
+		return nil, false
 	}
-	return p.Anchors.Anchored(ctx, id)
+	anchored, err := p.Anchors.AnchoredSessions(ctx)
+	if err != nil {
+		p.logf("job=fleet-pusher action=anchors outcome=failed error=%v", err)
+		return nil, false
+	}
+	return anchored, true
 }
 
 func (p *FleetPusher) message() string {

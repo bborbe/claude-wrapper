@@ -98,7 +98,7 @@ func (r *subjectStateReader) State(
 	// A stand-down outranks a sleep. It is a deliberate retirement the keeper
 	// already refuses to restart, so the pusher must not wake it — reading the
 	// marker here keeps both mechanisms on one source instead of two.
-	marker, err := readStoppedMarker(ctx, stateDir, baseSlug(record.Subject))
+	marker, err := readStoppedMarker(ctx, stateDir, record.Branch, baseSlug(record.Subject))
 	if err != nil {
 		return "", true, err
 	}
@@ -139,24 +139,34 @@ func (r *subjectStateReader) stateDirectory(ctx context.Context) (string, error)
 	return filepath.Join(home, ".claude", "state", "sweep-gate"), nil
 }
 
-// readStoppedMarker returns the stand-down marker that retires subjectSlug, or ""
+// readStoppedMarker returns the stand-down marker that retires this subject, or ""
 // when none exists.
 //
-// It probes the same four tiers `FileSubjectReader.Stopped` does, because a
-// manager can have been stood down as a goal, a topic, a fleet subject or a task.
+// It probes ONE tier — the subject's own branch — then its pre-split twin, exactly
+// as `manager-liveness.py`'s `resolve()` does. ⚠️ Probing every tier would be the
+// same defect this fix removes, mirrored: a topic and a goal may share a name, so a
+// `goal--foo.stopped` marker would then skip the live `topic--foo` manager that the
+// keeper, asked `--branch topic`, correctly considers armed. Over-skipping is cheap
+// in an adopt loop (`FileSubjectReader.Stopped` probes all four on purpose) and
+// permanent here, because nothing else re-wakes an idle session.
 //
 // ⚠️ Only "not found" means "not stood down". Any other stat error is returned so
 // the caller's guard fails CLOSED: swallowing it would read as "still live" and
 // wake a subject the operator deliberately retired.
-func readStoppedMarker(ctx context.Context, stateDir, subjectSlug string) (string, error) {
-	for _, branch := range standdownBranches {
-		name := branch + "--" + subjectSlug + ".stopped"
-		_, err := os.Stat(filepath.Join(stateDir, name))
+func readStoppedMarker(
+	ctx context.Context,
+	stateDir, branch, subjectSlug string,
+) (string, error) {
+	// Prefixed first, then the bare pre-split record: `resolve()`'s order, so a
+	// subject that never re-armed after the goal/topic split is still recognised.
+	for _, name := range []string{branch + "--" + subjectSlug, subjectSlug} {
+		marker := name + ".stopped"
+		_, err := os.Stat(filepath.Join(stateDir, marker))
 		if err == nil {
-			return name, nil
+			return marker, nil
 		}
 		if !os.IsNotExist(err) {
-			return "", errors.Wrapf(ctx, err, "stat stand-down marker %s", name)
+			return "", errors.Wrapf(ctx, err, "stat stand-down marker %s", marker)
 		}
 	}
 	return "", nil
