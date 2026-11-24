@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.66.1
 
 - fix: **the flagged tick serves a row set read before the flag, so a freshly flagged row can wait up to two intervals.** `refreshLoop` and the ticker shared one period: a row flagged just after a read waited for the next read *and* the tick after it. The read is now phase-locked — the first starts `serveGrace` (30 s) before the second tick and every later one exactly one interval after the previous start, so start-to-start is the tick interval whatever a read costs — so the set a tick decides on is at most one interval plus the grace old. The tick line gains `rows_age=` (the served set's age, distinct from `read_duration=`, which is the read's cost), and a set older than `servedSetMaxAge` also logs `flagged-tick stale rows: served set read <age> ago, over the <bound> bound` — a log threshold, not a refusal, so a legitimately slow read is reported rather than suppressed. `docs/eligibility-predicate.md` gains the cache/served-set contract and its stale `predicateTimeout` figure is corrected from 10 to 25 minutes. Measured 2026-11-24: a row flagged at 13:19:41 was absent from the 13:30:46 tick because the read behind it started at ~13:15:48; the next tick that saw it was 13:46:12. Change set: `pkg/flagged_tick.go`, `pkg/flagged_cache_test.go`, `pkg/flagged_tick_test.go`, `docs/eligibility-predicate.md`, `CHANGELOG.md`.
 
