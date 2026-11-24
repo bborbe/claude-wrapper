@@ -11,9 +11,8 @@ import (
 	"strings"
 )
 
-// permissionTierRefusal runs claude-supervisor's permission-tier.py for a parked
-// permission prompt and returns its refusal text, or "" when the prompt is safe
-// for a manager to answer.
+// PermissionTierGuard classifies a parked prompt's permission tier through
+// claude-supervisor's permission-tier.py.
 //
 // ⚠️ THIS IS THE ANSWER PATH. Before this guard, `answer_permission` settled any
 // park a manager sent it, whatever its tier, and `closeSettledCard` recorded the
@@ -27,11 +26,82 @@ import (
 // here would be the two-counters defect this repo refuses everywhere else: the
 // day the probe changes, the two disagree with no error on either.
 //
+// ⚠️ It is the ONE guard behind every answer surface: `answer_permission` (the
+// roster MCP tool), `answer_pending` (the MCP tool `MCPToolServer` serves) and
+// the REST `answer` route. It is a plain value rather than a method so the two
+// surfaces that hold no *Question of their own — `answer_pending` and the REST
+// route — can reach the same classification instead of re-deriving it or
+// skipping it. Before this extraction the guard was reachable only from
+// `*RosterToolServer`, so those two paths settled an operator-tier park with no
+// check at all.
+//
 // Every branch refuses: an unwired probe, an unconfigured path, a prompt that
 // names no tool, a probe that cannot run, a non-zero exit, and unparseable
 // output. A guard that failed open would let exactly the operator-tier gate it
 // exists to protect be answered by a lower tier.
-func (s *RosterToolServer) permissionTierRefusal(
+type PermissionTierGuard struct {
+	// Scripts runs the probe. Nil refuses, exactly as it does on
+	// *RosterToolServer: a daemon started without the runner must not answer an
+	// unclassifiable gate.
+	Scripts ScriptRunner
+	// PermissionTierScript is claude-supervisor's permission-tier.py
+	// (DefaultPermissionTierScript).
+	PermissionTierScript string
+}
+
+// RefuseSettledAnswer returns a non-empty refusal when the answer a caller is
+// about to post must not settle the park it names, or "" when the answer is
+// safe to post.
+//
+// It is the shared settle every answer surface funnels through, so the three
+// cannot drift in what they gate:
+//
+//   - no park at all passes: there is no gate to classify, and the answer path
+//     decides (it fails on a missing request). Refusing there would strand a
+//     legitimate answer to a park this process no longer holds;
+//   - a park whose request id is not the one being answered refuses — a caller
+//     that sends one park's id with another's request id would have a
+//     manager-tier Question classified while an operator-tier park was answered;
+//   - a non-permission park (an AskUserQuestion) passes: the tier guard
+//     classifies permission gates, and gating a selection here would refuse an
+//     answer no arm has ever been tier-checked for;
+//   - a permission park is classified by guard, and an operator-tier verdict
+//     refuses.
+func RefuseSettledAnswer(
+	ctx context.Context,
+	guard PermissionTierGuard,
+	question *Question,
+	requestID string,
+	sessionID string,
+) string {
+	if question == nil {
+		// No park to classify: there is no operator-tier gate here, and the answer
+		// path decides (it fails on a missing request). Refusing would strand a
+		// legitimate answer to a park this process no longer holds.
+		return ""
+	}
+	if question.RequestID != requestID {
+		return fmt.Sprintf(
+			"request_id %q does not match the parked prompt on session %q, so its tier cannot be verified",
+			requestID, sessionID,
+		)
+	}
+	kind := question.Kind
+	if kind == "" {
+		// An empty kind is a pre-`kind` registration, which only ever carried
+		// permission parks — `answerKindFor` defaults to permission for the same
+		// reason.
+		kind = AnswerKindPermission
+	}
+	if kind != AnswerKindPermission {
+		return ""
+	}
+	return guard.Refusal(ctx, question)
+}
+
+// Refusal runs the probe for a parked permission prompt and returns its refusal
+// text, or "" when the prompt is safe for a manager to answer.
+func (g PermissionTierGuard) Refusal(
 	ctx context.Context,
 	question *Question,
 ) string {
@@ -41,10 +111,10 @@ func (s *RosterToolServer) permissionTierRefusal(
 		// legitimate answer to a park this process no longer holds.
 		return ""
 	}
-	if s.Scripts == nil {
+	if g.Scripts == nil {
 		return "the permission-tier probe is not wired, so an operator-tier gate cannot be proven safe to answer"
 	}
-	if strings.TrimSpace(s.PermissionTierScript) == "" {
+	if strings.TrimSpace(g.PermissionTierScript) == "" {
 		return "the permission-tier probe path is not configured"
 	}
 	tool := strings.TrimSpace(question.ToolName)
@@ -57,8 +127,8 @@ func (s *RosterToolServer) permissionTierRefusal(
 	}
 	// The input goes on stdin, never argv: a non-Bash park carries file content that
 	// may be a secret, and argv is visible in `ps`. The probe reads `--input -`.
-	result, err := s.Scripts.RunScriptWithStdin(
-		ctx, input, openPython, s.PermissionTierScript, "--tool", tool, "--input", "-",
+	result, err := g.Scripts.RunScriptWithStdin(
+		ctx, input, openPython, g.PermissionTierScript, "--tool", tool, "--input", "-",
 	)
 	if err != nil {
 		return fmt.Sprintf("the permission-tier probe could not run: %v", err)
@@ -95,6 +165,27 @@ func (s *RosterToolServer) permissionTierRefusal(
 			reason,
 		)
 	}
+}
+
+// tierGuard is the guard this server's answer_permission path applies.
+//
+// It exists so the roster server keeps ONE source for its two probe fields
+// (Scripts, PermissionTierScript) while the classification itself lives in
+// PermissionTierGuard, which the surfaces that hold no *RosterToolServer can
+// also reach.
+func (s *RosterToolServer) tierGuard() PermissionTierGuard {
+	return PermissionTierGuard{
+		Scripts:              s.Scripts,
+		PermissionTierScript: s.PermissionTierScript,
+	}
+}
+
+// permissionTierRefusal is the answer_permission call site's entry point.
+func (s *RosterToolServer) permissionTierRefusal(
+	ctx context.Context,
+	question *Question,
+) string {
+	return s.tierGuard().Refusal(ctx, question)
 }
 
 // tierProbeInput builds the --input argument the probe expects: the Bash command

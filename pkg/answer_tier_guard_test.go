@@ -172,4 +172,107 @@ var _ = ginkgo.Describe("RosterToolServer permission-tier guard on the answer pa
 			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(0))
 		})
 	})
+
+	// SC1 — `answer_pending` was the second unguarded surface: a manager that
+	// reached the park through it settled an operator-tier gate with no tier check.
+	// The same park, answered on the same route, is refused.
+	ginkgo.Describe("answerPending", func() {
+		var mcp *MCPToolServer
+
+		ginkgo.BeforeEach(func() {
+			mcp = &MCPToolServer{
+				Supervisor: supervisor,
+				TierGuard: PermissionTierGuard{
+					Scripts:              scripts,
+					PermissionTierScript: permissionTierTestScript,
+				},
+			}
+		})
+
+		ginkgo.It("refuses an operator-tier park before the answer lands", func() {
+			scripts.results[permissionTierTestScript] = operatorTierProbe()
+			supervisor.question = &Question{
+				RequestID: "r1",
+				Kind:      AnswerKindPermission,
+				ToolName:  "Bash",
+				Input:     map[string]any{"command": "kubectl apply -f x.yaml"},
+			}
+
+			_, err := mcp.answerPending(ctx,
+				json.RawMessage(`{"session_id":"s1","request_id":"r1","behavior":"allow"}`))
+
+			gomega.Expect(err).NotTo(gomega.BeNil())
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("answer_pending refused"))
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("operator-tier"))
+			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(0))
+		})
+
+		// The positive half: a guard that refused every answer would satisfy the
+		// refusal assertion above and break the product.
+		ginkgo.It("answers a manager-tier park", func() {
+			supervisor.question = &Question{
+				RequestID: "r1",
+				Kind:      AnswerKindPermission,
+				ToolName:  "Bash",
+				Input:     map[string]any{"command": "ls -la"},
+			}
+
+			_, err := mcp.answerPending(ctx,
+				json.RawMessage(`{"session_id":"s1","request_id":"r1","behavior":"allow"}`))
+
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(1))
+		})
+
+		ginkgo.It("refuses when the request_id does not match the parked prompt", func() {
+			supervisor.question = &Question{
+				RequestID: "other",
+				Kind:      AnswerKindPermission,
+				ToolName:  "Bash",
+				Input:     map[string]any{"command": "ls -la"},
+			}
+
+			_, err := mcp.answerPending(ctx,
+				json.RawMessage(`{"session_id":"s1","request_id":"r1","behavior":"allow"}`))
+
+			gomega.Expect(err).NotTo(gomega.BeNil())
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("does not match the parked prompt"))
+			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(0))
+		})
+
+		// An unwired guard refuses: the daemon cannot prove an operator-tier gate is
+		// safe to answer, so it must not answer one.
+		ginkgo.It("refuses an operator-tier park when the guard is unwired", func() {
+			scripts.results[permissionTierTestScript] = operatorTierProbe()
+			supervisor.question = &Question{
+				RequestID: "r1",
+				Kind:      AnswerKindPermission,
+				ToolName:  "Bash",
+				Input:     map[string]any{"command": "kubectl apply -f x.yaml"},
+			}
+			mcp.TierGuard = PermissionTierGuard{}
+
+			_, err := mcp.answerPending(ctx,
+				json.RawMessage(`{"session_id":"s1","request_id":"r1","behavior":"allow"}`))
+
+			gomega.Expect(err).NotTo(gomega.BeNil())
+			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(0))
+		})
+
+		// A question park is not a permission gate: gating it here would refuse a
+		// selection no arm has ever been tier-checked for.
+		ginkgo.It("answers an AskUserQuestion park", func() {
+			supervisor.question = &Question{
+				RequestID: "r1",
+				Kind:      AnswerKindQuestion,
+				ToolName:  "AskUserQuestion",
+			}
+
+			_, err := mcp.answerPending(ctx,
+				json.RawMessage(`{"session_id":"s1","request_id":"r1","answers":{"Pick one":"a"}}`))
+
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(supervisor.answerCalls).To(gomega.Equal(1))
+		})
+	})
 })

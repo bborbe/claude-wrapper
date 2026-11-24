@@ -688,15 +688,13 @@ func (s *RosterToolServer) answerPermission(
 	// the session whose Question is classified, but Supervisor.Answer targets
 	// body.RequestID; a caller that sends one agent's id with another park's
 	// request_id would have a manager-tier Question checked while an operator-tier
-	// park was answered. Refuse on any mismatch so the classified park IS the
-	// answered park.
+	// park was answered. RefuseSettledAnswer refuses on any mismatch so the
+	// classified park IS the answered park — the same settle answer_pending and the
+	// REST answer route apply, so the three surfaces cannot drift.
 	if kind == AnswerKindPermission {
-		if session.Question == nil || session.Question.RequestID != body.RequestID {
-			return "", errors.Errorf(ctx,
-				"answer_permission refused: request_id %q does not match the parked prompt on agent %q, so its tier cannot be verified",
-				body.RequestID, body.AgentID)
-		}
-		if refusal := s.permissionTierRefusal(ctx, session.Question); refusal != "" {
+		if refusal := RefuseSettledAnswer(
+			ctx, s.tierGuard(), session.Question, body.RequestID, body.AgentID,
+		); refusal != "" {
 			return "", errors.Errorf(ctx, "answer_permission refused: %s", refusal)
 		}
 	}
@@ -713,10 +711,18 @@ func (s *RosterToolServer) answerPermission(
 	// the close is detached from the request context so a returned call does not
 	// cancel it mid-flight.
 	if kind == AnswerKindPermission {
+		// The answered park, copied out before the goroutine runs: the close matches
+		// the card on this request id, so it must be the park the answer settled and
+		// not whatever the session reports once the answer has landed.
+		var settled *Question
+		if session.Question != nil {
+			copied := *session.Question
+			settled = &copied
+		}
 		go func() {
 			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
-			s.closeSettledCard(closeCtx, session.ID, body.Behavior, sessionID)
+			s.closeSettledCard(closeCtx, session.ID, settled, body.Behavior, sessionID)
 		}()
 	}
 	if s.Decider != nil && session.Question != nil {

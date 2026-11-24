@@ -37,6 +37,14 @@ type MCPToolServer struct {
 	// TurnTimeout bounds one send_message turn. A child that never closes its
 	// turn must surface as a distinguishable error, never as a silent success.
 	TurnTimeout time.Duration
+	// TierGuard classifies a parked prompt's permission tier before
+	// `answer_pending` settles it.
+	//
+	// ⚠️ The zero value refuses (nil Scripts), which is the correct degradation:
+	// an unclassifiable gate must not be answered by a lower tier. It is the same
+	// guard the roster MCP tool and the REST answer route apply, so the three
+	// surfaces cannot drift in what they gate.
+	TierGuard PermissionTierGuard
 }
 
 const (
@@ -523,6 +531,24 @@ func (s *MCPToolServer) answerPending(ctx context.Context, args json.RawMessage)
 	}
 	if answer.Kind == AnswerKindPermission && answer.Behavior == "" {
 		answer.Behavior = "allow"
+	}
+	// ⚠️ The tier gate sits on the ANSWER, before Supervisor.Answer settles the
+	// park, and it applies on THIS path exactly as it does on answer_permission.
+	// Before this check the two faces did not agree: a manager that reached the
+	// park through `answer_pending` settled an operator-tier gate with no tier
+	// check at all, and the card then read `answered_by: supervisor`.
+	//
+	// A session this process cannot read is left to the answer path, which reports
+	// the missing request; a park it CAN read is classified, and a refusal stops the
+	// answer before it lands.
+	if answer.Kind == AnswerKindPermission {
+		if session, getErr := s.Supervisor.Get(ctx, body.SessionID); getErr == nil && session != nil {
+			if refusal := RefuseSettledAnswer(
+				ctx, s.TierGuard, session.Question, body.RequestID, body.SessionID,
+			); refusal != "" {
+				return "", errors.Errorf(ctx, "answer_pending refused: %s", refusal)
+			}
+		}
 	}
 	if err := s.Supervisor.Answer(ctx, body.SessionID, body.RequestID, answer); err != nil {
 		return "", errors.Wrapf(ctx, err, "answer request %q failed", body.RequestID)

@@ -48,16 +48,36 @@ type Route struct {
 	MultiStep bool
 }
 
+// firstGuard is the guard a caller wired, or the zero guard when it wired none.
+//
+// The zero guard refuses a permission answer rather than letting an unclassified
+// gate through — the fail-closed default the guard itself documents — so a caller
+// that omits the argument gets a refusal, never an unchecked answer.
+func firstGuard(guards []pkg.PermissionTierGuard) pkg.PermissionTierGuard {
+	if len(guards) > 0 {
+		return guards[0]
+	}
+	return pkg.PermissionTierGuard{}
+}
+
 // Routes builds the session action table.
 //
 // It is a function rather than a package variable because each row closes over
 // the collaborators the daemon wires once — the supervisor, the sequencer and
 // the session locks — which differ per process, not per request.
+//
+// guards is optional so a caller that answers no permission park (every existing
+// spec, and any embedder that serves only reads) needs no probe wiring. A caller
+// that passes none gets the zero guard, which refuses a permission answer rather
+// than letting an unclassified gate through — the fail-closed default the guard
+// itself documents.
 func Routes(
 	supervisor pkg.Supervisor,
 	sequencer pkg.Sequencer,
 	locks *pkg.SessionLocks,
+	guards ...pkg.PermissionTierGuard,
 ) []Route {
+	guard := firstGuard(guards)
 	return []Route{
 		{
 			Action: "answer",
@@ -65,7 +85,7 @@ func Routes(
 				ctx context.Context, resp http.ResponseWriter, req *http.Request,
 				id string, _ string,
 			) {
-				handleAnswer(ctx, resp, req, supervisor, id)
+				handleAnswer(ctx, resp, req, supervisor, guard, id)
 			},
 			// An answer resolves a request the child already registered. It writes
 			// to the child's pending gate, not to a turn, so it starts no macro.
