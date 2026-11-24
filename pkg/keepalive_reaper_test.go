@@ -99,6 +99,13 @@ var _ = ginkgo.Describe("livenessReaper", func() {
 		gomega.Expect(mgr).To(gomega.BeEmpty())
 		gomega.Expect(drv).To(gomega.HaveLen(1))
 		gomega.Expect(drv[0].Kind).To(gomega.Equal("drive-reap"))
+		// ⚠️ The KIND alone is not the act: a reaper that returns a
+		// `{Kind: "drive-reap", Closed: true}` result without calling Stop
+		// satisfies every line assertion above and closes nothing. Assert the
+		// CALL, and assert it is drive-reap's own — the manager reap ran first
+		// on the same supervisor and stopped nothing, so this id can only come
+		// from the drive reap.
+		gomega.Expect(sup.stopped).To(gomega.Equal([]string{"dead-worker"}))
 	})
 
 	// A not-live session from a source OTHER than child-table is not a close
