@@ -117,6 +117,10 @@ A flagged **task** that has never had a session reads `liveness: none`, an empty
 
 The recently-spawned guard covers a fresh open by **label** (the task name the ledger records), plus an in-process record of this daemon's own opens. Without the in-process record, a tab spawn that registers after its 8-second deadline, or a ledger outage, would leave nothing to find, and the next tick would open the row again. The in-process record does not survive a daemon restart, so a restart that coincides with a missing ledger row can still open a row twice.
 
+## Foreign-vault rows
+
+The predicate answers "which rows are eligible" across **every** configured vault, so its row set includes rows only another daemon can serve. The tick drops those before any of the guards above: a row whose vault family differs from the daemon's own is `skipped` with reason `foreign-vault` and never reaches the open batch. That reason is a selection-level skip, never one of the predicate's `refused` tokens — `refused` is a provenance verdict on the row, while a foreign row is perfectly eligible and merely belongs to a different daemon. See [`open-endpoint.md`](open-endpoint.md) § Vault-family guard for why the check cannot live only at open time.
+
 ## See also
 
 [`parked-waits.md`](parked-waits.md) is the page for the tick's other decision: whether an eligible row is held because its last session parked on something outside its control.

@@ -151,6 +151,28 @@ both vaults it found in conflict (the daemon's own vault and the row's), matchin
 `claude-supervisor` `fleet-surface.md` § Spawn a worker's world precondition. Nothing is opened,
 written back or spawned.
 
+**The flagged tick drops a foreign row at SELECTION, one gate earlier.** Its open-time refusal is
+correct but too late to be the only gate: a row it can never serve still costs an attempt, and
+because the private-family daemon ticks every 2 minutes while the brogrammers daemon ticks every
+15, the foreign daemon re-attempts a satellite row on nearly every one of the owning daemon's
+intervals. Measured 2026-11-24: `seibert-brogrammers/task/BRO-22895 …` was refused
+`vault-mismatch` six times between 13:23:26 and 13:33:10 while the owning daemon never logged an
+`open: row=` line for it at all. `FlaggedTick` therefore carries the same `DaemonVault` and checks
+it first in `classify` — before provenance, freshness, the park gate and any registry probe — so a
+foreign row is `skipped` with reason **`foreign-vault`** and never enters the open batch. The
+skip reason is deliberately NOT `vault-mismatch`: the two count in different fields
+(`skipped_by_reason=` vs `refused_by_reason=`) and mean different things — "not mine" versus
+"you asked me for something that is not mine". The open-time refusal stays as the backstop for
+`POST /api/1.0/open` and `open_rows`, which name a row explicitly.
+
+The selection-time compare is **name-only**, a deliberate narrowing: a flagged row carries the
+vault's name and never its path, so the tick's call passes an empty target path and
+`RefuseForeignVault` falls back to the family compare rather than its same-path allowance. A
+daemon whose own vault name resolves to a different family than the names its rows carry
+therefore opens nothing (every row skips `foreign-vault`) — the honest outcome for a
+misconfiguration, and a visible one. Both production daemons resolve a real configured name, so
+the two comparisons agree.
+
 The same guard sits on the headless spawn path (`spawn_agent` and `SpawnOpenHeadless`), which
 resolves the target vault from `vault` or `cwd` and refuses a family mismatch identically.
 

@@ -130,6 +130,18 @@ const (
 	// is still accounted for: the alternative is dropping it, which makes the
 	// counts under-report the fleet and leaves a row with no trace at all.
 	reasonUnconsidered = "unconsidered"
+	// reasonForeignVault marks a row from a vault family this daemon does not
+	// serve. It is a SELECTION-level skip, not the open endpoint's
+	// `vault-mismatch` refusal: the row is never admitted to the open batch, so
+	// it costs no open attempt and leaves no trace in the shared ledger.
+	//
+	// ⚠️ The distinction is load-bearing, not cosmetic. Measured 2026-11-24: the
+	// private-family daemon (2-min cadence) re-attempted a `seibert-brogrammers`
+	// row six times while the owning daemon (15-min cadence) ticked, and each
+	// attempt was refused `vault-mismatch` at open time — the foreign daemon won
+	// the race to every tick and the row was never opened by the daemon that
+	// could serve it.
+	reasonForeignVault = "foreign-vault"
 )
 
 // FlaggedTickResult is one tick's outcome, and the whole of what it logs.
@@ -366,6 +378,15 @@ type FlaggedTick struct {
 	// Ledger supplies the spawn times the recently-spawned guard reads. A nil
 	// ledger disables that half of the guard rather than refusing every row.
 	Ledger LedgerReader
+	// OwnVault is the vault family this daemon serves. A row from another family
+	// is skipped at SELECTION (`foreign-vault`) and never reaches the open batch,
+	// so this daemon does not spend an open attempt — or a ledger write — on a row
+	// only another daemon can serve. The zero value disables the gate.
+	//
+	// It is the same `DaemonVault` the open executor carries, and the same rule
+	// (`RefuseForeignVault`): one implementation of "which vault is mine", read at
+	// the earliest point a row can be dropped.
+	OwnVault DaemonVault
 	// Parked is the park gate. A nil gate is inactive, which is what a test that
 	// predates it gets and what the daemon gets when the state directories cannot
 	// be resolved.
@@ -853,6 +874,31 @@ func (t *FlaggedTick) classify(
 	childLive map[string]bool,
 	now time.Time,
 ) (string, rowAction, bool) {
+	// The vault-family gate runs FIRST, before provenance, freshness, the park
+	// gate and any registry probe: a row from another family is not this daemon's
+	// to open at all, so every later gate would only spend work on an answer that
+	// is already known. It is a SKIP rather than a refusal because the row is not
+	// defective — it is simply another daemon's — and because the open endpoint's
+	// own `vault-mismatch` refusal must stay reserved for a request that names a
+	// foreign row explicitly.
+	//
+	// ⚠️ Dropping the row here is what stops the cadence race. The 2-minute
+	// private daemon otherwise re-claims a `seibert-*` row on every one of the
+	// owning daemon's 15-minute intervals, and the row's whole dark period is
+	// spent in refused attempts.
+	//
+	// ⚠️ The comparison is NAME-ONLY, and that is a deliberate narrowing of what
+	// the open-time guard accepts. A FlaggedRow carries the vault's name and never
+	// its path, so this call passes an empty target path and `RefuseForeignVault`
+	// falls back to the family compare instead of its same-path allowance. A
+	// daemon whose own vault name resolves to a different family than the vault
+	// names its rows carry is therefore a misconfiguration that now opens nothing
+	// — which is the honest outcome, and visible as every row skipping
+	// `foreign-vault`. Both production daemons resolve a real configured name
+	// (`private-personal`, `seibert-brogrammers`), so the two agree.
+	if err := RefuseForeignVault(ctx, t.OwnVault, row.Vault, ""); err != nil {
+		return reasonForeignVault, rowSkipped, false
+	}
 	// Provenance and blocked_by are checked FIRST, exactly as `decision` orders
 	// them: a refused or blocked row must not spend a registry probe (rowFreshness)
 	// or a retry (spawnNotLandedDue) it will never use, and must report its own
