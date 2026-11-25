@@ -78,6 +78,16 @@ reads; everything else is ignored.
 | `blocked_by` | Unresolved blockers, as a list | A non-empty list skips the row |
 | `refused` | The provenance verdicts this source computed | A non-empty list refuses the row |
 | `provenance` | `operator`, `agent` or `unrecorded` | Counted into `provenance=` on the tick line, so one tick names all three states |
+| `stopped` | The operator's stand-down marker, written by `/supervisor:stop` | Read as true when the frontmatter value coerces to `"true"` — the quoted `"true"` and the unquoted YAML bool `true` both do; `stopped: false` or an absent marker is not stopped. A stopped row is then gated by the `stop_date`/`flag_set_at` comparison below |
+| `stop_date` | The instant the stand-down was written | The ordering rule: a row whose `stop_date` is newer than its `flag_set_at` is skipped with reason `stopped`; only a `flag_set_at` strictly newer than `stop_date` reopens it. A missing or unreadable stamp is fail-closed — absent evidence never reopens a retired row |
+| `flag_set_at` | The raw flag instant, never an `approved_at` fallback | Compared with `stop_date`: only a `flag_set_at` strictly newer than `stop_date` reopens a stopped row |
+
+All three are read from the **task** record's frontmatter (`rowForItem` in
+`pkg/flagged_rows_vaultapi.go`). Only a task carries the marker, and only the
+task record endpoint serves these fields; goal and topic rows leave them zero
+and are unaffected. The stand-down check runs after the provenance and blocker
+refusals but **before the liveness guards**, so a stopped row reports `stopped`
+rather than `not-absent`, `already-live` or `recently-spawned`.
 
 ## The provenance rule — three states, not two
 

@@ -294,6 +294,10 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	deferDate := item.DeferDate
 	blockedBy := item.BlockedBy
 	var block string
+	// Only a task carries the stand-down marker and the two instants; a goal or
+	// topic keeps the zero values.
+	var stopped bool
+	var stopDate, flagSetAt *time.Time
 	if kind == "task" {
 		page, err := s.Client.Page(ctx, kind, item.ID)
 		if err != nil {
@@ -304,6 +308,9 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		flagSetBy = frontmatterString(page.Frontmatter, "flag_set_by")
 		deferDate = frontmatterString(page.Frontmatter, "defer_date")
 		blockedBy = frontmatterStrings(page.Frontmatter, "blocked_by")
+		stopped = frontmatterString(page.Frontmatter, "stopped") == "true"
+		stopDate = frontmatterTime(page.Frontmatter, "stop_date")
+		flagSetAt = frontmatterTime(page.Frontmatter, "flag_set_at")
 		// The owner ladder's task branch reads managed_by and goals off this block.
 		block = ownerBlock(
 			frontmatterString(page.Frontmatter, "managed_by"),
@@ -350,6 +357,9 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		BlockedBy:  blockedBy,
 		Refused:    refused,
 		Provenance: ProvenanceClass(flagSetBy),
+		Stopped:    stopped,
+		StopDate:   stopDate,
+		FlagSetAt:  flagSetAt,
 	}, true, nil
 }
 
@@ -499,6 +509,21 @@ func frontmatterString(frontmatter map[string]any, key string) string {
 	default:
 		return strings.Trim(strings.TrimSpace(fmt.Sprint(value)), `"'`)
 	}
+}
+
+// frontmatterTime reads one timestamp out of the record endpoint's frontmatter
+// map, returning nil when the key is absent or the value does not parse. nil is
+// the "no readable instant" signal the reopen decision treats as fail-closed.
+func frontmatterTime(frontmatter map[string]any, key string) *time.Time {
+	raw := frontmatterString(frontmatter, key)
+	if raw == "" {
+		return nil
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil
+	}
+	return &at
 }
 
 // frontmatterStrings reads one list out of the frontmatter map. A single scalar is
