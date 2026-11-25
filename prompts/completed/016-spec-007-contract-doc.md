@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [007-bug-flagged-tick-reopens-a-stopped-row]
+summary: Documented stopped, stop_date and flag_set_at plus the stand-down ordering, fail-closed, guard-order and task-scope rules in docs/eligibility-predicate.md § Fields the tick consumes; precommit exits 0 with TMPDIR moved off /tmp to avoid a pre-existing temp-dir fixture failure.
+execution_id: 42f58933-d4aa-5cba-93d0-aa45e8c4b180-exec-016-spec-007-contract-doc
+dark-factory-version: dev
 created: "2026-11-25T07:30:00Z"
 queued: "2026-11-25T06:45:01Z"
+started: "2026-11-25T06:47:51Z"
+completed: "2026-11-25T06:50:06Z"
 branch: dark-factory/bug-flagged-tick-reopens-a-stopped-row
 ---
 
