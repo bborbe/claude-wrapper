@@ -1,6 +1,8 @@
 ---
-status: approved
+status: prompted
 approved: "2026-11-25T05:40:53Z"
+generating: "2026-11-25T06:28:49Z"
+prompted: "2026-11-25T06:35:58Z"
 branch: dark-factory/bug-flagged-tick-reopens-a-stopped-row
 ---
 

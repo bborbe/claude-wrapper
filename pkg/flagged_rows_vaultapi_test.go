@@ -7,6 +7,8 @@ package pkg
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -327,4 +329,87 @@ var _ = ginkgo.Describe("VaultAPIFlaggedRowsSource", func() {
 		// manager route rather than a fleet-level create.
 		gomega.Expect(rows[0].Branch).ToNot(gomega.BeEmpty())
 	})
+})
+
+var _ = ginkgo.Describe("populates the stand-down marker from the record frontmatter", func() {
+	var ctx context.Context
+
+	ginkgo.BeforeEach(func() { ctx = context.Background() })
+
+	source := func(client VaultAPIClient, registry SessionRegistry) VaultAPIFlaggedRowsSource {
+		return VaultAPIFlaggedRowsSource{
+			Client:     client,
+			Supervisor: nativeSupervisor{},
+			Registry:   registry,
+		}
+	}
+
+	// stamp renders a parsed instant the way the tick will see it: a nil stamp
+	// (absent or unparseable) prints as the empty string, never a zero time.Time.
+	stamp := func(at *time.Time) string {
+		if at == nil {
+			return ""
+		}
+		return at.Format(time.RFC3339Nano)
+	}
+
+	ginkgo.DescribeTable("reads the marker and both instants from the task page",
+		func(frontmatter map[string]any, expected string) {
+			client := fakeVaultAPI{
+				eligible: map[string][]VaultAPIRow{"task": {taskRow("t1", "Alpha")}},
+				pages:    map[string]VaultAPIPage{"t1": taskPage(frontmatter)},
+			}
+
+			rows, err := source(client, nil).Rows(ctx)
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(rows).To(gomega.HaveLen(1))
+
+			line := fmt.Sprintf(
+				"stopped=%t stop_date=%s flag_set_at=%s",
+				rows[0].Stopped, stamp(rows[0].StopDate), stamp(rows[0].FlagSetAt),
+			)
+			ginkgo.GinkgoWriter.Println(line)
+			gomega.Expect(line).To(gomega.Equal(expected))
+		},
+		ginkgo.Entry("all three keys, quoted forms",
+			map[string]any{
+				"flag_set_by": "operator",
+				"stopped":     "true",
+				"stop_date":   "2026-11-24T18:05:33+01:00",
+				"flag_set_at": "2026-11-24T19:36:58.408271+01:00",
+			},
+			"stopped=true stop_date=2026-11-24T18:05:33+01:00 flag_set_at=2026-11-24T19:36:58.408271+01:00",
+		),
+		ginkgo.Entry("unquoted YAML bool",
+			map[string]any{
+				"flag_set_by": "operator",
+				"stopped":     true,
+				"stop_date":   "2026-11-24T18:05:33+01:00",
+				"flag_set_at": "2026-11-24T19:36:58.408271+01:00",
+			},
+			"stopped=true stop_date=2026-11-24T18:05:33+01:00 flag_set_at=2026-11-24T19:36:58.408271+01:00",
+		),
+		ginkgo.Entry("none",
+			map[string]any{"flag_set_by": "operator"},
+			"stopped=false stop_date= flag_set_at=",
+		),
+		ginkgo.Entry("unparseable stop_date",
+			map[string]any{
+				"flag_set_by": "operator",
+				"stopped":     "true",
+				"stop_date":   "not-a-date",
+				"flag_set_at": "2026-11-24T19:36:58.408271+01:00",
+			},
+			"stopped=true stop_date= flag_set_at=2026-11-24T19:36:58.408271+01:00",
+		),
+		ginkgo.Entry("unparseable flag_set_at",
+			map[string]any{
+				"flag_set_by": "operator",
+				"stopped":     "true",
+				"stop_date":   "2026-11-24T18:05:33+01:00",
+				"flag_set_at": "not-a-time",
+			},
+			"stopped=true stop_date=2026-11-24T18:05:33+01:00 flag_set_at=",
+		),
+	)
 })

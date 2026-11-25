@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 )
@@ -51,6 +52,19 @@ type FlaggedRow struct {
 	// the refused rows, and an operator-set row is opened with no marker of its
 	// own. Empty when the source did not compute it (the exec source, a fixture).
 	Provenance Provenance `json:"-"`
+	// Stopped is the operator's stand-down marker (`stopped`), written by
+	// /supervisor:stop. Populated by VaultAPIFlaggedRowsSource from the task
+	// record's frontmatter; the exec source never sets it.
+	Stopped bool `json:"-"`
+	// StopDate is the instant the stand-down was written (`stop_date`), parsed
+	// from the page's frontmatter. nil when the key is absent or unparseable —
+	// both mean "no readable stop instant", which the decision treats as
+	// fail-closed.
+	StopDate *time.Time `json:"-"`
+	// FlagSetAt is the raw `flag_set_at` instant, parsed from the page's
+	// frontmatter. nil when absent or unparseable. It is the raw flag instant,
+	// never an `approved_at` fallback.
+	FlagSetAt *time.Time `json:"-"`
 }
 
 // Key is the row's identity in the log line and in the ledger join.
