@@ -15,6 +15,8 @@ import (
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
+
+	"github.com/bborbe/claude-wrapper/pkg/sweepgate"
 )
 
 const (
@@ -178,6 +180,15 @@ const (
 	// stop_date is newer than its flag_set_at, so the stand-down outranks the
 	// reopen. A nil stamp is fail-closed.
 	reasonStopped = "stopped"
+	// reasonProgressStalled marks a row whose `# Progress` section has not moved
+	// for progressStallThreshold while it still has open boxes and its session is
+	// not live. It is the class the frontmatter and closer guards cannot see: the
+	// boxes wait on something no field declares, so the row would otherwise be
+	// revived every interval and produce nothing.
+	//
+	// It is a SKIP, not a refusal: the row is not defective, it is waiting, and a
+	// `# Progress` write clears it on the next tick.
+	reasonProgressStalled = "progress-stalled"
 )
 
 // FlaggedTickResult is one tick's outcome, and the whole of what it logs.
@@ -442,7 +453,11 @@ type FlaggedTick struct {
 	// Empty resolves it from the daemon's state directory, which `Home` and
 	// `Getenv` scope, exactly as the session store resolves its own.
 	CacheDir string
-	Now      libtime.CurrentDateTimeGetter
+	// progressStallOnce and progressStall build the stall clock lazily, so a
+	// fixture that never reaches the predicate never touches a state file.
+	progressStallOnce sync.Once
+	progressStall     *progressStallTracker
+	Now               libtime.CurrentDateTimeGetter
 	// Interval defaults to DefaultFlaggedTickInterval.
 	Interval time.Duration
 	// ReadTimeout bounds one predicate read, defaulting to predicateTimeout.
@@ -1016,7 +1031,50 @@ func (t *FlaggedTick) classify(
 			return reason, rowSkipped, false
 		}
 	}
+	// The stall gate runs LAST, after the park gate: a declared park is the more
+	// specific observable, and shadowing it would report `progress-stalled` for a
+	// row whose closer already names what it waits on. Only a row the park gate
+	// could not classify — no closer, or a closer with no `⏰ Ends:` — reaches here.
+	if reason, held := t.progressStalledHold(ctx, row, now); held {
+		return reason, rowSkipped, false
+	}
 	return "", rowEligible, retryNotLanded
+}
+
+// progressStalledHold reports whether row is waiting on something no field
+// declares: open boxes, execution phase, and a `# Progress` section unchanged for
+// progressStallThreshold.
+//
+// A row that fails any clause is not stalled. In particular a row with no open
+// box is finished, and a first sighting starts the clock rather than skipping —
+// see progressStallTracker.Stalled.
+func (t *FlaggedTick) progressStalledHold(
+	ctx context.Context,
+	row FlaggedRow,
+	now time.Time,
+) (string, bool) {
+	if row.Kind != "task" {
+		return "", false
+	}
+	if row.Phase != "execution" {
+		return "", false
+	}
+	if sweepgate.OpenBoxCount(row.Met) < 1 {
+		return "", false
+	}
+	if !t.progressStallFor(ctx).Stalled(row.Key(), row.ProgressHash, now) {
+		return "", false
+	}
+	return reasonProgressStalled, true
+}
+
+// progressStallFor builds the stall clock once per tick, over the same state
+// directory the row cache uses, so the clock survives a restart.
+func (t *FlaggedTick) progressStallFor(ctx context.Context) *progressStallTracker {
+	t.progressStallOnce.Do(func() {
+		t.progressStall = newProgressStallTracker(t.flaggedCacheDir(ctx))
+	})
+	return t.progressStall
 }
 
 // rowFreshness decides whether a row with no session should be opened fresh.

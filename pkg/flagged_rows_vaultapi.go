@@ -298,6 +298,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	// topic keeps the zero values.
 	var stopped bool
 	var stopDate, flagSetAt *time.Time
+	var progressHash, met, phase string
 	if kind == "task" {
 		page, err := s.Client.Page(ctx, kind, item.ID)
 		if err != nil {
@@ -311,6 +312,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		stopped = frontmatterString(page.Frontmatter, "stopped") == "true"
 		stopDate = frontmatterTime(page.Frontmatter, "stop_date")
 		flagSetAt = frontmatterTime(page.Frontmatter, "flag_set_at")
+		progressHash, met, phase = pageStallFields(page)
 		// The owner ladder's task branch reads managed_by and goals off this block.
 		block = ownerBlock(
 			frontmatterString(page.Frontmatter, "managed_by"),
@@ -335,7 +337,6 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	if !admissible(s.now(), task) {
 		return FlaggedRow{}, false, nil
 	}
-
 	normalisedRole := normaliseRole(task.Role)
 	live := rowLiveness(task.Session, liveByID, verdictErr)
 
@@ -346,21 +347,35 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	refused := append(refusalsFor(flagSetBy, item.Title), branchRefused...)
 
 	return FlaggedRow{
-		Kind:       kind,
-		Vault:      item.Vault,
-		Name:       item.Title,
-		Role:       normalisedRole,
-		Mode:       task.Mode,
-		SessionID:  task.Session,
-		Liveness:   live,
-		Branch:     branch,
-		BlockedBy:  blockedBy,
-		Refused:    refused,
-		Provenance: ProvenanceClass(flagSetBy),
-		Stopped:    stopped,
-		StopDate:   stopDate,
-		FlagSetAt:  flagSetAt,
+		Kind:         kind,
+		Vault:        item.Vault,
+		Name:         item.Title,
+		Role:         normalisedRole,
+		Mode:         task.Mode,
+		SessionID:    task.Session,
+		Liveness:     live,
+		Branch:       branch,
+		BlockedBy:    blockedBy,
+		Refused:      refused,
+		Provenance:   ProvenanceClass(flagSetBy),
+		Stopped:      stopped,
+		StopDate:     stopDate,
+		FlagSetAt:    flagSetAt,
+		ProgressHash: progressHash,
+		Met:          met,
+		Phase:        phase,
 	}, true, nil
+}
+
+// pageStallFields reads the three page-body values the stall predicate needs.
+//
+// They come from the task page's body, which a goal or topic page does not
+// serve — and the predicate excludes those kinds anyway, so an empty reading is
+// harmless.
+func pageStallFields(page VaultAPIPage) (progressHash, met, phase string) {
+	return sweepgate.ProgressHash(page.Body),
+		sweepgate.CheckboxCount(page.Body, ""),
+		frontmatterString(page.Frontmatter, "phase")
 }
 
 // resolveBranch runs the owner ladder and the branch partition for one row.
