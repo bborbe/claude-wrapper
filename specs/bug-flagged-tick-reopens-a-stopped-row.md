@@ -60,6 +60,18 @@ The same page also demonstrates the counter-case this fix must not regress: at `
 
 Until this ships, retire a row by clearing its flag as well as stopping it: `vault-cli task clear '<task>' flag`. The tick opens only flagged rows, so a cleared flag removes the row from the eligible set whatever the tick does with the marker.
 
+## Non-goals
+
+- A presence-only guard. The whole point is the ordering comparison; a bare `if stopped` is the defect this spec exists to prevent.
+- Any change to goal or topic rows: only a task carries the marker, and only the task record endpoint serves frontmatter.
+- Any change in `claude-supervisor` or `vault-cli` — the fields already arrive, and those two repos' own presence-only readers are a separate follow-up.
+- Changing what `/supervisor:stop` writes.
+- Reopening the completed task that scoped the marker to `open-queue.py` and `worker-keepalive.py`.
+
+## Do-Nothing Option
+
+The marker stays decorative. A row the operator stopped reopens on the next tick, silently — the tick line records it as an ordinary open, so nothing distinguishes a deliberate stand-down from a live row. The cost compounds: every stopped-but-flagged row becomes a session the operator has to stop again, and each stop is undone by the next tick. The workaround (clear the flag as well) is a manual step every operator must remember, and forgetting it produces exactly this bug.
+
 ## Acceptance Criteria
 
 - [ ] **AC1** — `make precommit` exits 0 — evidence: the exit code, quoted.
@@ -78,6 +90,7 @@ Until this ships, retire a row by clearing its flag as well as stopping it: `vau
   | `flag-after-stop` | `stopped: true`, `stop_date` 18:05, `flag_set_at` 19:36 | yes |
   | `no-stop-date` | `stopped: true`, `flag_set_at` 19:36, no `stop_date` | no |
   | `unparseable-flag-instant` | `stopped: true`, `stop_date` 18:05, `flag_set_at: not-a-time` | no |
+  | `unparseable-stop-date` | `stopped: true`, `stop_date: not-a-date`, `flag_set_at` 19:36 | no |
   | `not-stopped` | `flag_set_at` 19:36, no `stopped` | yes |
   | `stopped-false` | `stopped: false`, `flag_set_at` 19:36 | yes |
 
@@ -87,24 +100,26 @@ Until this ships, retire a row by clearing its flag as well as stopping it: `vau
 
 - [ ] **AC4** — **The contract doc names the fields and the rule, inside the right section.** `sed -n '/## Fields the tick consumes/,/^## /p' docs/eligibility-predicate.md | grep -n 'stop_date'` returns ≥1 line, and that line names the ordering rule — evidence: the matched line, quoted.
 
-- [ ] **AC5** — **No row without a marker changes behaviour.** The existing reopen-decision spec still passes unchanged — evidence: capture its case list **before** the change (`go test -v -count=1 ./pkg -args -ginkgo.focus='decides whether a flagged row is reopened' -ginkgo.v | grep -o 'case=[a-z-]*' > /tmp/reopen-cases.before`), then after the change run the same command into `/tmp/reopen-cases.after` and require `diff /tmp/reopen-cases.before /tmp/reopen-cases.after` to print nothing — a non-empty diff is a moved verdict. The spec's name is still present (`grep -c 'decides whether a flagged row is reopened' pkg/flagged_tick_test.go` returns ≥1).
+- [ ] **AC5** — **No row without a marker changes behaviour.** The existing reopen-decision spec still passes unchanged — evidence: capture its case list **before** the change (`go test -v -count=1 ./pkg -args -ginkgo.focus='decides whether a flagged row is reopened' -ginkgo.v | grep -o 'case=.*' > /tmp/reopen-cases.before`), then after the change run the same command into `/tmp/reopen-cases.after` and require `diff /tmp/reopen-cases.before /tmp/reopen-cases.after` to print nothing — a non-empty diff is a moved verdict. The spec's name is still present (`grep -c 'decides whether a flagged row is reopened' pkg/flagged_tick_test.go` returns ≥1).
 
 - [ ] **AC6** — **The runtime path stops reopening a stopped row.** After the released build is running, two rows are observed in one fleet round. The tick logs on **stderr** — `~/Library/Logs/claude-wrapper/stderr.log`; `stdout.log` carries no `flagged-tick` line at all.
 
-  **Input state.** No page is both flagged and stopped today (`grep -rl '^flag: true' "25 Tasks"` and `grep -rl '^stopped: "true"' "25 Tasks"` do not intersect), so the pair is constructed and then restored:
-  1. Flag the measured row through the normal flag path — `vault-cli task set 'Classify the Heat-Pump Penetration Seal' flag true` — and confirm its `flag_set_at` is now newer than its `stop_date` (`2026-11-24T18:05:33+01:00`). This is the **flag-after-stop** row.
-  2. Flag a second stopped page, then stop it again (`/supervisor:stop "<task>"`), so its `stop_date` is newer than its `flag_set_at`. This is the **stopped-after-flag** row.
+  **Input state.** No page is both flagged and stopped today (`grep -rl '^flag: true' "25 Tasks"` and `grep -rl '^stopped: "true"' "25 Tasks"` do not intersect), so the pair is constructed and then restored. Both flags are written **`--by operator`**: `--by` defaults to `unknown`, and an unrecorded flag is refused (`refused_by_reason=flag-provenance-unrecorded`) before the stopped guard ever runs — so a bare `task set … flag true` can never reach this AC's evidence.
+
+  1. Flag the measured row — `vault-cli task set 'Classify the Heat-Pump Penetration Seal' flag true --by operator` — then confirm its `flag_set_at` is newer than its `stop_date` (`2026-11-24T18:05:33+01:00`) **and** that its recorded session reads ABSENT (a LIVE row is skipped `not-absent`, for a reason unrelated to this fix). This is the **flag-after-stop** row.
+  2. Flag a second stopped page `--by operator`, then stop it again (`/supervisor:stop "<task>"`), so its `stop_date` is newer than its `flag_set_at`. Its recorded session must also read ABSENT and it must not have been opened inside the `recently-spawned` window — otherwise the liveness guards answer first and the row contributes no `stopped` count however correct the fix is. This is the **stopped-after-flag** row.
   3. Restore both afterwards with `vault-cli task clear '<task>' flag`.
 
-  **Evidence** — both halves from the same round:
+  **Evidence** — all reads bound to one captured round:
 
   ```bash
-  grep 'flagged-tick opened=' ~/Library/Logs/claude-wrapper/stderr.log | tail -1
-  grep 'flagged-tick opened=' ~/Library/Logs/claude-wrapper/stderr.log | grep -c 'stopped:[0-9]'
-  grep 'flagged-tick opened=' ~/Library/Logs/claude-wrapper/stderr.log | tail -1 | grep -o 'opened=[0-9]*'
+  line=$(grep 'flagged-tick opened=' ~/Library/Logs/claude-wrapper/stderr.log | tail -1)
+  printf '%s\n' "$line" | grep -c 'rows=.*Classify the Heat-Pump Penetration Seal'
+  printf '%s\n' "$line" | grep -o 'stopped:[0-9]*'
+  grep 'flagged-tick detail' ~/Library/Logs/claude-wrapper/stderr.log | tail -1
   ```
 
-  The first prints the round's summary line. The second returns ≥1: `skipped_by_reason=` is space-separated and `;`-terminated, so the pattern is matched anywhere within the summary line rather than through `[^ ]*`, which cannot cross the first pair. The third prints `opened=1` — the flag-after-stop half, which the skip count alone never observes. A unit-test pass alone does not satisfy this AC: the bug is a runtime decision, and `bug-workflow.md` requires the runtime path.
+  The first read returns ≥1: an opened row is listed on the **summary** line's `rows=` as `vault/kind/name`, and that is the row-bound evidence the flag-after-stop row opened. A `[^ ]*` capture cannot be used here — the key contains spaces. The second prints `stopped:1` or higher; `skipped_by_reason=` is space-separated and `;`-terminated, so the pattern is matched within the line. The third prints the round's detail line, which by construction lists only **refused and skipped** rows (`Detail()` renders `refused=… skipped=…` and is empty when neither is populated) — the stopped-after-flag row must appear there with its reason. A unit-test pass alone does not satisfy this AC: the bug is a runtime decision.
 
 ## Verification
 
@@ -122,7 +137,7 @@ Until this ships, retire a row by clearing its flag as well as stopping it: `vau
 
 ## Desired Behavior
 
-1. A flagged, open, due task whose `stop_date` is newer than its `flag_set_at` is skipped, and the tick line's `skipped_by_reason=` names the skip with a reason of its own (`stopped`).
+1. A flagged, open, due task whose `stop_date` is newer than its `flag_set_at` is skipped, and the tick line's `skipped_by_reason=` names the skip with a reason of its own (`stopped`). This check runs before the liveness guards, so a stopped row reports `stopped` rather than a derived verdict.
 2. The same task with `flag_set_at` newer than `stop_date` opens exactly as it does today.
 3. A task carrying `stopped: true` but no readable `stop_date`, or no readable `flag_set_at`, is skipped — the fail-closed default; absent evidence never reopens a retired row.
 4. A task with no `stopped` marker, or with `stopped: false`, is unaffected.
@@ -136,6 +151,7 @@ Until this ships, retire a row by clearing its flag as well as stopping it: `vau
 - **The flag instant is the raw `flag_set_at`, never `approval_instant()`'s `approved_at`-first fallback.** That helper (claude-supervisor's `scripts/flag_provenance.py:107`) answers "when was this approved", which is a different question.
 - **No new presence-only guard.** Every read of `stopped` is paired with the timestamp comparison; the no-date fallback is a skip, not an open.
 - **`decision()` keeps its single home.** The rule lives in the one decision function; the row source populates fields and decides nothing.
+- **The stopped guard runs before the liveness guards.** A stopped row reports `stopped`, not `not-absent`, `already-live` or `recently-spawned` — the operator's stand-down outranks a derived state, and this is what makes the skip observable in the runtime AC.
 - **No producer change in another repo.** `stopped`, `stop_date` and `flag_set_at` already arrive in the frontmatter map. `VaultAPIPage.Frontmatter` is `map[string]any` and `frontmatterString` coerces a YAML bool and a quoted `"true"` identically, so the marker reads the same either way.
 - **The existing reopen cases must not move.** Every row in AC5's case set keeps its verdict.
 
@@ -143,12 +159,12 @@ Until this ships, retire a row by clearing its flag as well as stopping it: `vau
 
 | Trigger | Detection | Expected behaviour | Recovery |
 |---|---|---|---|
-| `stop_date` present, `flag_set_at` absent (legacy flag) | tick line `skipped_by_reason=…stopped` | Row is skipped | Operator re-flags the row, which writes a fresh `flag_set_at` |
+| `stop_date` present, `flag_set_at` absent (legacy flag) | tick line `skipped_by_reason=…stopped` | Row is skipped | Operator re-flags the row with `--by operator`, which writes a fresh `flag_set_at` |
 | Both stamps present but one unparseable | same | Row is skipped | Fix the page's frontmatter; the next tick reads it |
 | Clock skew between the two writes | none needed | The later write wins by its own stamp; a skew under the tick interval changes nothing | — |
 | A re-flag arrives between the row read and the tick | the row opens one tick later than expected | The tick acts on the served set; the next read picks the flag up (≤ one interval + `serveGrace`) | Wait one tick |
 | Frontmatter map absent for a task | all three zero in the tick line | Behaviour unchanged from today | — |
-| A page carries `stopped: true` written by something other than `/supervisor:stop` | tick line `skipped_by_reason=…stopped` | Skipped — the marker is the marker whoever writes it | Operator re-flags |
+| A page carries `stopped: true` written by something other than `/supervisor:stop` | tick line `skipped_by_reason=…stopped` | Skipped — the marker is the marker whoever writes it | Operator re-flags with `--by operator` |
 
 ## Suggested Decomposition
 
@@ -156,8 +172,8 @@ Prompts must be generated in this order — each row is a single prompt with a c
 
 | # | Prompt focus | Covers DBs | Covers ACs | Depends on |
 |---|---|---|---|---|
-| 1 | Row fields + source population | 5 | 3 | — |
-| 2 | Ordering guard + `reasonStopped` + the case table | 1, 2, 3, 4 | 1, 2, 5 | prompt 1 (needs the fields) |
-| 3 | Contract doc + runtime evidence | 6, 7 | 4, 6 | prompt 2 |
+| 1 | Row fields + source population | 5, 7 | 1, 3 | — |
+| 2 | Ordering guard + `reasonStopped` + the case table | 1, 2, 3, 4, 7 | 1, 2, 5 | prompt 1 (needs the fields) |
+| 3 | Contract doc + runtime evidence | 6 | 1, 4, 6 | prompt 2 |
 
 Rationale: prompt 1 lands the plumbing with its own test and changes no decision; prompt 2 is the whole rule and cannot compile without prompt 1; prompt 3 is documentation plus the post-merge observation and is meaningless before prompt 2.
