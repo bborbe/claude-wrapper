@@ -1033,8 +1033,9 @@ func (t *FlaggedTick) classify(
 	}
 	// The stall gate runs LAST, after the park gate: a declared park is the more
 	// specific observable, and shadowing it would report `progress-stalled` for a
-	// row whose closer already names what it waits on. Only a row the park gate
-	// could not classify — no closer, or a closer with no `⏰ Ends:` — reaches here.
+	// row whose closer already names what it waits on. A row reaches here when the
+	// park gate did not hold it — no session id, no closer, no `⏰ Ends:`, or a
+	// declared park whose observable has been satisfied.
 	if reason, held := t.progressStalledHold(ctx, row, now); held {
 		return reason, rowSkipped, false
 	}
@@ -1062,7 +1063,10 @@ func (t *FlaggedTick) progressStalledHold(
 	if sweepgate.OpenBoxCount(row.Met) < 1 {
 		return "", false
 	}
-	if !t.progressStallFor(ctx).Stalled(row.Key(), row.ProgressHash, now) {
+	// The signal is the progress hash PLUS the checkbox reading: ticking a box is
+	// progress too, and a page with no `# Progress` section would otherwise hash a
+	// constant empty string and stall on that absence alone.
+	if !t.progressStallFor(ctx).Stalled(row.Key(), row.ProgressHash+"|"+row.Met, now) {
 		return "", false
 	}
 	return reasonProgressStalled, true

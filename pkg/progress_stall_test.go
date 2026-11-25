@@ -6,10 +6,15 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+
+	"github.com/bborbe/claude-wrapper/pkg/sweepgate"
 )
 
 var _ = ginkgo.Describe("progress stall predicate", func() {
@@ -53,6 +58,28 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 			gomega.Expect(second.Stalled("row", "h1", base.Add(progressStallThreshold))).
 				To(gomega.BeTrue())
 		})
+
+		ginkgo.It("re-stamps a zero Since instead of treating it as ancient", func() {
+			dir := ginkgo.GinkgoT().TempDir()
+			// A hand-edited or older-schema file: the stamp exists but carries no
+			// instant. Reading it as "since forever" would skip a live row.
+			gomega.Expect(writeProgressStamps(dir, map[string]progressStamp{
+				"row": {Hash: "h1"},
+			})).To(gomega.Succeed())
+
+			tracker := newProgressStallTracker(dir)
+			gomega.Expect(tracker.Stalled("row", "h1", base)).To(gomega.BeFalse())
+		})
+
+		ginkgo.It("survives a null state file without panicking", func() {
+			dir := ginkgo.GinkgoT().TempDir()
+			gomega.Expect(writeProgressRaw(dir, []byte("null"))).To(gomega.Succeed())
+
+			tracker := newProgressStallTracker(dir)
+			gomega.Expect(tracker.Stalled("row", "h1", base)).To(gomega.BeFalse())
+			gomega.Expect(tracker.Stalled("row", "h1", base.Add(progressStallThreshold))).
+				To(gomega.BeTrue())
+		})
 	})
 
 	ginkgo.Describe("progressStalledHold", func() {
@@ -78,28 +105,76 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 			gomega.Expect(reason).To(gomega.Equal(reasonProgressStalled))
 		})
 
+		// The negative cases seed the clock for the exact key and signal the row
+		// would use, so deleting the clause under test makes the row stall and the
+		// spec fail. A bare call at `base` would pass on first sight regardless.
 		ginkgo.It("does not skip a row outside execution", func() {
-			tick := &FlaggedTick{CacheDir: ginkgo.GinkgoT().TempDir()}
+			dir := ginkgo.GinkgoT().TempDir()
+			seedProgressStamp(dir, stalledRow.Key(), "h1|1/3", base)
+
+			tick := &FlaggedTick{CacheDir: dir}
 			row := stalledRow
 			row.Phase = "planning"
-			_, held := tick.progressStalledHold(context.Background(), row, base)
+			_, held := tick.progressStalledHold(context.Background(), row, base.Add(31*time.Minute))
 			gomega.Expect(held).To(gomega.BeFalse())
 		})
 
 		ginkgo.It("does not skip a row with no open box", func() {
-			tick := &FlaggedTick{CacheDir: ginkgo.GinkgoT().TempDir()}
+			dir := ginkgo.GinkgoT().TempDir()
+			seedProgressStamp(dir, stalledRow.Key(), "h1|3/3", base)
+
+			tick := &FlaggedTick{CacheDir: dir}
 			row := stalledRow
 			row.Met = "3/3"
-			_, held := tick.progressStalledHold(context.Background(), row, base)
+			_, held := tick.progressStalledHold(context.Background(), row, base.Add(31*time.Minute))
 			gomega.Expect(held).To(gomega.BeFalse())
 		})
 
 		ginkgo.It("does not skip a goal or topic row", func() {
-			tick := &FlaggedTick{CacheDir: ginkgo.GinkgoT().TempDir()}
-			row := stalledRow
-			row.Kind = "goal"
-			_, held := tick.progressStalledHold(context.Background(), row, base)
+			dir := ginkgo.GinkgoT().TempDir()
+			goalRow := stalledRow
+			goalRow.Kind = "goal"
+			seedProgressStamp(dir, goalRow.Key(), "h1|1/3", base)
+
+			tick := &FlaggedTick{CacheDir: dir}
+			_, held := tick.progressStalledHold(
+				context.Background(), goalRow, base.Add(31*time.Minute),
+			)
 			gomega.Expect(held).To(gomega.BeFalse())
 		})
 	})
+
+	ginkgo.Describe("pageStallFields", func() {
+		ginkgo.It("reads phase, the checkbox reading and the progress hash from the body", func() {
+			body := "# Success Criteria\n\n- [ ] open\n- [x] done\n\n# Progress\n\n- wrote something\n"
+			page := VaultAPIPage{
+				Frontmatter: map[string]any{"phase": "execution"},
+				Body:        body,
+			}
+			hash, met, phase := pageStallFields(page)
+			gomega.Expect(phase).To(gomega.Equal("execution"))
+			gomega.Expect(met).To(gomega.Equal("1/2"))
+			gomega.Expect(hash).To(gomega.Equal(sweepgate.ProgressHash(body)))
+		})
+	})
 })
+
+// seedProgressStamp writes one row's clock into a tracker's state file, so a
+// spec can start the clock without waiting the threshold.
+func seedProgressStamp(dir, key, hash string, since time.Time) {
+	gomega.Expect(writeProgressStamps(dir, map[string]progressStamp{
+		key: {Hash: hash, Since: since},
+	})).To(gomega.Succeed())
+}
+
+func writeProgressStamps(dir string, stamps map[string]progressStamp) error {
+	body, err := json.Marshal(stamps)
+	if err != nil {
+		return err
+	}
+	return writeProgressRaw(dir, body)
+}
+
+func writeProgressRaw(dir string, body []byte) error {
+	return os.WriteFile(filepath.Join(dir, progressStallFileName), body, 0o600)
+}

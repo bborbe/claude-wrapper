@@ -66,7 +66,11 @@ func (p *progressStallTracker) Stalled(key, hash string, now time.Time) bool {
 	defer p.mu.Unlock()
 	p.loadLocked()
 	stamp, ok := p.mem[key]
-	if !ok || stamp.Hash != hash {
+	// A zero or future `Since` cannot come from this code, so it means the file
+	// was hand-edited, written by another schema, or the clock stepped back.
+	// Re-stamping keeps the documented fail-open contract: a row is never skipped
+	// on bad evidence.
+	if !ok || stamp.Hash != hash || stamp.Since.IsZero() || stamp.Since.After(now) {
 		p.mem[key] = progressStamp{Hash: hash, Since: now}
 		p.persistLocked()
 		return false
@@ -87,10 +91,15 @@ func (p *progressStallTracker) loadLocked() {
 	if err != nil {
 		return
 	}
-	// A corrupt file is not a failed tick: the clock is an optimisation across a
-	// restart, so losing it costs one threshold's delay, exactly as if the row had
-	// just been seen for the first time.
-	_ = json.Unmarshal(body, &p.mem)
+	// Decode into a local and adopt it only when it is a real map. A file holding
+	// the JSON literal `null` unmarshals with no error and a nil map, and assigning
+	// a nil map into p.mem would panic on the next stamp — a crash loop that the
+	// file would reload on every start.
+	var loaded map[string]progressStamp
+	if err := json.Unmarshal(body, &loaded); err != nil || loaded == nil {
+		return
+	}
+	p.mem = loaded
 }
 
 func (p *progressStallTracker) persistLocked() {
