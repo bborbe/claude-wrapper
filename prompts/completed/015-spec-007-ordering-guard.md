@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [007-bug-flagged-tick-reopens-a-stopped-row]
+summary: Added the reasonStopped fail-closed ordering guard to decision() and a seven-case table test proving the stand-down outranks every derived verdict.
+execution_id: 42f58933-d4aa-5cba-93d0-aa45e8c4b180-exec-015-spec-007-ordering-guard
+dark-factory-version: dev
 created: "2026-11-25T07:30:00Z"
 queued: "2026-11-25T06:43:14Z"
+started: "2026-11-25T06:45:06Z"
+completed: "2026-11-25T06:47:50Z"
 branch: dark-factory/bug-flagged-tick-reopens-a-stopped-row
 ---
 

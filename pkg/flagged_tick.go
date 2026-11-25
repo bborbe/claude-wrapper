@@ -174,6 +174,10 @@ const (
 	// the race to every tick and the row was never opened by the daemon that
 	// could serve it.
 	reasonForeignVault = "foreign-vault"
+	// reasonStopped marks a row the operator deliberately stood down: its
+	// stop_date is newer than its flag_set_at, so the stand-down outranks the
+	// reopen. A nil stamp is fail-closed.
+	reasonStopped = "stopped"
 )
 
 // FlaggedTickResult is one tick's outcome, and the whole of what it logs.
@@ -1673,6 +1677,16 @@ func decision(
 	}
 	if len(row.BlockedBy) > 0 {
 		return reasonBlocked, false, true
+	}
+	// The operator's stand-down outranks every derived state. A row whose
+	// stop_date is newer than its flag_set_at was stopped after it was flagged and
+	// must not be reopened; only a flag strictly newer than the stop reopens it.
+	// A nil stamp (absent or unparseable) is fail-closed — absent evidence never
+	// reopens a retired row.
+	if row.Stopped {
+		if row.StopDate == nil || row.FlagSetAt == nil || !row.FlagSetAt.After(*row.StopDate) {
+			return reasonStopped, false, true
+		}
 	}
 	// Eligible: ABSENT (a session that died — resume it) or never opened (no
 	// session at all — open it fresh, see neverOpened). Operator ruling
