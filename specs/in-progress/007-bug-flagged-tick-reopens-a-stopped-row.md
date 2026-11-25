@@ -1,6 +1,7 @@
 ---
-status: draft
-kind: bug
+status: approved
+approved: "2026-11-25T05:40:53Z"
+branch: dark-factory/bug-flagged-tick-reopens-a-stopped-row
 ---
 
 ## Summary
