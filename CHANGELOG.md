@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.66.2
 
 - fix: **the flagged reopen tick honours the operator's stand-down marker, by ordering rather than presence.** `/supervisor:stop` stamps `stopped: true` + `stop_date` onto a task page, and the tick read neither: a row the operator had retired was reopened on the next tick, with no line saying why. The rule is now ordering, not presence — a row is skipped with reason `stopped` unless its `flag_set_at` is strictly newer than its `stop_date`, so a deliberate re-flag after a stop still opens. A missing or unparseable stamp is fail-closed (skip), and the guard runs before the liveness guards so a stopped row reports `stopped` rather than a derived verdict. The three fields arrive on `FlaggedRow` from the task record endpoint's existing frontmatter map — no producer change in another repo. Measured 2026-11-24 on `Classify the Heat-Pump Penetration Seal`: flag cleared 17:10, stopped 18:05:33, deliberately re-flagged 19:36:58 — a presence-only guard would ignore the operator's newest mark on exactly that row. Change set: `pkg/flagged_tick.go`, `pkg/flagged_tick_stopped_test.go`, `pkg/flagged_rows_source.go`, `pkg/flagged_rows_vaultapi.go`, `pkg/flagged_rows_vaultapi_test.go`, `docs/eligibility-predicate.md`, `CHANGELOG.md`.
 
