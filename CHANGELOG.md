@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.66.5
 
 - test: **a flagged-tick spec proves a spawn whose first stdin write times out cannot stop the tick.** The reopener for one row fails with an error wrapping `ErrSendTimeout`, as the bounded write from v0.66.4 now does; the spec runs the real `FlaggedTick.Run` on a 10 ms interval and requires at least three `flagged-tick opened=` summary lines and a refusal naming `send-timeout` for that row. The same spec with a reopener that blocks forever (the pre-v0.66.4 behaviour) logs zero summary lines and times out. Change set: `pkg/flagged_tick_send_timeout_test.go` (new), `CHANGELOG.md`.
 
