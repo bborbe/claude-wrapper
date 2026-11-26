@@ -47,3 +47,37 @@ var _ = ginkgo.Describe("Openable", func() {
 		gomega.Expect(byName["f4-blocked"].Reason).To(gomega.Equal(reasonBlocked))
 	})
 })
+
+// countingOpenExecutor counts the rows the tick actually hands to OpenTick.
+type countingOpenExecutor struct{ opened int }
+
+func (c *countingOpenExecutor) OpenRequest(
+	context.Context, []OpenRow, string,
+) []OpenVerdict {
+	return nil
+}
+
+func (c *countingOpenExecutor) OpenTick(_ context.Context, rows []OpenRow) []OpenVerdict {
+	c.opened += len(rows)
+	return nil
+}
+
+var _ = ginkgo.Describe("Openable negative probe", func() {
+	// One full tick cycle: F1 must open (positive control), F2 and F4 must not.
+	ginkgo.It("opens only F1, never F2 or F4", func() {
+		now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+		rows := []FlaggedRow{
+			{Kind: "task", Vault: "private-personal", Name: "f1", Branch: "create", Liveness: "none", Phase: "planning"},
+			{Kind: "task", Vault: "private-personal", Name: "f2", Branch: "resume", Liveness: "LIVE", SessionID: "11111111-1111-1111-1111-111111111111", Phase: "execution"},
+			{Kind: "task", Vault: "private-personal", Name: "f4", Branch: "create", Liveness: "none", BlockedBy: []string{"[[x]]"}},
+		}
+		opener := &countingOpenExecutor{}
+		tick := newTick(staticSource{rows: rows}, nil, &recordingCaps{})
+		tick.Open = opener
+		tick.Now = fixedNow(now)
+
+		tick.tickFromRows(context.Background(), rows)
+
+		gomega.Expect(opener.opened).To(gomega.Equal(1))
+	})
+})
