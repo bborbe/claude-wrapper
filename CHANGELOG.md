@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.67.1
 
 - fix: **the keep-alive tick no longer runs the retired `topicless-goal-manager` procedure.** Its script, `topicless-goal-keepalive.py`, has been a refusing stub upstream since 2026-11-24 — the goal-manager tier was merged into the topic tier — so it printed `retired` and exited 1 on every invocation. Measured 2026-11-26 in the wrapper daemon's stderr log: **155** `action=topicless-goal-manager result=error` lines, the latest reading `topicless-goal block has an unexpected line: "retired"`. A wired procedure that can only error is noise in a contract where every line is meant to name what happened and to which session; it also made the tick's own "all eight procedures run" claim false. The procedure and its `newTopiclessDecide` wiring are removed, leaving seven. The `pkg` parser and types stay — they are a library, not a decision path — and re-adding the leg requires a script that can decide something, not just the wiring block. Change set: `main_keepalive.go`, `CHANGELOG.md`.
 
