@@ -82,6 +82,9 @@ func (w *fifoWriter) Write(p []byte) (int, error) {
 		case stderrors.Is(err, syscall.EINTR):
 			continue
 		case stderrors.Is(err, syscall.EAGAIN):
+			// Wall clock on purpose: the deadline is a real-time bound, set and
+			// checked the way os.File's is. Write keeps io.Writer's signature, so
+			// it takes no ctx; the caller folds its ctx deadline into this one.
 			if !deadline.IsZero() && !time.Now().Before(deadline) {
 				return written, os.ErrDeadlineExceeded
 			}

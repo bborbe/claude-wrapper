@@ -1490,7 +1490,16 @@ func (c *child) writeLine(ctx context.Context, line []byte) error {
 	if !ok {
 		return errors.Errorf(ctx, "session %q stdin cannot take a write deadline", c.id)
 	}
-	if err := writer.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+	// Wall clock on purpose, not c.now: a write deadline is a real-time bound that
+	// fifoWriter checks against the real clock, exactly as os.File does. A deadline
+	// taken from an injected (possibly fake) clock would disagree with that check —
+	// a fake clock in the past would time every write out at once.
+	deadline := time.Now().Add(timeout)
+	// A caller with an earlier deadline of its own is not kept waiting past it.
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := writer.SetWriteDeadline(deadline); err != nil {
 		return errors.Wrapf(ctx, err, "set write deadline on session %q stdin failed", c.id)
 	}
 	defer func() { _ = writer.SetWriteDeadline(time.Time{}) }()
