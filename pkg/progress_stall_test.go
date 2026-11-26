@@ -151,10 +151,11 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 				Frontmatter: map[string]any{"phase": "execution"},
 				Body:        body,
 			}
-			hash, met, phase := pageStallFields(page)
+			hash, tail, met, phase := pageStallFields(page)
 			gomega.Expect(phase).To(gomega.Equal("execution"))
 			gomega.Expect(met).To(gomega.Equal("1/2"))
 			gomega.Expect(hash).To(gomega.Equal(sweepgate.ProgressHash(body)))
+			gomega.Expect(tail).To(gomega.Equal("- wrote something"))
 		})
 	})
 })

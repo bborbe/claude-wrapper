@@ -438,6 +438,17 @@ type FlaggedTick struct {
 	// predates it gets and what the daemon gets when the state directories cannot
 	// be resolved.
 	Parked ParkedHold
+	// Poster posts the stall escalation card. Nil disables the escalation, which is
+	// what a fixture that predates it gets and what the daemon gets when the
+	// attention URL is unset.
+	Poster AttentionPoster
+	// Cards answers "is there already a card for this dedup key". It is what makes
+	// one stall episode post exactly one card across ticks AND restarts: the daemon
+	// restarts on every deploy while the stall clock survives it, so a
+	// tick-counting guard would re-post after each restart. Nil disables the
+	// escalation for the same reason as Poster — without the lookup there is no way
+	// to post only once.
+	Cards CardLookup
 	// Sessions is the wrapper's own durable child table — the half of the
 	// recently-spawned guard that still answers while the attention-controller is
 	// down. Nil resolves it from the state directory, which `Home` and `Getenv`
@@ -1069,7 +1080,94 @@ func (t *FlaggedTick) progressStalledHold(
 	if !t.progressStallFor(ctx).Stalled(row.Key(), row.ProgressHash+"|"+row.Met, now) {
 		return "", false
 	}
+	t.escalateStall(ctx, row)
 	return reasonProgressStalled, true
+}
+
+// stallEscalationProducerID names this producer on the attention board.
+const stallEscalationProducerID = "claude-wrapper-stalled-row"
+
+// escalateStall posts one card for a row the tick has stopped re-opening.
+//
+// Before this, `progress-stalled` was a silent terminal hold: the row was skipped
+// every tick and named nowhere the operator reads, so a worker that ended on an
+// uncarded gate stayed invisible until someone found it by hand — 25 h in the
+// 2026-11-26 case this exists to close.
+//
+// The dedup key carries the Progress hash, so the card is per EPISODE: a row that
+// stalls, is carded, then moves and stalls again gets a second card, while every
+// tick of the same episode finds the first one and posts nothing. The lookup is
+// what guarantees that, not the tick count — the daemon restarts on every deploy
+// and the stall clock survives the restart, so a counter would re-post after each
+// one.
+//
+// A failure to post never changes the hold: the row is still skipped, and the
+// failure is logged. An unreachable store must not turn into a tick that opens a
+// stalled row.
+func (t *FlaggedTick) escalateStall(ctx context.Context, row FlaggedRow) {
+	if t.Poster == nil || t.Cards == nil {
+		return
+	}
+	key := stallEscalationDedupKey(row)
+	existing, err := t.Cards.ExistingCard(ctx, stallEscalationProducerID, key)
+	if err != nil {
+		t.logf(
+			"flagged-tick: stall-escalation row=%s outcome=lookup-failed error=%v",
+			row.Name, err,
+		)
+		return
+	}
+	if existing != "" {
+		return
+	}
+	itemID, err := t.Poster.Post(ctx, AttentionPostRequest{
+		ProducerID:      stallEscalationProducerID,
+		ProducerKind:    "cron",
+		LivenessRef:     "owner:" + stallEscalationProducerID,
+		DedupKey:        key,
+		InterruptClass:  "routine",
+		Payload:         stallPayload(row),
+		AnswerMechanism: "ack",
+	})
+	if err != nil {
+		t.logf(
+			"flagged-tick: stall-escalation row=%s outcome=post-failed error=%v",
+			row.Name, err,
+		)
+		return
+	}
+	t.logf("flagged-tick: stall-escalation row=%s card=%s", row.Name, itemID)
+}
+
+// stallEscalationDedupKey identifies one stall episode.
+//
+// The Progress hash is the episode: it changes only when the row moves, so the
+// same hash is the same stall and a new hash is a new one. The row key supplies
+// identity across restarts, when the session id may have gone.
+func stallEscalationDedupKey(row FlaggedRow) string {
+	return "stalled|" + row.Key() + "|" + row.ProgressHash
+}
+
+// stallPayload is the card body: which row, what it last said, and what the tick
+// has been doing about it.
+func stallPayload(row FlaggedRow) string {
+	var b strings.Builder
+	b.WriteString("Flagged row held as progress-stalled: ")
+	b.WriteString(row.Name)
+	b.WriteString(" (")
+	b.WriteString(row.Vault)
+	b.WriteString(")")
+	if row.ProgressTail != "" {
+		b.WriteString("\nLast progress: ")
+		b.WriteString(row.ProgressTail)
+	}
+	b.WriteString("\nIts # Progress section has not moved for ")
+	b.WriteString(progressStallThreshold.String())
+	b.WriteString(
+		", so the flagged tick has stopped re-opening it. Card it, or clear it — " +
+			"nothing else will surface this row.",
+	)
+	return b.String()
 }
 
 // progressStallFor builds the stall clock once per tick, over the same state

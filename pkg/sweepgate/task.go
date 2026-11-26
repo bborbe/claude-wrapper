@@ -173,6 +173,26 @@ func ProgressHash(text string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// ProgressTail returns the last non-empty line of the page's `# Progress`
+// section, or "" when the section is absent or empty.
+//
+// It is the human-readable half of the stall signal: ProgressHash says the
+// section has not moved, and this says what it last said — so an escalation can
+// quote the wait instead of only its hash.
+func ProgressTail(text string) string {
+	body, ok := cutSection(text, progressHeaderRe, []string{"\n# "})
+	if !ok {
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 // CheckboxCount renders `n/m` ticked-vs-total checkboxes, optionally scoped to a
 // `# <section>`.
 //
