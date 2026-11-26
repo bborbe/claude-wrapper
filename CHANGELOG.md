@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.66.4
 
 - fix: **a write to a child's stdin is bounded, so one child that stops reading can no longer wedge the flagged tick.** The daemon wrote through the same FIFO descriptor it handed the child; os/exec's `Fd()` call made that descriptor blocking, and on darwin a FIFO never enters Go's poller (golang/go#24164), so the write had no deadline at all. Measured 2026-11-26: the flagged tick's goroutine sat 67 minutes in `(*child).send` → `syscall.write` while the daemon stayed up, and every flagged row flagged after 08:32 went unopened. The store now opens the FIFO twice — a blocking descriptor for the child, and a non-blocking one the daemon writes through (`fifoWriter`), which retries a full FIFO until a 30 s deadline. A write that misses it returns `ErrSendTimeout` and marks that child's stdin broken (a partial line may sit in the FIFO), so the spawn is refused instead of waited on; a stdin that cannot take a deadline is refused rather than written unbounded. Both writers, `send` and `writeControl`, go through the one bounded `writeLine`. Change set: `pkg/fifo_writer.go` (new), `pkg/sessionstore.go`, `pkg/supervisor.go`, `pkg/errors.go`, `pkg/send_deadline_test.go` (new — a real child that never reads its stdin), `pkg/zero_turn_test.go`, `CHANGELOG.md`.
 
