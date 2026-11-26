@@ -793,8 +793,7 @@ func startFleetFaces(
 	mux.Handle("/api/1.0/reload-fleet", handler.ReloadFleet(rosterServer))
 	mux.Handle("/api/1.0/fleet-slash-command", handler.FleetSlashCommand(rosterServer))
 
-	go startFlaggedTick(
-		ctx, flaggedTickInterval,
+	flaggedTick := newFlaggedTick(
 		supervisor, heartbeats,
 		openExecutor,
 		pkg.NewFlaggedReopener(supervisor, tabSpawner, vaults, ledger, now),
@@ -805,7 +804,13 @@ func startFleetFaces(
 		parked,
 		ownVault,
 		stateDir,
+		flaggedTickInterval,
 	)
+	// The read half of the same decision: GET /api/1.0/openable reports what the
+	// tick would open or hold, from the tick's own gates.
+	mux.Handle("/api/1.0/openable", handler.Openable(flaggedTick))
+
+	go startFlaggedTick(ctx, flaggedTickInterval, flaggedTick, ledger, registry, now)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
 	startTickJobs(ctx, supervisor, keepalive, registry, heartbeats, vaults, tabs, rosterServer.Open, stateDir, now)
@@ -1389,6 +1394,26 @@ func startBoardDelivery(
 func startFlaggedTick(
 	ctx context.Context,
 	interval time.Duration,
+	tick *pkg.FlaggedTick,
+	ledger pkg.LedgerReader,
+	registry pkg.SessionRegistry,
+	now libtime.CurrentDateTimeGetter,
+) {
+	if interval <= 0 {
+		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
+		return
+	}
+	// The adopt job runs on the same cadence and reads the same stores: both are
+	// fleet liveness, and row 4 ran every fleet round.
+	go startAdoptTick(ctx, interval, ledger, registry, now)
+	if err := tick.Run(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("flagged tick stopped: %v", err)
+	}
+}
+
+// newFlaggedTick builds the reopen tick's wiring once, so the run loop and the
+// read endpoint GET /api/1.0/openable share one instance and one decision.
+func newFlaggedTick(
 	supervisor pkg.ChildLister,
 	heartbeats pkg.HeartbeatReader,
 	open pkg.OpenExecutor,
@@ -1400,11 +1425,8 @@ func startFlaggedTick(
 	parked pkg.ParkedHold,
 	ownVault pkg.DaemonVault,
 	stateDir string,
-) {
-	if interval <= 0 {
-		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
-		return
-	}
+	interval time.Duration,
+) *pkg.FlaggedTick {
 	tick := &pkg.FlaggedTick{
 		// The index owns the predicate now: the tick asks vault-api which rows are
 		// eligible instead of walking three vault directories, so the tick and every
@@ -1436,12 +1458,7 @@ func startFlaggedTick(
 	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
 		tick.Idle = nudger
 	}
-	// The adopt job runs on the same cadence and reads the same stores: both are
-	// fleet liveness, and row 4 ran every fleet round.
-	go startAdoptTick(ctx, interval, ledger, registry, now)
-	if err := tick.Run(ctx); err != nil && ctx.Err() == nil {
-		log.Printf("flagged tick stopped: %v", err)
-	}
+	return tick
 }
 
 // adoptSelf is the adopter the daemon records on a claim.
