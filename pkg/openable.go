@@ -60,11 +60,27 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 	now := t.now()
 	ordered := orderFlaggedRows(rows)
 	out := make([]OpenableEntry, 0, len(ordered))
+	// The row budget and the worker cap are part of the tick's per-cycle gate,
+	// not of classify(). Apply them here READ-ONLY (CheckWorker, never
+	// ReserveStart) so the endpoint does not report `open` for a row the tick
+	// will refuse this cycle. The rate gate is stateful and can only be checked
+	// at open time; a row it refuses is reported `open` here by design.
+	openCount := 0
 	for _, row := range ordered {
 		reason, action, _ := t.classify(ctx, row, recent, dead, childLive, now, true)
 		decision := OpenableDecisionOpen
 		if action != rowEligible {
 			decision = OpenableDecisionHeld
+		} else if t.Caps != nil {
+			if err := t.Caps.CheckWorker(ctx, row.CapMode(), row.OperatorNamed()); err != nil {
+				decision = OpenableDecisionHeld
+				reason = reasonCapsRefused
+			} else if openCount >= maxRowsPerTick {
+				decision = OpenableDecisionHeld
+				reason = reasonRowBudget
+			} else {
+				openCount++
+			}
 		}
 		out = append(out, OpenableEntry{
 			Vault:     row.Vault,
