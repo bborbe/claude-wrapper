@@ -13,12 +13,12 @@ import (
 	"github.com/bborbe/errors"
 )
 
-// The keep-alive tick runs the eight procedures the Fleet Manager's row 5b used
+// The keep-alive tick runs the seven procedures the Fleet Manager's row 5b used
 // to run inside a model round, so the fleet stays alive while the manager is
 // busy, dead or out of context.
 //
 // ⚠️ **The line is not the evidence.** A tick that prints
-// `job=keepalive action=<procedure> result=none` eight times satisfies the line
+// `job=keepalive action=<procedure> result=none` seven times satisfies the line
 // shape and nothing else. The effect word is the contract: a procedure that had
 // work to do reports `resumed`, `restarted`, `closed`, `capped` or `skipped`
 // with the session id it acted on, and `none` means it found nothing to do —
@@ -125,7 +125,7 @@ type KeepaliveEffect struct {
 	Blockers []string
 }
 
-// KeepaliveProcedure is one of the eight keep-alive acts.
+// KeepaliveProcedure is one of the seven keep-alive acts.
 //
 // Each implementation reads ONE population, decides with the same rule the
 // Python leg used, and performs its own act. Splitting them this way is what
@@ -148,7 +148,7 @@ type KeepaliveJob struct {
 	// tick, and a failed pane join only degrades restart/nudge to no-pane/undelivered.
 	// A pre-step never aborts the tick.
 	PreSteps []func(ctx context.Context) error
-	// Procedures are the eight acts. Order affects only the log's readability:
+	// Procedures are the seven acts. Order affects only the log's readability:
 	// no procedure depends on another's effect in the same tick, which is why a
 	// failing one does not stop the rest.
 	Procedures []KeepaliveProcedure
@@ -169,7 +169,7 @@ func (j *KeepaliveJob) Run(ctx context.Context) error {
 
 // TickAndLog runs every procedure once and writes one line per procedure.
 //
-// ⚠️ A procedure's error is logged and the tick CONTINUES. The eight acts are
+// ⚠️ A procedure's error is logged and the tick CONTINUES. The seven acts are
 // independent: a lapsed-manager read that fails must not stop a dead worker from
 // being resumed, because that would turn one broken store into a fleet-wide
 // outage — the exact failure this port exists to remove.

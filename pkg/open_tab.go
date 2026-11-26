@@ -15,9 +15,24 @@ import (
 	libtime "github.com/bborbe/time"
 )
 
-// OpenModeSource is the mode_source an open-endpoint spawn files in the
-// spawn ledger, so a worker can be traced to the open that made it.
+// OpenModeSource is the mode_source a REQUEST-mode open-endpoint spawn files in
+// the spawn ledger, so a worker can be traced to the open that made it. The
+// daemon's tick files `modeSourceFlaggedTick` instead — see `openModeSourceOr`.
 const OpenModeSource = "open"
+
+// openModeSourceOr is the ledger's `mode_source` for an open spawn: the caller's
+// value when it named one, else the historical `open`.
+//
+// ⚠️ The distinction is load-bearing, not cosmetic. While every open spawn filed
+// `open`, a population read over that bucket could not tell a manager's
+// `/supervisor:open` from the daemon's reopen — and the tick's empty-spawner
+// rows were read as a defect in the request path. Measured 2026-11-26.
+func openModeSourceOr(source string) string {
+	if strings.TrimSpace(source) != "" {
+		return source
+	}
+	return OpenModeSource
+}
 
 // openPython is the interpreter the open endpoint's scripts run under.
 const openPython = "python3"
@@ -50,6 +65,10 @@ type OpenTabRequest struct {
 	TaskStatus       string
 	OperatorNamed    bool
 	SpawnerSessionID string
+	// ModeSource is the ledger's `mode_source` for this row's spawn: `open` for
+	// a request-mode open, `flagged-tick` for the daemon's tick. Empty keeps the
+	// historical `open`, so a caller that does not name one is unchanged.
+	ModeSource string
 }
 
 // OpenTabResult is what an opened tab produced.
@@ -491,7 +510,7 @@ func (o *openTabOpener) postLedger(
 		Label:       result.TabName,
 		Cwd:         request.Vault.Path,
 		Mode:        SpawnModeInteractive,
-		ModeSource:  OpenModeSource,
+		ModeSource:  openModeSourceOr(request.ModeSource),
 		Launcher:    result.Launcher,
 		PaneID:      result.PaneID,
 		Role:        request.Role,

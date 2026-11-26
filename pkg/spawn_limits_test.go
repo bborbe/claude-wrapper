@@ -1146,9 +1146,19 @@ var _ = ginkgo.Describe("spawn caps after review", func() {
 		), "caller")
 
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(ledger.posted).To(gomega.HaveLen(1))
-		gomega.Expect(ledger.posted[0].Role).To(gomega.Equal(RoleAgent))
-		gomega.Expect(ledger.posted[0].ResumedFrom).To(gomega.Equal("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"))
+		// ⚠️ A RESUME PATCHES, it does not POST. A POST replaces the whole row and
+		// would blank the `spawner_session_id` the open recorded — the defect that
+		// left 320 sessions' parks ownable by nobody (measured 2026-11-26). The
+		// role and resumed_from are still recorded; they ride the patch.
+		gomega.Expect(ledger.posted).To(gomega.BeEmpty())
+		gomega.Expect(ledger.patches).To(gomega.HaveLen(1))
+		gomega.Expect(string(ledger.patches[0]["role"])).To(gomega.Equal(`"agent"`))
+		gomega.Expect(string(ledger.patches[0]["resumed_from"])).
+			To(gomega.Equal(`"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"`))
+		// The spawn edge belongs to the original spawn: a resume must never name it.
+		gomega.Expect(ledger.patches[0]).NotTo(gomega.HaveKey("spawner_session_id"))
+		gomega.Expect(ledger.patches[0]).NotTo(gomega.HaveKey("parent_session"))
+		gomega.Expect(ledger.patches[0]).NotTo(gomega.HaveKey("mode_source"))
 	})
 
 	ginkgo.It("charges a headless manager spawn to the manager cap, not the worker cap", func() {

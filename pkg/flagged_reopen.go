@@ -296,6 +296,13 @@ func (r *flaggedReopener) Nudge(ctx context.Context, row FlaggedRow) error {
 // A failure is logged, never returned: the spawn has already happened, and
 // refusing a live worker because the store was down would turn a store outage
 // into a row that is dark despite having a session.
+//
+// ⚠️ A RESUME PATCHES; ONLY A FRESH SPAWN POSTS. A POST replaces the whole row,
+// so reopening a session a manager opened blanked the `spawner_session_id` that
+// open recorded — leaving that worker's parks ownable by nobody. Measured
+// 2026-11-26: 320 of 2749 sessions in the wrapper log lost their spawner this
+// way. The patch names only the fields a reopen changes; a row that does not
+// exist answers ErrLedgerRowAbsent and falls through to the POST below.
 func (r *flaggedReopener) recordSpawn(
 	ctx context.Context,
 	row FlaggedRow,
@@ -304,6 +311,16 @@ func (r *flaggedReopener) recordSpawn(
 ) {
 	if r.Ledger == nil {
 		return
+	}
+	if strings.TrimSpace(resumedFrom) != "" {
+		if patchLedgerRow(
+			ctx,
+			r.Ledger,
+			session.ID,
+			resumeSpawnPatch(row.Name, session.Cwd, row.Role, resumedFrom),
+		) {
+			return
+		}
 	}
 	if err := r.Ledger.Post(ctx, "", LedgerRow{
 		SessionID:   session.ID,

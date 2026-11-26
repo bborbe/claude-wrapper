@@ -6,6 +6,8 @@ package pkg
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -164,6 +166,99 @@ var _ = ginkgo.Describe("flagged tick stall escalation", func() {
 		gomega.Expect(
 			mustHold(tick, ctx, row, base.Add(progressStallThreshold)),
 		).To(gomega.BeTrue())
+	})
+})
+
+// The regression the shipped fix missed, and why the old fake could not catch it.
+//
+// `postedCardLookup` returns the posted id regardless of state, so it modelled an
+// always-open card and never exercised the real question. The store's open route returns
+// OPEN items only: once the operator answers, the card closes, the lookup finds nothing,
+// and the next post after a restart is a duplicate. Measured 2026-11-26 — two cards under
+// one dedup key, 23 minutes apart, the second after the daemon restarted.
+var _ = ginkgo.Describe("stall escalation against card history", func() {
+	base := time.Date(2026, 11, 26, 18, 0, 0, 0, time.UTC)
+
+	stalledRow := func(hash string) FlaggedRow {
+		return FlaggedRow{
+			Kind:         "task",
+			Vault:        "private-personal",
+			Name:         "A Worker Exits on an Uncarded Operator Gate",
+			Phase:        "execution",
+			Met:          "0/3",
+			ProgressHash: hash,
+		}
+	}
+
+	ginkgo.It("finds a CLOSED card, so a restart cannot re-post the episode", func() {
+		var sawPath string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sawPath = r.URL.Path
+			_, _ = w.Write([]byte(`{"items":[{"item_id":"closed-card","state":"closed",` +
+				`"producer_id":"claude-wrapper-stalled-row","dedup_key":"k1"}]}`))
+		}))
+		defer server.Close()
+
+		id, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
+			context.Background(), "claude-wrapper-stalled-row", "k1",
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(id).To(gomega.Equal("closed-card"))
+		// The open route cannot answer this question; the history route can.
+		gomega.Expect(sawPath).To(gomega.Equal(AttentionHistoryPath))
+	})
+
+	ginkgo.It("ignores another producer's card under the same key", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"items":[{"item_id":"other","state":"closed",` +
+				`"producer_id":"someone-else","dedup_key":"k1"}]}`))
+		}))
+		defer server.Close()
+
+		id, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
+			context.Background(), "claude-wrapper-stalled-row", "k1",
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(id).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("fails closed on a store error rather than reporting no card", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		_, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
+			context.Background(), "claude-wrapper-stalled-row", "k1",
+		)
+		// An unreadable store is not "no card exists" — treating the two alike is how the
+		// duplicate got posted in the first place.
+		gomega.Expect(err).NotTo(gomega.BeNil())
+	})
+
+	ginkgo.It("does not post when the episode's card is already closed", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"items":[{"item_id":"closed-card","state":"closed",` +
+				`"producer_id":"claude-wrapper-stalled-row","dedup_key":"` +
+				stallEscalationDedupKey(stalledRow("h1")) + `"}]}`))
+		}))
+		defer server.Close()
+
+		poster := &recordingPoster{}
+		tick := &FlaggedTick{
+			CacheDir: ginkgo.GinkgoT().TempDir(),
+			Poster:   poster,
+			Cards:    NewBoardCardHistory(server.URL, nil),
+			Logf:     func(string, ...any) {},
+		}
+		row := stalledRow("h1")
+		ctx := context.Background()
+
+		gomega.Expect(mustHold(tick, ctx, row, base)).To(gomega.BeFalse())
+		gomega.Expect(
+			mustHold(tick, ctx, row, base.Add(progressStallThreshold)),
+		).To(gomega.BeTrue())
+		gomega.Expect(poster.requests).To(gomega.BeEmpty())
 	})
 })
 
