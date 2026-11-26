@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **`GET /api/1.0/openable` exposes the flagged tick's per-row open decision as a read endpoint.** The tick computes every cycle whether each candidate row would be opened or held, and why, but discarded that into a log line — so a manager re-derived it by hunting the vault and the wrapper log, and a row the board showed as closed was held as `not-absent-dead` with no way to read the verdict. The endpoint returns one entry per candidate row (`vault`, `kind`, `name`, `session_id`, `decision` `open|held`, the tick's own `reason`, `phase`, `flag_set_by`) from the same `classify()` gates the tick uses, so the tick and the endpoint share one decision function. Read-only; `FlaggedRow` now carries the page's raw `flag_set_by`. Change set: `pkg/openable.go` (new), `pkg/handler/openable.go` (new), `pkg/openable_test.go` (new), `pkg/flagged_rows_source.go`, `pkg/flagged_rows_vaultapi.go`, `main.go`, `CHANGELOG.md`.
+
 ## v0.66.5
 
 - test: **a flagged-tick spec proves a spawn whose first stdin write times out cannot stop the tick.** The reopener for one row fails with an error wrapping `ErrSendTimeout`, as the bounded write from v0.66.4 now does; the spec runs the real `FlaggedTick.Run` on a 10 ms interval and requires at least three `flagged-tick opened=` summary lines and a refusal naming `send-timeout` for that row. The same spec with a reopener that blocks forever (the pre-v0.66.4 behaviour) logs zero summary lines and times out. Change set: `pkg/flagged_tick_send_timeout_test.go` (new), `CHANGELOG.md`.
