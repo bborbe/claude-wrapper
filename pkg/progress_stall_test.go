@@ -21,6 +21,22 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 	base := time.Date(2026, 11, 25, 22, 0, 0, 0, time.UTC)
 
 	ginkgo.Describe("progressStallTracker", func() {
+		ginkgo.It("StalledRead reports a stalled row without writing the clock", func() {
+			dir := ginkgo.GinkgoT().TempDir()
+			seedProgressStamp(dir, "k", "h1", base)
+			path := filepath.Join(dir, progressStallFileName)
+			before, err := os.ReadFile(path)
+			gomega.Expect(err).To(gomega.BeNil())
+
+			tracker := newProgressStallTracker(dir)
+			gomega.Expect(tracker.StalledRead("k", "h1", base.Add(31*time.Minute))).To(gomega.BeTrue())
+			// A never-seen key must not be stamped either.
+			gomega.Expect(tracker.StalledRead("new", "h9", base)).To(gomega.BeFalse())
+
+			after, err := os.ReadFile(path)
+			gomega.Expect(err).To(gomega.BeNil())
+			gomega.Expect(after).To(gomega.Equal(before))
+		})
 		ginkgo.It("does not stall on first sight", func() {
 			tracker := newProgressStallTracker(ginkgo.GinkgoT().TempDir())
 			gomega.Expect(tracker.Stalled("row", "h1", base)).To(gomega.BeFalse())
@@ -96,11 +112,11 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 			tick := &FlaggedTick{CacheDir: ginkgo.GinkgoT().TempDir()}
 			ctx := context.Background()
 
-			reason, held := tick.progressStalledHold(ctx, stalledRow, base)
+			reason, held := tick.progressStalledHold(ctx, stalledRow, base, false)
 			gomega.Expect(held).To(gomega.BeFalse())
 			gomega.Expect(reason).To(gomega.BeEmpty())
 
-			reason, held = tick.progressStalledHold(ctx, stalledRow, base.Add(31*time.Minute))
+			reason, held = tick.progressStalledHold(ctx, stalledRow, base.Add(31*time.Minute), false)
 			gomega.Expect(held).To(gomega.BeTrue())
 			gomega.Expect(reason).To(gomega.Equal(reasonProgressStalled))
 		})
@@ -115,7 +131,7 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 			tick := &FlaggedTick{CacheDir: dir}
 			row := stalledRow
 			row.Phase = "planning"
-			_, held := tick.progressStalledHold(context.Background(), row, base.Add(31*time.Minute))
+			_, held := tick.progressStalledHold(context.Background(), row, base.Add(31*time.Minute), false)
 			gomega.Expect(held).To(gomega.BeFalse())
 		})
 
@@ -126,7 +142,7 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 			tick := &FlaggedTick{CacheDir: dir}
 			row := stalledRow
 			row.Met = "3/3"
-			_, held := tick.progressStalledHold(context.Background(), row, base.Add(31*time.Minute))
+			_, held := tick.progressStalledHold(context.Background(), row, base.Add(31*time.Minute), false)
 			gomega.Expect(held).To(gomega.BeFalse())
 		})
 
@@ -138,7 +154,7 @@ var _ = ginkgo.Describe("progress stall predicate", func() {
 
 			tick := &FlaggedTick{CacheDir: dir}
 			_, held := tick.progressStalledHold(
-				context.Background(), goalRow, base.Add(31*time.Minute),
+				context.Background(), goalRow, base.Add(31*time.Minute), false,
 			)
 			gomega.Expect(held).To(gomega.BeFalse())
 		})

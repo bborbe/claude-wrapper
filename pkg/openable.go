@@ -61,7 +61,7 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 	ordered := orderFlaggedRows(rows)
 	out := make([]OpenableEntry, 0, len(ordered))
 	for _, row := range ordered {
-		reason, action, _ := t.classify(ctx, row, recent, dead, childLive, now)
+		reason, action, _ := t.classify(ctx, row, recent, dead, childLive, now, true)
 		decision := OpenableDecisionOpen
 		if action != rowEligible {
 			decision = OpenableDecisionHeld

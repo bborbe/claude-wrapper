@@ -971,6 +971,7 @@ func (t *FlaggedTick) classify(
 	dead map[string]struct{},
 	childLive map[string]bool,
 	now time.Time,
+	readOnly bool,
 ) (string, rowAction, bool) {
 	// The vault-family gate runs FIRST, before provenance, freshness, the park
 	// gate and any registry probe: a row from another family is not this daemon's
@@ -1036,7 +1037,7 @@ func (t *FlaggedTick) classify(
 	// row whose closer already names what it waits on. A row reaches here when the
 	// park gate did not hold it — no session id, no closer, no `⏰ Ends:`, or a
 	// declared park whose observable has been satisfied.
-	if reason, held := t.progressStalledHold(ctx, row, now); held {
+	if reason, held := t.progressStalledHold(ctx, row, now, readOnly); held {
 		return reason, rowSkipped, false
 	}
 	return "", rowEligible, retryNotLanded
@@ -1053,6 +1054,7 @@ func (t *FlaggedTick) progressStalledHold(
 	ctx context.Context,
 	row FlaggedRow,
 	now time.Time,
+	readOnly bool,
 ) (string, bool) {
 	if row.Kind != "task" {
 		return "", false
@@ -1066,6 +1068,15 @@ func (t *FlaggedTick) progressStalledHold(
 	// The signal is the progress hash PLUS the checkbox reading: ticking a box is
 	// progress too, and a page with no `# Progress` section would otherwise hash a
 	// constant empty string and stall on that absence alone.
+	// A read-only caller (the GET endpoint) must not advance the clock: it reads
+	// the current verdict but never stamps it, so a GET cannot reset a row's stall
+	// timer or mask a stall from the tick.
+	if readOnly {
+		if !t.progressStallFor(ctx).StalledRead(row.Key(), row.ProgressHash+"|"+row.Met, now) {
+			return "", false
+		}
+		return reasonProgressStalled, true
+	}
 	if !t.progressStallFor(ctx).Stalled(row.Key(), row.ProgressHash+"|"+row.Met, now) {
 		return "", false
 	}
@@ -1221,7 +1232,7 @@ func (t *FlaggedTick) tickFromRows(
 			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
 			continue
 		}
-		reason, action, retryNotLanded := t.classify(ctx, row, recent, dead, childLive, now)
+		reason, action, retryNotLanded := t.classify(ctx, row, recent, dead, childLive, now, false)
 		switch action {
 		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)

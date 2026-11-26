@@ -807,8 +807,11 @@ func startFleetFaces(
 		flaggedTickInterval,
 	)
 	// The read half of the same decision: GET /api/1.0/openable reports what the
-	// tick would open or hold, from the tick's own gates.
-	mux.Handle("/api/1.0/openable", handler.Openable(flaggedTick))
+	// tick would open or hold, from the tick's own gates. Mounted only when the
+	// tick runs — a disabled tick has no verdict to report.
+	if flaggedTickInterval > 0 {
+		mux.Handle("/api/1.0/openable", handler.Openable(flaggedTick))
+	}
 
 	go startFlaggedTick(ctx, flaggedTickInterval, flaggedTick, ledger, registry, now)
 
