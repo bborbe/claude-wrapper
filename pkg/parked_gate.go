@@ -55,6 +55,7 @@ func NewParkedGate(
 		Clocks:      ClockProbe{Now: now},
 		Now:         now,
 		Logf:        log.Printf,
+		Defer:       VaultCLIDeferWriter{Runner: runner},
 	}
 }
 
@@ -68,6 +69,10 @@ type parkedGate struct {
 	Clocks      ClockProbe
 	Now         libtime.CurrentDateTimeGetter
 	Logf        func(format string, args ...any)
+	// Defer writes a parked-until deadline back as the row's `defer_date`. A nil
+	// Defer disables the write and leaves the hold exactly as it was before it
+	// existed, which is the rollback.
+	Defer DeferWriter
 
 	// pendingMutex guards pending.
 	pendingMutex sync.Mutex
@@ -139,7 +144,36 @@ func (g *parkedGate) Hold(ctx context.Context, row FlaggedRow) (string, bool) {
 	if observation.Satisfied {
 		return "", false
 	}
+	// ⚠️ The write belongs HERE — after the probe says the clock has not passed, and
+	// only for `parked-until` with a parsed deadline. A `parked-on-card` or
+	// `parked-on-pr` row is released by a probe, not by a clock, so deferring it would
+	// park it past the event that would have freed it. A nil deadline is the
+	// "cannot address safely" fallback in ClassifyParked and must write nothing.
+	if declaration.Class == ParkedUntil && declaration.Deadline != nil {
+		g.writeDefer(ctx, row, *declaration.Deadline)
+	}
 	return g.holdOrRecord(ctx, row, declaration, observation, closer)
+}
+
+// writeDefer records the deadline and never changes the hold.
+//
+// ⚠️ Fail-open on purpose: a missing `vault-cli`, an unwritable vault or a bad row
+// name leaves the tick holding the row exactly as it did before this write existed.
+// The cost of a failed write is one wasted reopen — the defect this fixes — while a
+// hold that errored out would open a row whose wait has not passed.
+func (g *parkedGate) writeDefer(ctx context.Context, row FlaggedRow, deadline time.Time) {
+	if g.Defer == nil {
+		return
+	}
+	if err := g.Defer.WriteDefer(ctx, row, deadline); err != nil {
+		if g.Logf != nil {
+			g.Logf("parked defer write failed row=%s: %v", row.Key(), err)
+		}
+		return
+	}
+	if g.Logf != nil {
+		g.Logf("parked defer written row=%s defer_date=%s", row.Key(), deadline.Format(time.RFC3339))
+	}
 }
 
 // probe runs the one probe the declaration's class selects.
