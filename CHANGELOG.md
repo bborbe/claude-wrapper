@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.67.0
 
 - fix: **a stalled flagged row now posts one attention card per stall episode, so a worker that ended on an uncarded operator gate stops sitting invisible.** `progressStalledHold` was a silent terminal hold — the row was skipped every tick and named nowhere the operator reads, which is how a production-touching `launchd-reload` step sat uncarded for ~25 h on 2026-11-26 while its session was gone. The hold now posts a `claude-wrapper-stalled-row` card through the existing `AttentionPoster` transport, quoting the row's last `# Progress` line (new `sweepgate.ProgressTail`, carried on `FlaggedRow.ProgressTail`). The dedup key carries the Progress hash, so a card is per **episode**: every tick of the same stall finds the first card and posts nothing, while a row that moves and stalls again gets a second — and the `CardLookup` is what guarantees that, not a tick counter, because the daemon restarts on every deploy while the stall clock survives it. Both halves must be wired (`Poster` + `Cards`); with no attention URL the escalation stays disabled and the hold itself is unchanged. A failed lookup or post never opens the row — it is logged, and the row stays held. Change set: `pkg/flagged_tick.go`, `pkg/flagged_rows_source.go`, `pkg/flagged_rows_vaultapi.go`, `pkg/sweepgate/task.go`, `main.go`, `pkg/flagged_tick_stall_escalation_test.go` (new), `CHANGELOG.md`.
 
