@@ -247,6 +247,9 @@ type FlaggedTickResult struct {
 	// an operator-set row is opened with no provenance marker of its own. Rows whose
 	// source computed no class (the exec source, a fixture) are not counted.
 	ProvenanceCounts map[Provenance]int
+	// RowsStale names why this tick's row set is a cached one —
+	// `vault-api-unavailable` or `read-error`; empty means the read succeeded.
+	RowsStale string
 }
 
 // liveCountSourceReporter is the narrow half of SpawnCaps the tick logs.
@@ -307,6 +310,8 @@ func (r FlaggedTickResult) Line() string {
 	if r.RowsSource != "" {
 		line += " rows_source=" + r.RowsSource
 	}
+	// `rows_stale=` names a cached run on the line the tick is known by.
+	line += r.rowsStaleField()
 	// `provenance=` names all three states in one line. The refusal tokens below it
 	// mark only the refused rows; without this field an operator-set row is visible
 	// only as an `opened=` entry with no provenance of its own, so a reader cannot
@@ -908,6 +913,9 @@ func (t *FlaggedTick) tickAndLog(ctx context.Context, cache *flaggedRowCache) {
 			stale, readFor, len(rows))
 	}
 	result := t.tickFromRows(ctx, rows)
+	if stale != nil {
+		result.RowsStale = staleReason(stale) // say the cached set on the summary line too
+	}
 	// read_duration= is the read-cost measurement: the cost of the most recent read
 	// ATTEMPT, including a failed one — a read killed at the bound is the slow case
 	// this exists to catch, so reporting only successful reads would bias the p95
