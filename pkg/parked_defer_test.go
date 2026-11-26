@@ -94,6 +94,26 @@ var _ = ginkgo.Describe("parked gate — the defer write", func() {
 				"the full instant, never cut to a date")
 	})
 
+	// ⚠️ All three kinds, one code path. The write reads `row.Vault`/`row.Name`, so a
+	// kind it does not know about would still "work" here and fail only against a real
+	// vault — the fixtures exist so the three kinds are exercised rather than assumed.
+	for _, kind := range []string{"task", "goal", "topic"} {
+		kind := kind
+		ginkgo.It("writes the same way for a "+kind+" row", func() {
+			writeSessionCloser(sessionsDir, parkedGateSessionID,
+				"⏰ Ends: 2026-12-01T09:00:00+01:00 — the soak window closes")
+			rec := &recordingDefer{}
+			kindRow := row
+			kindRow.Kind = kind
+
+			_, held := deferGate(sessionsDir, parkedDir, clock, rec).Hold(ctx, kindRow)
+
+			gomega.Expect(held).To(gomega.BeTrue())
+			gomega.Expect(rec.calls).To(gomega.HaveLen(1))
+			gomega.Expect(rec.calls[0].key).To(gomega.Equal(kindRow.Key()))
+		})
+	}
+
 	ginkgo.It("writes nothing once the clock has passed", func() {
 		writeSessionCloser(sessionsDir, parkedGateSessionID,
 			"⏰ Ends: 2026-11-26T09:00:00+01:00 — the soak window closes")
