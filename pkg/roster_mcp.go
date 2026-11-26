@@ -597,40 +597,6 @@ func (s *RosterToolServer) vaultFor(
 	return findVault(ctx, vaults, target.Vault)
 }
 
-// recordSpawn files the ledger row a spawned child would otherwise lack.
-//
-// Role and ResumedFrom are recorded because the caps count BY them: a row with
-// no role reads as a worker (so a headless manager would be charged to the
-// worker cap and never to the manager cap), and a row with no `resumed_from`
-// cannot be excluded as an auto-resume.
-func (s *RosterToolServer) recordSpawn(
-	ctx context.Context,
-	session *Session,
-	callerSessionID string,
-	body spawnAgentArgs,
-	modeSource string,
-) {
-	if s.Ledger == nil {
-		return
-	}
-	if err := s.Ledger.Post(ctx, callerSessionID, LedgerRow{
-		SessionID:  session.ID,
-		AgentID:    session.ID,
-		Label:      body.Label,
-		Cwd:        session.Cwd,
-		Mode:       SpawnModeHeadless,
-		ModeSource: modeSource,
-		// The REQUEST's role, not the session snapshot's: the row describes what was
-		// asked for, and a session type that does not carry a role would otherwise
-		// file a manager as a worker.
-		Role:        body.Role,
-		ResumedFrom: body.Resume,
-		Location:    "local",
-	}); err != nil {
-		log.Printf("WARNING: ledger post for spawned session %s failed: %v", session.ID, err)
-	}
-}
-
 // answerPermission settles a parked permission request.
 func (s *RosterToolServer) answerPermission(
 	ctx context.Context,

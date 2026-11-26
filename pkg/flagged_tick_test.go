@@ -347,9 +347,10 @@ func (l ledgerWith) Patch(context.Context, string, LedgerPatch) error { return n
 
 // recordingLedger records the rows Post was handed.
 type recordingLedger struct {
-	mutex sync.Mutex
-	rows  []LedgerRow
-	err   error
+	mutex   sync.Mutex
+	rows    []LedgerRow
+	patches []LedgerPatch
+	err     error
 }
 
 func (l *recordingLedger) Rows(context.Context) ([]LedgerRow, error) { return nil, l.err }
@@ -361,7 +362,20 @@ func (l *recordingLedger) Post(_ context.Context, _ string, row LedgerRow) error
 	return l.err
 }
 
-func (l *recordingLedger) Patch(context.Context, string, LedgerPatch) error { return nil }
+func (l *recordingLedger) Patch(_ context.Context, _ string, patch LedgerPatch) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	l.patches = append(l.patches, patch)
+	return l.err
+}
+
+func (l *recordingLedger) patchSnapshot() []LedgerPatch {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	out := make([]LedgerPatch, len(l.patches))
+	copy(out, l.patches)
+	return out
+}
 
 func (l *recordingLedger) snapshot() []LedgerRow {
 	l.mutex.Lock()
@@ -827,16 +841,21 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 			gomega.Expect(spawner.snapshot()).To(gomega.BeEmpty())
 			gomega.Expect(sent).To(gomega.HaveLen(1))
 			gomega.Expect(sent[0]).To(gomega.ContainSubstring(`/vault-cli:work-on-task "Some Task"`))
-			// ⚠️ A headless reopen that files no ledger row is invisible to the caps
-			// AND to the tick's own recently-spawned guard, so the next tick would
-			// open a second copy of a row whose child is still starting.
-			rows := ledger.snapshot()
-			gomega.Expect(rows).To(gomega.HaveLen(1))
-			gomega.Expect(rows[0].SessionID).To(gomega.Equal("resumed"))
-			gomega.Expect(rows[0].ResumedFrom).To(gomega.Equal("abc-123"))
-			gomega.Expect(rows[0].Role).To(gomega.Equal("agent"))
-			gomega.Expect(rows[0].Mode).To(gomega.Equal(SpawnModeHeadless))
-			gomega.Expect(rows[0].SpawnedAt).To(gomega.Equal("2026-11-11T12:00:00Z"))
+			// ⚠️ A headless reopen that writes NOTHING is invisible to the caps AND
+			// to the tick's own recently-spawned guard, so the next tick would open a
+			// second copy of a row whose child is still starting. The write is a
+			// PATCH now: a POST would replace the row and blank the spawner that made
+			// the worker's parks answerable (measured 2026-11-26 — 320 of 2749
+			// sessions in the wrapper log lost their spawner this way).
+			gomega.Expect(ledger.snapshot()).To(gomega.BeEmpty())
+			patches := ledger.patchSnapshot()
+			gomega.Expect(patches).To(gomega.HaveLen(1))
+			gomega.Expect(string(patches[0]["resumed_from"])).To(gomega.Equal(`"abc-123"`))
+			gomega.Expect(string(patches[0]["role"])).To(gomega.Equal(`"agent"`))
+			gomega.Expect(string(patches[0]["mode"])).To(gomega.Equal(`"headless"`))
+			// The spawn edge and the original spawn time survive the resume.
+			gomega.Expect(patches[0]).NotTo(gomega.HaveKey("spawner_session_id"))
+			gomega.Expect(patches[0]).NotTo(gomega.HaveKey("spawned_at"))
 		})
 
 		ginkgo.It("creates a headless row that has no session id", func() {

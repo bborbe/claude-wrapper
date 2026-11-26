@@ -186,6 +186,16 @@ type OpenHeadlessRequest struct {
 	Shipping        bool
 	OperatorNamed   bool
 	CallerSessionID string
+	// ModeSource is the ledger's `mode_source` for a FRESH spawn of this row:
+	// `open` for a request-mode open, `flagged-tick` for the daemon's tick.
+	//
+	// ⚠️ It is a field rather than the hardcoded `OpenModeSource` it replaced.
+	// With one constant, every tick spawn was filed under `open`, so the bucket
+	// could not distinguish a manager's `/supervisor:open` from the daemon's
+	// reopen — and a population analysis over it attributed the tick's
+	// empty-spawner rows to the request path. Empty keeps the historical
+	// `open`, so a caller that does not name one is unchanged.
+	ModeSource string
 }
 
 // OpenBind action tokens. They are part of the verdict contract documented in
@@ -221,7 +231,8 @@ type OpenHeadlessSpawner interface {
 }
 
 // SpawnOpenHeadless is the open endpoint's agent path: spawn_agent's own
-// headless spawn with role agent, the task as label, and mode_source open.
+// headless spawn with role agent, the task as label, and the caller's
+// `mode_source` (open for a request, flagged-tick for the daemon's tick).
 //
 // ⚠️ It BINDS the spawned session to the task it names, exactly as spawn_agent
 // does. Until 2026-11-22 this path called startHeadless and returned without
@@ -244,7 +255,7 @@ func (s *RosterToolServer) SpawnOpenHeadless(
 		OperatorNamed: request.OperatorNamed,
 	}, request.CallerSessionID, SpawnModeResolution{
 		Mode:   SpawnModeHeadless,
-		Source: OpenModeSource,
+		Source: openModeSourceOr(request.ModeSource),
 	}, false)
 	if err != nil {
 		return nil, nil, err
