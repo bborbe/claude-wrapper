@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.67.3
 
 - fix: **a tick serving a cached row set now says so on its own summary line.** A failed read already logged its own `flagged-tick read failed: … serving N rows from the last good read` line (`flagged_tick.go`), but that line is separate from the `flagged-tick opened=… refused=… skipped=… considered=… rows=…` line a reader greps for, so a stale tick was indistinguishable from a healthy one. `FlaggedTickResult.RowsStale` is set from the cache's stale error and rendered as `rows_stale=vault-api-unavailable` (or `read-error`) on the summary line, emitted only when set — its ABSENCE is the positive reading that the read succeeded. `staleReason` classifies the wrapped error against `ErrVaultAPIUnavailable` rather than carrying its text, which would make the field ungreppable. `opened+refused+skipped == considered` is untouched; the fail-safe (a failed read keeps the last good row set) is unchanged. Change set: `pkg/flagged_tick.go`, `pkg/flagged_tick_test.go`, `CHANGELOG.md`.
 
