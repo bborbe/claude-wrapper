@@ -1048,7 +1048,7 @@ func (t *FlaggedTick) classify(
 		if refused {
 			return reason, rowRefused, false
 		}
-		skipReason, skipAction := t.classifySkip(ctx, row, reason, now)
+		skipReason, skipAction := t.classifySkip(ctx, row, reason, now, readOnly)
 		return skipReason, skipAction, false
 	}
 	if t.Parked != nil {
@@ -1292,7 +1292,7 @@ func isNotAbsentReason(reason string) bool {
 // classifySkip turns a not-absent skip into a nudge when this process holds the
 // row's child idle. The park gate still applies: a parked row is not nudged.
 func (t *FlaggedTick) classifySkip(
-	ctx context.Context, row FlaggedRow, reason string, now time.Time,
+	ctx context.Context, row FlaggedRow, reason string, now time.Time, readOnly bool,
 ) (string, rowAction) {
 	// BOTH not-absent reasons must reach the idle-nudge. reasonNotAbsentDead is
 	// the same condition reported truthfully - the predicate could not prove the
@@ -1305,7 +1305,9 @@ func (t *FlaggedTick) classifySkip(
 	if !isNotAbsentReason(reason) || !t.idleNudgeDue(ctx, row, now) {
 		return reason, rowSkipped
 	}
-	if t.Parked != nil {
+	// Parked.Hold mutates the persisted park state, so a read-only caller skips it:
+	// the row is reported by its classify reason, not `parked-until`.
+	if !readOnly && t.Parked != nil {
 		if parkReason, held := t.Parked.Hold(ctx, row); held {
 			return parkReason, rowSkipped
 		}

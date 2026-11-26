@@ -69,7 +69,11 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 	for _, row := range ordered {
 		reason, action, _ := t.classify(ctx, row, recent, dead, childLive, now, true)
 		decision := OpenableDecisionOpen
-		if action != rowEligible {
+		if action == rowNudge {
+			// A nudge consumes the tick's row budget just as an open does.
+			openCount++
+			decision = OpenableDecisionHeld
+		} else if action != rowEligible {
 			decision = OpenableDecisionHeld
 		} else if t.Caps != nil {
 			if err := t.Caps.CheckWorker(ctx, row.CapMode(), row.OperatorNamed()); err != nil {
