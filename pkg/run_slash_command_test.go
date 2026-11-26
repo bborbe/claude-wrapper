@@ -121,6 +121,23 @@ var _ = ginkgo.Describe("RosterToolServer.runSlashCommand", func() {
 		gomega.Expect(response).To(gomega.ContainSubstring(`"pane_id":"pane-1"`))
 	})
 
+	ginkgo.It("delivers into a long-idle pane whose composer holds only the dim suggestion", func() {
+		// The defect this change removes: a long-idle tab worker's composer shows
+		// only the TUI's dim next-prompt suggestion. ComposerReady strips ANSI and
+		// reads it as typed content, so the slash path refused the pane with "showed
+		// no empty composer within 8s" — permanently, for exactly the population a
+		// fleet reload targets. PaneIsReady parses the raw tail dim and accepts it,
+		// so the command lands. With ComposerReady this send would time out at
+		// composerDeadline and never reach tabs.texts.
+		supervisor.getErr = ErrSessionNotFound
+		ledger.rows = []LedgerRow{{SessionID: "s1", PaneID: "pane-1", Mode: "interactive"}}
+		tabs.initialText = promptGlyph + " \x1b[0;2mTry \"how does it work?\"\x1b[0m\n"
+		response, err := run(newServer(), `{"agent_id":"s1","command":"/reload-plugins"}`)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(tabs.texts).To(gomega.ConsistOf("/reload-plugins"))
+		gomega.Expect(response).To(gomega.ContainSubstring(`"channel":"pane"`))
+	})
+
 	ginkgo.It("refuses a headless row whose child this daemon no longer holds", func() {
 		supervisor.getErr = ErrSessionNotFound
 		ledger.rows = []LedgerRow{{SessionID: "s1", Mode: "headless"}}

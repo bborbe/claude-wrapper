@@ -47,6 +47,18 @@ var _ = ginkgo.Describe("PaneText", func() {
 			gomega.Expect(PaneIsReady("done\n❯ draft ok\n")).To(gomega.BeFalse())
 		})
 
+		ginkgo.It("is false when typed text precedes a dim span", func() {
+			// Dim must hold for EVERY visible character: a dim tail after real typed
+			// text is not an empty composer. A predicate that ignores the tail
+			// unconditionally (returns ready whenever a glyph is present) would wrongly
+			// accept this, so this case is what separates the fix from a blunt one.
+			gomega.Expect(PaneIsReady("done\n❯ draft \x1b[0;2mghost\x1b[0m\n")).To(gomega.BeFalse())
+		})
+
+		ginkgo.It("is false when a dim span precedes typed text", func() {
+			gomega.Expect(PaneIsReady("done\n❯ \x1b[0;2mghost\x1b[0m draft\n")).To(gomega.BeFalse())
+		})
+
 		ginkgo.It("is false when there is no composer", func() {
 			gomega.Expect(PaneIsReady("just output\nno glyph\n")).To(gomega.BeFalse())
 		})
