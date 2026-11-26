@@ -1509,9 +1509,9 @@ func (c *child) writeLine(ctx context.Context, line []byte) error {
 	}
 	if stderrors.Is(err, os.ErrDeadlineExceeded) {
 		c.writeBroken = true
-		return errors.Wrapf(ctx, ErrSendTimeout, "session %q did not read its stdin within %s", c.id, timeout)
+		return errors.Wrapf(ctx, ErrSendTimeout, "session %q did not read its stdin before %s", c.id, deadline.Format(time.RFC3339))
 	}
-	return err
+	return errors.Wrapf(ctx, err, "write session %q stdin failed", c.id)
 }
 
 // setPermissionMode writes the SDK's own control request and waits for the
