@@ -200,7 +200,7 @@ func (s *RosterToolServer) runSlashCommandInPane(
 		)
 	}
 	if err := SendWhenReadyWith(
-		ctx, s.Tabs, paneID, command, s.currentDateTime(), PaneIsReady, SubmissionConfirmed,
+		ctx, s.Tabs, paneID, command, s.currentDateTime(), PaneIsReady, SubmissionConfirmedVisible,
 	); err != nil {
 		return true, "", err
 	}
