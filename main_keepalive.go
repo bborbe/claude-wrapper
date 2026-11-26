@@ -134,7 +134,7 @@ func keepaliveLister(
 	}
 }
 
-// newKeepaliveJob assembles the eight procedures and the two pre-steps.
+// newKeepaliveJob assembles the seven procedures and the two pre-steps.
 func newKeepaliveJob(
 	ctx context.Context,
 	registry pkg.SessionRegistry,
@@ -182,7 +182,7 @@ func newKeepaliveJob(
 	}, nil
 }
 
-// newKeepaliveProcedures wires the eight keep-alive procedures.
+// newKeepaliveProcedures wires the seven keep-alive procedures.
 func newKeepaliveProcedures(
 	filtered []pkg.Vault,
 	registry pkg.SessionRegistry,
