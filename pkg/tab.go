@@ -446,6 +446,12 @@ func SendWhenReady(
 // and its positive evidence is a spinner over an empty composer (WakeConfirmed) —
 // the echoed-message check reads the raw escaped screen, where SGR sequences
 // interleave the text and make the substring match fail on a send that DID land.
+//
+// The slash-command path (run_slash_command.go) and the roster send path
+// (roster_mcp.go sendToTabPane) take the fleet wake's readiness rule with the
+// spawn's confirmation: they also reach LONG-IDLE panes where the dim suggestion is
+// always present, so they pass PaneIsReady, but their submit is confirmed by the
+// echoed message (SubmissionConfirmed) rather than a spinner.
 func SendWhenReadyWith(
 	ctx context.Context,
 	tabs TabClient,

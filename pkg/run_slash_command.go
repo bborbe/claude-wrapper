@@ -170,6 +170,13 @@ func (s *RosterToolServer) runSlashCommandOnStdin(
 // A local row with no pane is answered here rather than passed on: it is this
 // daemon's own spawn, so "nothing to type into" is the true answer, and the
 // generic refusal would misname it as a remote worker.
+//
+// The send is ready-gated by PaneIsReady, not ComposerReady: a tab worker idle for
+// more than a moment always paints Claude Code's dim next-prompt suggestion after
+// the `❯` glyph, which ComposerReady reads as typed content and refuses — exactly
+// the population a fleet reload targets. PaneIsReady accepts the dim suggestion
+// and still refuses text a person typed. SubmissionConfirmed is the same
+// confirmation SendWhenReady used, so only the readiness rule changes.
 func (s *RosterToolServer) runSlashCommandInPane(
 	ctx context.Context,
 	agentID string,
@@ -192,7 +199,9 @@ func (s *RosterToolServer) runSlashCommandInPane(
 			command,
 		)
 	}
-	if err := SendWhenReady(ctx, s.Tabs, paneID, command, s.currentDateTime()); err != nil {
+	if err := SendWhenReadyWith(
+		ctx, s.Tabs, paneID, command, s.currentDateTime(), PaneIsReady, SubmissionConfirmed,
+	); err != nil {
 		return true, "", err
 	}
 	response, err := marshalJSON(ctx, map[string]any{

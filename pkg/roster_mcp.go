@@ -1697,6 +1697,12 @@ func parseWindowID(ctx context.Context, raw string) (*int, error) {
 // `sent: true` means the message was typed AND its submit was confirmed in the
 // pane's own output. The send's exit code alone would report keystrokes reaching
 // the pty, which is true whether or not anything ran.
+//
+// The readiness rule is PaneIsReady, not ComposerReady: a long-idle tab worker
+// always shows the TUI's dim next-prompt suggestion, which ComposerReady reads as
+// typed content and refuses — the same defect the slash path carried. PaneIsReady
+// accepts the dim suggestion and still refuses typed text; SubmissionConfirmed is
+// the confirmation SendWhenReady already used, so only readiness changes.
 func (s *RosterToolServer) sendToTabPane(
 	ctx context.Context,
 	agentID string,
@@ -1713,7 +1719,9 @@ func (s *RosterToolServer) sendToTabPane(
 		response, err := s.noPaneResponse(ctx, agentID, ledgerRow)
 		return true, response, err
 	}
-	if err := SendWhenReady(ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime()); err != nil {
+	if err := SendWhenReadyWith(
+		ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime(), PaneIsReady, SubmissionConfirmed,
+	); err != nil {
 		return true, "", err
 	}
 	response, err := marshalJSON(ctx, map[string]any{

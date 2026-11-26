@@ -26,6 +26,10 @@ type fakeTabClient struct {
 	spawnErr    error
 	activated   []string
 	activateErr error
+	// initialText is what the pane shows BEFORE the first SendText, so a test can
+	// stand for a long-idle pane whose composer holds only the dim suggestion. Empty
+	// means the default empty composer.
+	initialText string
 }
 
 func (f *fakeTabClient) Spawn(_ context.Context, options TabSpawnOptions) (string, error) {
@@ -50,9 +54,14 @@ func (f *fakeTabClient) SendText(_ context.Context, _ string, text string) error
 }
 
 // Text renders the last message followed by a fresh empty composer, which is
-// what a submitted message looks like in a real pane.
+// what a submitted message looks like in a real pane. Before the first send it
+// renders initialText when set (a long-idle pane's dim-suggestion composer),
+// otherwise an empty composer.
 func (f *fakeTabClient) Text(context.Context, string) (string, error) {
 	if len(f.texts) == 0 {
+		if f.initialText != "" {
+			return f.initialText, nil
+		}
 		return promptGlyph + " \n", nil
 	}
 	return promptGlyph + " \n" + f.texts[len(f.texts)-1] + "\n" + promptGlyph + " \n", nil
@@ -501,6 +510,25 @@ var _ = ginkgo.Describe("RosterToolServer.sendToTabPane", func() {
 	})
 
 	ginkgo.It("types into the pane addressed by the session id", func() {
+		server := &RosterToolServer{
+			Tabs:   tabs,
+			Roster: &fakeRoster{},
+			Ledger: ledger,
+		}
+		handled, response, err := server.sendToTabPane(ctx, "s1", "hello")
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(handled).To(gomega.BeTrue())
+		gomega.Expect(tabs.texts).To(gomega.ConsistOf("hello"))
+		gomega.Expect(response).To(gomega.ContainSubstring(`"sent":true`))
+	})
+
+	ginkgo.It("types into a long-idle pane whose composer holds only the dim suggestion", func() {
+		// A long-idle tab worker's composer holds only the TUI's dim next-prompt
+		// suggestion. ComposerReady reads that as typed content and refuses it — the
+		// defect this change removes. PaneIsReady accepts the dim suggestion, so the
+		// message lands. This is the roster half of the fix; the slash half lives in
+		// run_slash_command_test.go.
+		tabs.initialText = promptGlyph + " \x1b[0;2mTry \"how does it work?\"\x1b[0m\n"
 		server := &RosterToolServer{
 			Tabs:   tabs,
 			Roster: &fakeRoster{},
