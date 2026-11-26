@@ -65,6 +65,19 @@ type FlaggedRow struct {
 	// frontmatter. nil when absent or unparseable. It is the raw flag instant,
 	// never an `approved_at` fallback.
 	FlagSetAt *time.Time `json:"-"`
+	// ProgressHash is the sha256 of the page's `# Progress` body, first 16 chars.
+	// It is the stall signal: a revival appends `metrics_sessions` to the
+	// frontmatter and leaves `# Progress` alone, so the file's mtime moves every
+	// tick while this hash does not. Populated by VaultAPIFlaggedRowsSource from
+	// the task page's body; the exec source never sets it.
+	ProgressHash string `json:"-"`
+	// Met is the page's checkbox reading (`n/m`) across the whole body. The stall
+	// predicate needs "at least one open box": a row with none is finished, not
+	// stalled, and must not be skipped.
+	Met string `json:"-"`
+	// Phase is the page's `phase` frontmatter. The stall predicate applies only to
+	// `execution`, matching sweepgate.IdleStuck.
+	Phase string `json:"-"`
 }
 
 // Key is the row's identity in the log line and in the ledger join.
