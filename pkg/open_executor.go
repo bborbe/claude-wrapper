@@ -368,6 +368,7 @@ func (e *openExecutor) openHeadlessRow(
 		Shipping:        decision.Shipping,
 		OperatorNamed:   decision.OperatorNamed,
 		CallerSessionID: callerSessionIDFor(mode, callerSessionID),
+		ModeSource:      openModeSourceFor(mode),
 	})
 	if err != nil {
 		verdict.refuse(OpenRefusal{Reason: OpenReasonSpawnRefused, Message: err.Error()})
@@ -421,6 +422,7 @@ func (e *openExecutor) openTabRow(
 		TaskStatus:       page.Fields["status"],
 		OperatorNamed:    decision.OperatorNamed,
 		SpawnerSessionID: callerSessionIDFor(mode, callerSessionID),
+		ModeSource:       openModeSourceFor(mode),
 	})
 	if err != nil {
 		verdict.refuse(OpenRefusal{Reason: OpenReasonSpawnRefused, Message: err.Error()})
@@ -574,6 +576,20 @@ func callerSessionIDFor(mode openCallerMode, callerSessionID string) string {
 		return callerSessionID
 	}
 	return ""
+}
+
+// openModeSourceFor is the ledger's `mode_source` for a spawn the executor makes
+// in this caller mode: `flagged-tick` for the daemon's tick, `open` for a request.
+//
+// ⚠️ Without it every tick spawn was filed `open`, because `SpawnOpenHeadless`
+// hardcoded that constant. The bucket then mixed the manager's `/supervisor:open`
+// with the daemon's reopen, and the tick's empty-spawner rows read as a defect in
+// the request path. Measured 2026-11-26.
+func openModeSourceFor(mode openCallerMode) string {
+	if mode == openModeTick {
+		return modeSourceFlaggedTick
+	}
+	return OpenModeSource
 }
 
 // claim takes the row's in-flight key, or reports that another open holds it.
