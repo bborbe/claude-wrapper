@@ -55,6 +55,10 @@ func (w *recordWriter) Write(p []byte) (int, error) {
 
 func (w *recordWriter) Close() error { return nil }
 
+// SetWriteDeadline lets the fake stand in for the real stdin, which send now
+// requires to take a deadline.
+func (w *recordWriter) SetWriteDeadline(time.Time) error { return nil }
+
 func (w *recordWriter) count() int {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
