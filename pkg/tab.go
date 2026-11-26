@@ -389,6 +389,22 @@ func SubmissionConfirmed(text string, message string) bool {
 	return false
 }
 
+// SubmissionConfirmedVisible is SubmissionConfirmed with ANSI escapes stripped
+// from the screen before the echoed-message and prompt-glyph match.
+//
+// The slash-command and roster send paths read panes with `--escapes`, where SGR
+// sequences interleave the echoed command text (it is syntax-highlighted), so
+// SubmissionConfirmed's raw `strings.Contains` misses a submit that DID land and
+// reports `never showed the message as submitted` — measured 2026-11-26: after the
+// readiness fix let the send through, three long-idle panes returned `unverified`
+// with exactly that error while the keystrokes had reached the pty. Stripping the
+// escapes first restores the match. Scoped to the long-idle delivery paths; spawn
+// keeps SubmissionConfirmed, whose composer is not the one producing the false
+// negative.
+func SubmissionConfirmedVisible(text string, message string) bool {
+	return SubmissionConfirmed(StripANSI(text), message)
+}
+
 // WakeConfirmed is the fleet wake path's positive evidence: a spinner over an
 // empty composer.
 //
