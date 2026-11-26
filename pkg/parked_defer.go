@@ -55,6 +55,15 @@ func (w VaultCLIDeferWriter) WriteDefer(
 	if row.Vault == "" || row.Name == "" {
 		return errors.Errorf(ctx, "row %q carries no vault or name to defer", row.Key())
 	}
+	// ⚠️ The KIND selects the verb. `vault-cli` exposes `task defer`, `goal defer` and
+	// `topic defer` as three separate commands, so a hardcoded `task` would send a goal
+	// row's name to the task resolver — which either refuses it or, worse, resolves a
+	// task of the same name. The gate is fail-open, so that failure would be a log line
+	// and no write: a silently missing defer for every goal and topic.
+	kind := row.Kind
+	if kind == "" {
+		kind = "task"
+	}
 	// ⚠️ The full RFC3339 instant, never the date-only form: a `later (on <time>)`
 	// declaration names a clock, and cutting it to a date would surface the row up
 	// to a day early or late depending on the offset.
@@ -62,7 +71,7 @@ func (w VaultCLIDeferWriter) WriteDefer(
 		ctx,
 		"vault-cli",
 		"--vault", row.Vault,
-		"task", "defer", row.Name, deadline.Format(time.RFC3339),
+		kind, "defer", row.Name, deadline.Format(time.RFC3339),
 	)
 	return errors.Wrapf(ctx, err, "defer row %s", row.Key())
 }

@@ -216,6 +216,39 @@ var _ = ginkgo.Describe("VaultCLIDeferWriter", func() {
 		}))
 	})
 
+	// ⚠️ The kind selects the VERB. `vault-cli` has `task defer`, `goal defer` and
+	// `topic defer` as separate commands, so a hardcoded `task` would send a goal row's
+	// name to the task resolver — and the gate is fail-open, so the failure would be a
+	// log line and no write. These assert the verb, not just the row name.
+	for _, kind := range []string{"task", "goal", "topic"} {
+		kind := kind
+		ginkgo.It("shells the "+kind+" verb for a "+kind+" row", func() {
+			runner := &recordingRunner{}
+			row := FlaggedRow{Kind: kind, Vault: "private-personal", Name: "Row Name"}
+
+			gomega.Expect(
+				VaultCLIDeferWriter{Runner: runner}.WriteDefer(
+					context.Background(), row, time.Date(2026, 12, 1, 9, 0, 0, 0, time.UTC)),
+			).To(gomega.Succeed())
+
+			gomega.Expect(runner.argv).To(gomega.Equal([]string{
+				"vault-cli", "--vault", "private-personal",
+				kind, "defer", "Row Name", "2026-12-01T09:00:00Z",
+			}))
+		})
+	}
+
+	ginkgo.It("defaults an empty kind to the task verb", func() {
+		runner := &recordingRunner{}
+		row := FlaggedRow{Kind: "", Vault: "v", Name: "N"}
+
+		gomega.Expect(
+			VaultCLIDeferWriter{Runner: runner}.WriteDefer(context.Background(), row, time.Now()),
+		).To(gomega.Succeed())
+
+		gomega.Expect(runner.argv[3]).To(gomega.Equal("task"))
+	})
+
 	ginkgo.It("refuses a row with no vault or name", func() {
 		runner := &recordingRunner{}
 		row := FlaggedRow{Kind: "task", Vault: "", Name: ""}
