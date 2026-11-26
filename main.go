@@ -805,6 +805,7 @@ func startFleetFaces(
 		parked,
 		ownVault,
 		stateDir,
+		attentionURL,
 	)
 
 	startHeartbeatPoster(ctx, registry, heartbeats, ledger, heartbeatInterval)
@@ -1400,6 +1401,7 @@ func startFlaggedTick(
 	parked pkg.ParkedHold,
 	ownVault pkg.DaemonVault,
 	stateDir string,
+	attentionURL string,
 ) {
 	if interval <= 0 {
 		log.Printf("flagged tick disabled (--flagged-tick-interval=%s)", interval)
@@ -1435,6 +1437,14 @@ func startFlaggedTick(
 	}
 	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
 		tick.Idle = nudger
+	}
+	// The stall escalation needs BOTH halves: the poster to write the card and the
+	// lookup that keeps one episode to one card. With no attention URL there is no
+	// board to write to, so the escalation stays disabled rather than posting into
+	// a relative path — the hold itself is unchanged either way.
+	if strings.TrimSpace(attentionURL) != "" {
+		tick.Poster = pkg.NewAttentionPoster(attentionURL, nil)
+		tick.Cards = pkg.NewBoardCardLookup(pkg.NewBoardStore(attentionURL, nil))
 	}
 	// The adopt job runs on the same cadence and reads the same stores: both are
 	// fleet liveness, and row 4 ran every fleet round.
