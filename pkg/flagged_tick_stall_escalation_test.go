@@ -107,6 +107,33 @@ var _ = ginkgo.Describe("flagged tick stall escalation", func() {
 		gomega.Expect(poster.requests[0].DedupKey).To(gomega.ContainSubstring(row.ProgressHash))
 	})
 
+	ginkgo.It("asks the board once per episode, not once per tick", func() {
+		// The store read sits inside the predicate's ReadTimeout budget, so a row
+		// that stays stalled must not pay for it every tick. The in-process memory
+		// answers the later ticks; the board is still what decides after a restart,
+		// which the previous spec covers.
+		poster := &recordingPoster{}
+		lookup := &countingLookup{inner: &postedCardLookup{poster: poster}}
+		tick := &FlaggedTick{
+			CacheDir: ginkgo.GinkgoT().TempDir(),
+			Poster:   poster,
+			Cards:    lookup,
+			Logf:     func(string, ...any) {},
+		}
+		row := stalledRow("h1")
+		ctx := context.Background()
+
+		gomega.Expect(mustHold(tick, ctx, row, base)).To(gomega.BeFalse())
+		for i := 0; i <= 5; i++ {
+			gomega.Expect(
+				mustHold(tick, ctx, row, base.Add(progressStallThreshold+time.Duration(i)*time.Minute)),
+			).To(gomega.BeTrue())
+		}
+
+		gomega.Expect(poster.requests).To(gomega.HaveLen(1))
+		gomega.Expect(lookup.calls).To(gomega.Equal(1))
+	})
+
 	ginkgo.It("keeps the hold but posts nothing when the escalation is unwired", func() {
 		// A daemon with no attention URL, or a fixture predating this change, gets
 		// the old behaviour: the row is still held, and nothing is posted. The hold
@@ -124,6 +151,21 @@ var _ = ginkgo.Describe("flagged tick stall escalation", func() {
 		).To(gomega.BeTrue())
 	})
 })
+
+// countingLookup wraps the shared fake and counts how often the board was asked.
+type countingLookup struct {
+	inner CardLookup
+	calls int
+}
+
+func (l *countingLookup) ExistingCard(
+	ctx context.Context,
+	producerID string,
+	dedupKey string,
+) (string, error) {
+	l.calls++
+	return l.inner.ExistingCard(ctx, producerID, dedupKey)
+}
 
 func mustHold(tick *FlaggedTick, ctx context.Context, row FlaggedRow, now time.Time) bool {
 	_, held := tick.progressStalledHold(ctx, row, now)

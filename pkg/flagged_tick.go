@@ -468,7 +468,12 @@ type FlaggedTick struct {
 	// fixture that never reaches the predicate never touches a state file.
 	progressStallOnce sync.Once
 	progressStall     *progressStallTracker
-	Now               libtime.CurrentDateTimeGetter
+	// stallEscalatedOnce and stallEscalated remember which stall episodes have
+	// already been carded, so the board is asked once per episode rather than once
+	// per tick. In-process only; the board lookup is the cross-restart guarantee.
+	stallEscalatedOnce sync.Once
+	stallEscalated     *stallEscalatedTracker
+	Now                libtime.CurrentDateTimeGetter
 	// Interval defaults to DefaultFlaggedTickInterval.
 	Interval time.Duration
 	// ReadTimeout bounds one predicate read, defaulting to predicateTimeout.
@@ -1109,6 +1114,15 @@ func (t *FlaggedTick) escalateStall(ctx context.Context, row FlaggedRow) {
 		return
 	}
 	key := stallEscalationDedupKey(row)
+	// The in-process memory answers the common case without a store read: a row
+	// stays stalled for many ticks, and asking the board "is there a card for this
+	// key" on every one of them spends the predicate's ReadTimeout budget on a
+	// question whose answer this process already knows. The store lookup still runs
+	// on the first tick of an episode — and after a restart, when this map is empty
+	// — so the cross-restart guarantee is unchanged.
+	if t.stallEscalatedFor(ctx).Done(key) {
+		return
+	}
 	existing, err := t.Cards.ExistingCard(ctx, stallEscalationProducerID, key)
 	if err != nil {
 		t.logf(
@@ -1118,6 +1132,7 @@ func (t *FlaggedTick) escalateStall(ctx context.Context, row FlaggedRow) {
 		return
 	}
 	if existing != "" {
+		t.stallEscalatedFor(ctx).Record(key)
 		return
 	}
 	itemID, err := t.Poster.Post(ctx, AttentionPostRequest{
@@ -1136,7 +1151,46 @@ func (t *FlaggedTick) escalateStall(ctx context.Context, row FlaggedRow) {
 		)
 		return
 	}
+	t.stallEscalatedFor(ctx).Record(key)
 	t.logf("flagged-tick: stall-escalation row=%s card=%s", row.Name, itemID)
+}
+
+// stallEscalatedTracker remembers, in this process, which stall episodes have
+// already been carded.
+//
+// ⚠️ In process only, and that is deliberate — the same trade `spawnNotLandedRetried`
+// makes. It is an OPTIMISATION, never the guarantee: the board lookup is what
+// makes "one card per episode" true across restarts, and a restart simply pays
+// that lookup once more. Bounded by the number of distinct stall episodes this
+// process ever saw; entries are never pruned, because a pruned entry would cost a
+// store read on the next tick of a stall that has not moved.
+type stallEscalatedTracker struct {
+	mu   sync.Mutex
+	keys map[string]struct{}
+}
+
+func (s *stallEscalatedTracker) Done(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.keys[key]
+	return ok
+}
+
+func (s *stallEscalatedTracker) Record(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keys == nil {
+		s.keys = map[string]struct{}{}
+	}
+	s.keys[key] = struct{}{}
+}
+
+// stallEscalatedFor returns the process-wide escalation memory.
+func (t *FlaggedTick) stallEscalatedFor(_ context.Context) *stallEscalatedTracker {
+	t.stallEscalatedOnce.Do(func() {
+		t.stallEscalated = &stallEscalatedTracker{}
+	})
+	return t.stallEscalated
 }
 
 // stallEscalationDedupKey identifies one stall episode.
