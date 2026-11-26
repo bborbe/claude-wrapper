@@ -15,6 +15,8 @@ import (
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
+
+	"github.com/bborbe/claude-wrapper/pkg/sweepgate"
 )
 
 // ParkedHold decides whether a row's last session parked on an observable that
@@ -149,10 +151,27 @@ func (g *parkedGate) Hold(ctx context.Context, row FlaggedRow) (string, bool) {
 	// `parked-on-pr` row is released by a probe, not by a clock, so deferring it would
 	// park it past the event that would have freed it. A nil deadline is the
 	// "cannot address safely" fallback in ClassifyParked and must write nothing.
-	if declaration.Class == ParkedUntil && declaration.Deadline != nil {
+	if declaration.Class == ParkedUntil && declaration.Deadline != nil &&
+		!g.alreadyDeferred(row) {
 		g.writeDefer(ctx, row, *declaration.Deadline)
 	}
 	return g.holdOrRecord(ctx, row, declaration, observation, closer)
+}
+
+// alreadyDeferred reports whether the row carries a defer_date that has not expired.
+//
+// ⚠️ This is a CHECKED invariant, not a restatement of the query. The tick's own
+// `DefaultVaultAPITaskQuery` (`due=now`) already excludes a future-dated row, so the
+// guard normally never fires — but the write is the one thing here that destroys data
+// someone else set, and an unguarded writer would silently re-park a row a human or
+// another actor had just scheduled the moment that query loosened or a second source
+// fed the gate. An unparseable or absent date is NOT deferred, matching
+// `sweepgate.IsDeferred`, so a corrupt value cannot block the write forever.
+func (g *parkedGate) alreadyDeferred(row FlaggedRow) bool {
+	if row.DeferDate == "" || g.Now == nil {
+		return false
+	}
+	return sweepgate.IsDeferred(g.Now.Now().Time(), sweepgate.Task{DeferDate: row.DeferDate})
 }
 
 // writeDefer records the deadline and never changes the hold.

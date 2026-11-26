@@ -168,6 +168,36 @@ var _ = ginkgo.Describe("parked gate — the defer write", func() {
 
 		gomega.Expect(held).To(gomega.BeTrue(), "a nil Defer is the rollback path")
 	})
+
+	// SC4. The `due=now` query already hides a future-dated row, so this guard normally
+	// never fires — which is exactly why it needs a fixture: an untested invariant that
+	// the query happens to make unreachable is indistinguishable from a missing one.
+	ginkgo.It("never overwrites a defer_date that has not expired", func() {
+		writeSessionCloser(sessionsDir, parkedGateSessionID,
+			"⏰ Ends: 2026-12-01T09:00:00+01:00 — the soak window closes")
+		rec := &recordingDefer{}
+		deferred := row
+		deferred.DeferDate = "2026-11-30"
+
+		_, held := deferGate(sessionsDir, parkedDir, clock, rec).Hold(ctx, deferred)
+
+		gomega.Expect(held).To(gomega.BeTrue(), "the row is still parked")
+		gomega.Expect(rec.calls).To(gomega.BeEmpty(),
+			"a date someone else set is not the tick's to rewrite")
+	})
+
+	ginkgo.It("overwrites a defer_date that has already expired", func() {
+		writeSessionCloser(sessionsDir, parkedGateSessionID,
+			"⏰ Ends: 2026-12-01T09:00:00+01:00 — the soak window closes")
+		rec := &recordingDefer{}
+		stale := row
+		stale.DeferDate = "2026-11-20"
+
+		_, _ = deferGate(sessionsDir, parkedDir, clock, rec).Hold(ctx, stale)
+
+		gomega.Expect(rec.calls).To(gomega.HaveLen(1),
+			"an expired defer is a dead park; the new deadline replaces it")
+	})
 })
 
 var _ = ginkgo.Describe("VaultCLIDeferWriter", func() {

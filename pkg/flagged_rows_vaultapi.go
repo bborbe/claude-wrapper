@@ -361,6 +361,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		ProgressTail: progressTail,
 		Met:          met,
 		Phase:        phase,
+		DeferDate:    deferDate,
 	}, true, nil
 }
 
