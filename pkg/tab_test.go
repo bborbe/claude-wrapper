@@ -219,3 +219,25 @@ var _ = ginkgo.Describe("SubmissionConfirmed", func() {
 		gomega.Expect(SubmissionConfirmed("❯ \nanything\n❯ \n", "  ")).To(gomega.BeFalse())
 	})
 })
+
+var _ = ginkgo.Describe("SubmissionConfirmedVisible", func() {
+	// A long-idle pane read with `--escapes`. The prompt glyph line carries a
+	// leading SGR colour (`\x1b[38;2;…m❯ `), measured on a real pane 2026-11-26.
+	// SubmissionConfirmed's HasPrefix(TrimSpace(line), "❯") never matches an escaped
+	// prompt line, so a submit that DID land reads as unconfirmed; the visible
+	// variant strips the escapes first.
+	escaped := "❯ \n\x1b[36m/reload-plugins\x1b[0m\nReloaded: 3 plugins\n\x1b[38;2::153:153:153m❯ \n"
+
+	ginkgo.It("raw SubmissionConfirmed misses a prompt line that carries a leading SGR", func() {
+		gomega.Expect(SubmissionConfirmed(escaped, "/reload-plugins")).To(gomega.BeFalse())
+	})
+
+	ginkgo.It("confirms the same escaped screen after stripping ANSI", func() {
+		gomega.Expect(SubmissionConfirmedVisible(escaped, "/reload-plugins")).To(gomega.BeTrue())
+	})
+
+	ginkgo.It("still refuses when the message never appeared", func() {
+		gomega.Expect(SubmissionConfirmedVisible("❯ \n\x1b[36m/other\x1b[0m\n❯ \n", "/reload-plugins")).
+			To(gomega.BeFalse())
+	})
+})

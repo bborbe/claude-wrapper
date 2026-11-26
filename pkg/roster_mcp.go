@@ -1720,7 +1720,7 @@ func (s *RosterToolServer) sendToTabPane(
 		return true, response, err
 	}
 	if err := SendWhenReadyWith(
-		ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime(), PaneIsReady, SubmissionConfirmed,
+		ctx, s.Tabs, ledgerRow.PaneID, text, s.currentDateTime(), PaneIsReady, SubmissionConfirmedVisible,
 	); err != nil {
 		return true, "", err
 	}
