@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.67.4
 
 - fix: **the stall escalation dedups against card history, not the open queue, so a daemon restart cannot re-post an episode the operator already answered.** `ExistingCard` was built on `BoardStore.Open`, which reads `GET /api/1.0/attention` — open items only. That answers "is my card still on the board" correctly, and "have I already carded this episode" wrongly the moment the operator replies: the card closes, the lookup finds nothing, and the next tick posts a duplicate. The in-process episode memory hides it until a restart, and then it does not. Measured 2026-11-26 on the shipped escalation: cards `cedf31eb…` (17:58:22) and `a7f38710…` (18:21:08) carry the identical dedup key `stalled|9175720d-…|ac388c8e722056bb`, the second posted after the daemon restarted at 18:19:08 — both now `closed`. The escalation now uses `NewBoardCardHistory`, which reads `GET /api/1.0/attention/history` and matches producer + dedup key in **any** state, so one episode is one card for good. A read failure returns an error rather than an empty result, because an unreadable store is not "no card exists" — treating the two alike is how the duplicate was posted. ⚠️ The four new specs model a CLOSED card; the previous fake returned the posted id regardless of state, so it could not have caught this. Change set: `pkg/attention_history.go` (new), `main.go`, `pkg/flagged_tick_stall_escalation_test.go`, `CHANGELOG.md`.
 
