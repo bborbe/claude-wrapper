@@ -1444,7 +1444,10 @@ func startFlaggedTick(
 	// a relative path — the hold itself is unchanged either way.
 	if strings.TrimSpace(attentionURL) != "" {
 		tick.Poster = pkg.NewAttentionPoster(attentionURL, nil)
-		tick.Cards = pkg.NewBoardCardLookup(pkg.NewBoardStore(attentionURL, nil))
+		// ⚠️ The escalation asks "have I EVER carded this episode", not "is my card still
+		// open". The open-only lookup cannot answer that once the operator replies — the
+		// card closes, the lookup finds nothing, and a restart re-posts a duplicate.
+		tick.Cards = pkg.NewBoardCardHistory(attentionURL, nil)
 	}
 	// The adopt job runs on the same cadence and reads the same stores: both are
 	// fleet liveness, and row 4 ran every fleet round.
