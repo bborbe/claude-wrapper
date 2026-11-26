@@ -165,7 +165,37 @@ var _ = ginkgo.Describe("SendWhenReadyWithin", func() {
 		gomega.Expect(err).NotTo(gomega.BeNil())
 		gomega.Expect(tabs.texts).To(gomega.BeEmpty())
 	})
+
+	ginkgo.It("confirms a start command on an escaped prompt line", func() {
+		// The open-endpoint path reads the pane with `--escapes`; the prompt line
+		// carries a leading SGR, so raw SubmissionConfirmed reports an unsubmitted
+		// send that DID land — measured 2026-11-26, "pane 308 never showed the
+		// message as submitted". SendWhenReadyWithin now uses
+		// SubmissionConfirmedVisible, so it confirms.
+		tabs := &escapedConfirmTabClient{fakeTabClient: &fakeTabClient{}}
+		message := `/vault-cli:work-on-goal "The Strategy Prototype Agent"`
+		err := SendWhenReadyWithin(
+			context.Background(), tabs, "pane-1", message, steppingClock(), time.Minute,
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(tabs.texts).To(gomega.ConsistOf(message))
+	})
 })
+
+// escapedConfirmTabClient returns an escaped prompt line after the send — the
+// shape a `--escapes` pane read produces (a leading SGR before the glyph), where
+// raw SubmissionConfirmed misses the fresh prompt and SubmissionConfirmedVisible
+// (stripping ANSI) confirms it.
+type escapedConfirmTabClient struct {
+	*fakeTabClient
+}
+
+func (f *escapedConfirmTabClient) Text(context.Context, string) (string, error) {
+	if len(f.texts) == 0 {
+		return promptGlyph + " \n", nil
+	}
+	return "❯ \n" + f.texts[len(f.texts)-1] + "\n\x1b[38;2::153:153:153m❯ \n", nil
+}
 
 var _ = ginkgo.Describe("ComposerReady", func() {
 	ginkgo.It("is ready when the last prompt line is empty", func() {
