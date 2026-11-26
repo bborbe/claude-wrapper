@@ -88,6 +88,12 @@ type FlaggedRow struct {
 	// Phase is the page's `phase` frontmatter. The stall predicate applies only to
 	// `execution`, matching sweepgate.IdleStuck.
 	Phase string `json:"-"`
+	// DeferDate is the page's raw `defer_date` frontmatter. Carried so a writer can
+	// refuse to overwrite a date someone else just set — the tick's own `due=now`
+	// query excludes a future-dated row, so a row reaching the gate normally has
+	// none, and this field is what makes that a checked invariant rather than an
+	// assumption about the query.
+	DeferDate string `json:"-"`
 }
 
 // Key is the row's identity in the log line and in the ledger join.
