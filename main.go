@@ -805,6 +805,7 @@ func startFleetFaces(
 		ownVault,
 		stateDir,
 		flaggedTickInterval,
+		attentionURL,
 	)
 	// The read half of the same decision: GET /api/1.0/openable reports what the
 	// tick would open or hold, from the tick's own gates. Mounted only when the
@@ -1429,6 +1430,7 @@ func newFlaggedTick(
 	ownVault pkg.DaemonVault,
 	stateDir string,
 	interval time.Duration,
+	attentionURL string,
 ) *pkg.FlaggedTick {
 	tick := &pkg.FlaggedTick{
 		// The index owns the predicate now: the tick asks vault-api which rows are
@@ -1460,6 +1462,14 @@ func newFlaggedTick(
 	}
 	if nudger, ok := reopener.(pkg.FlaggedIdleNudger); ok {
 		tick.Idle = nudger
+	}
+	// The stall escalation needs BOTH halves: the poster to write the card and the
+	// lookup that keeps one episode to one card. With no attention URL there is no
+	// board to write to, so the escalation stays disabled rather than posting into
+	// a relative path — the hold itself is unchanged either way.
+	if strings.TrimSpace(attentionURL) != "" {
+		tick.Poster = pkg.NewAttentionPoster(attentionURL, nil)
+		tick.Cards = pkg.NewBoardCardLookup(pkg.NewBoardStore(attentionURL, nil))
 	}
 	return tick
 }

@@ -282,23 +282,19 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	// role was ignored, and its blockers and provenance were invisible — all
 	// because the page-reading source parsed those fields from every page and the
 	// index-backed one read them only for tasks.
-	// The two projections differ, so each kind is read from the one that carries
-	// its fields. `TaskItem` serves neither role, mode, flag_set_by nor blocked_by
-	// — a task's record endpoint does — while GoalItem/TopicItem carry all five on
-	// the list. Reading the wrong side for either kind is silent: a missing value
-	// looks like an absent field, so a task loses its provenance refusal and a goal
-	// loses its due date.
-	role := item.Role
-	mode := item.Mode
-	flagSetBy := item.FlagSetBy
-	deferDate := item.DeferDate
-	blockedBy := item.BlockedBy
+	// The two projections differ, so each kind is read from the one that carries its
+	// fields. `TaskItem` serves neither role, mode, flag_set_by nor blocked_by — a
+	// task's record endpoint does — while GoalItem/TopicItem carry all five on the
+	// list. Reading the wrong side is silent: a missing value looks like an absent
+	// field, so a task loses its provenance refusal and a goal loses its due date.
+	role, mode := item.Role, item.Mode
+	flagSetBy, deferDate, blockedBy := item.FlagSetBy, item.DeferDate, item.BlockedBy
 	var block string
 	// Only a task carries the stand-down marker and the two instants; a goal or
 	// topic keeps the zero values.
 	var stopped bool
 	var stopDate, flagSetAt *time.Time
-	var progressHash, met, phase string
+	var progressHash, progressTail, met, phase string
 	if kind == "task" {
 		page, err := s.Client.Page(ctx, kind, item.ID)
 		if err != nil {
@@ -312,7 +308,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		stopped = frontmatterString(page.Frontmatter, "stopped") == "true"
 		stopDate = frontmatterTime(page.Frontmatter, "stop_date")
 		flagSetAt = frontmatterTime(page.Frontmatter, "flag_set_at")
-		progressHash, met, phase = pageStallFields(page)
+		progressHash, progressTail, met, phase = pageStallFields(page)
 		// The owner ladder's task branch reads managed_by and goals off this block.
 		block = ownerBlock(
 			frontmatterString(page.Frontmatter, "managed_by"),
@@ -363,18 +359,22 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		StopDate:     stopDate,
 		FlagSetAt:    flagSetAt,
 		ProgressHash: progressHash,
+		ProgressTail: progressTail,
 		Met:          met,
 		Phase:        phase,
 	}, true, nil
 }
 
-// pageStallFields reads the three page-body values the stall predicate needs.
+// pageStallFields reads the page-body values the stall predicate and its
+// escalation need.
 //
 // They come from the task page's body, which a goal or topic page does not
 // serve — and the predicate excludes those kinds anyway, so an empty reading is
-// harmless.
-func pageStallFields(page VaultAPIPage) (progressHash, met, phase string) {
+// harmless. ProgressTail rides along here rather than at the call site so the
+// row builder does not grow a line for it.
+func pageStallFields(page VaultAPIPage) (progressHash, progressTail, met, phase string) {
 	return sweepgate.ProgressHash(page.Body),
+		sweepgate.ProgressTail(page.Body),
 		sweepgate.CheckboxCount(page.Body, ""),
 		frontmatterString(page.Frontmatter, "phase")
 }
