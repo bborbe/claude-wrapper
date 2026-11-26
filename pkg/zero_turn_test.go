@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -21,6 +22,10 @@ func (failingWriter) Write([]byte) (int, error) { return 0, os.ErrClosed }
 
 func (failingWriter) Close() error { return nil }
 
+// SetWriteDeadline lets the fake stand in for the real stdin, which send now
+// requires to take a deadline.
+func (failingWriter) SetWriteDeadline(time.Time) error { return nil }
+
 // recordingWriter captures what send actually wrote, so a spec can assert WHICH
 // prompt a retry carried rather than only that a retry happened.
 type recordingWriter struct{ written *[]string }
@@ -31,6 +36,10 @@ func (w recordingWriter) Write(p []byte) (int, error) {
 }
 
 func (recordingWriter) Close() error { return nil }
+
+// SetWriteDeadline lets the fake stand in for the real stdin, which send now
+// requires to take a deadline.
+func (recordingWriter) SetWriteDeadline(time.Time) error { return nil }
 
 var _ = ginkgo.Describe("zero-turn retry", func() {
 	// The exit record's `turns=` field is only a discriminator if reap copies the

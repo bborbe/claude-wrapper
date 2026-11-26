@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,7 +78,16 @@ type SessionRecord struct {
 type SessionFiles struct {
 	// Stdin is the write end of the child's stdin FIFO, opened O_RDWR so that
 	// opening it never blocks and so the descriptor is never the last writer.
-	Stdin *os.File
+	//
+	// It is the DAEMON's descriptor, opened non-blocking and never handed to a
+	// child, so a write on it honours a deadline (see fifoWriter). Before this the
+	// daemon wrote through the very descriptor the child read, and a write to a
+	// child that had stopped reading waited forever.
+	Stdin io.WriteCloser
+	// ChildStdin is a second descriptor on the same FIFO, opened only to be handed
+	// to the child as its stdin. It is nil on a re-opened (adopted) session, whose
+	// child already holds its own.
+	ChildStdin *os.File
 	// EventsPath is the append-only file carrying the child's stdout.
 	EventsPath string
 	// EventsWriter is the append-only handle handed to the child as its stdout.
@@ -187,22 +197,36 @@ func (s *sessionStore) Create(ctx context.Context, record SessionRecord) (*Sessi
 	// exists, and the reader here is the child, which is not started yet. O_RDWR
 	// never blocks and gives this process both ends, so this descriptor is never
 	// the last writer even before the child holds its own.
-	stdin, err := os.OpenFile(stdinPath, os.O_RDWR, 0o600)
+	stdin, err := openFIFOWriter(stdinPath)
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "open stdin fifo %q failed", stdinPath)
+	}
+	// A second, independent open of the same FIFO for the child. It stays
+	// blocking: O_NONBLOCK on the daemon's open belongs to that open alone.
+	childStdin, err := os.OpenFile(stdinPath, os.O_RDWR, 0o600)
+	if err != nil {
+		_ = stdin.Close()
+		return nil, errors.Wrapf(ctx, err, "open child stdin fifo %q failed", stdinPath)
 	}
 	eventsPath := filepath.Join(dir, sessionEventsName)
 	events, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		_ = stdin.Close()
+		_ = childStdin.Close()
 		return nil, errors.Wrapf(ctx, err, "open events file %q failed", eventsPath)
 	}
 	if err := s.Save(ctx, record); err != nil {
 		_ = stdin.Close()
+		_ = childStdin.Close()
 		_ = events.Close()
 		return nil, err
 	}
-	return &SessionFiles{Stdin: stdin, EventsPath: eventsPath, EventsWriter: events}, nil
+	return &SessionFiles{
+		Stdin:        stdin,
+		ChildStdin:   childStdin,
+		EventsPath:   eventsPath,
+		EventsWriter: events,
+	}, nil
 }
 
 func (s *sessionStore) Open(ctx context.Context, id string) (*SessionFiles, error) {
@@ -211,7 +235,7 @@ func (s *sessionStore) Open(ctx context.Context, id string) (*SessionFiles, erro
 		return nil, errors.Errorf(ctx, "session state directory is not resolvable")
 	}
 	stdinPath := filepath.Join(dir, sessionStdinName)
-	stdin, err := os.OpenFile(stdinPath, os.O_RDWR, 0o600)
+	stdin, err := openFIFOWriter(stdinPath)
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "open stdin fifo %q failed", stdinPath)
 	}

@@ -159,4 +159,13 @@ var (
 	// an unchanged task file. A sentinel so a caller can tell this refusal from a
 	// transport failure that happened to mention a prompt.
 	ErrResumeWithoutPrompt = stderrors.New("resume-without-prompt")
+	// ErrSendTimeout is returned when a line written to a child's stdin is not
+	// taken within the write deadline — the child is not draining its stdin.
+	//
+	// It is a refusal rather than a wait. The write used to have no deadline, and
+	// the flagged tick reaches it synchronously, so one child that stopped reading
+	// wedged the tick for every row behind it — measured 2026-11-26: the tick
+	// goroutine sat 67 minutes in `(*child).send` while the daemon stayed up. A
+	// sentinel so a caller can tell a deaf child from a transport failure.
+	ErrSendTimeout = stderrors.New("send-timeout")
 )

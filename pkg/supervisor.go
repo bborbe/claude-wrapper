@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"log"
@@ -792,7 +793,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	// so a caller's resolved environment would otherwise be discarded without a
 	// word — the child starts, answers, and behaves differently.
 	cmd.Env = spawnEnv(os.Environ(), options.Env)
-	cmd.Stdin = files.Stdin
+	cmd.Stdin = files.ChildStdin
 	cmd.Stdout = files.EventsWriter
 	// The child is given its OWN write end of its own stdin, so a parent death
 	// never produces an EOF on it. A FIFO reports EOF when its last writer closes,
@@ -800,7 +801,7 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	// read EOF the instant the daemon died and finish its input stream, which is
 	// how a survivor would still lose its turn. The descriptor is held, never
 	// written: it exists only to keep the FIFO open from the child's own side.
-	cmd.ExtraFiles = []*os.File{files.Stdin}
+	cmd.ExtraFiles = []*os.File{files.ChildStdin}
 	// Setsid detaches the child from this process's session and process group, so
 	// the group-wide signal launchd sends when the job stops cannot reach it. The
 	// child has to outlive a `launchctl kickstart -k`, and that kill is delivered
@@ -808,10 +809,16 @@ func (s *supervisor) startChild(ctx context.Context, id string, options SpawnOpt
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		_ = files.Stdin.Close()
+		_ = files.ChildStdin.Close()
 		_ = files.EventsWriter.Close()
 		_ = s.store.Remove(ctx, id)
 		return nil, errors.Wrapf(ctx, err, "start claude failed")
 	}
+	// The child now holds its own copies of the child-side descriptor (stdin and
+	// the ExtraFiles keep-alive), so the daemon's copy is closed. The daemon keeps
+	// writing through files.Stdin, which never passed through Fd() and so still
+	// accepts a write deadline.
+	_ = files.ChildStdin.Close()
 	// The child holds its own copy of both endpoints now, so the spawning side
 	// closes its stdout handle: a regular file needs no reader-side keep-alive, and
 	// leaving it open would keep the file alive for the daemon's lifetime for no
@@ -1128,8 +1135,14 @@ func childEnv(inherited []string, overrides map[string]string) []string {
 type child struct {
 	mutex   sync.RWMutex
 	writeMu sync.Mutex
-	id      string
-	pid     int
+	// writeTimeout bounds one stdin write. Zero means defaultChildWriteTimeout.
+	writeTimeout time.Duration
+	// writeBroken is set, under writeMu, when a write timed out. A timed-out write
+	// may have put part of a JSONL line into the FIFO, so any later line would be
+	// spliced onto it; every later write is refused instead.
+	writeBroken bool
+	id          string
+	pid         int
 	// procStart is the child process's own start time, captured at spawn or
 	// adoption. Together with pid it identifies one process instance, so a holder
 	// whose pid was reused by an unrelated process can be proved stale rather than
@@ -1422,9 +1435,7 @@ func (c *child) send(ctx context.Context, text string) error {
 		c.tryPatchVerdict(turn, false, ctx, NewTurnStartedLedgerPatch())
 	}
 
-	c.writeMu.Lock()
-	_, writeErr := c.stdin.Write(append(encoded, '\n'))
-	c.writeMu.Unlock()
+	writeErr := c.writeLine(ctx, encoded)
 	if writeErr != nil {
 		c.mutex.Lock()
 		c.pendingTurns--
@@ -1440,6 +1451,67 @@ func (c *child) send(ctx context.Context, text string) error {
 		return errors.Wrapf(ctx, writeErr, "write message to session %q failed", c.id)
 	}
 	return nil
+}
+
+// defaultChildWriteTimeout bounds one write to a child's stdin.
+//
+// A healthy child drains its stdin continuously, so a line lands in the FIFO
+// buffer at once and the bound is never approached. It exists for the child that
+// has stopped reading: without it the write waits forever, and the flagged tick,
+// which reaches it synchronously, stops with it.
+const defaultChildWriteTimeout = 30 * time.Second
+
+// deadlineWriter is the part of *os.File a bounded write needs.
+type deadlineWriter interface {
+	SetWriteDeadline(t time.Time) error
+}
+
+// writeLine writes one JSONL line to the child's stdin, bounded by the write
+// deadline.
+//
+// A write that misses the deadline returns ErrSendTimeout and marks the child's
+// stdin broken: a partial line may already sit in the FIFO, so a later line
+// would be spliced onto it and the child would read neither.
+//
+// A stdin that cannot take a deadline is refused, never written unbounded: an
+// unbounded write is exactly the stall this exists to prevent, and a silent
+// fallback to it would hide the regression rather than report it.
+func (c *child) writeLine(ctx context.Context, line []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.writeBroken {
+		return errors.Wrapf(ctx, ErrSendTimeout, "session %q stdin is broken by an earlier timed-out write", c.id)
+	}
+	timeout := c.writeTimeout
+	if timeout <= 0 {
+		timeout = defaultChildWriteTimeout
+	}
+	writer, ok := c.stdin.(deadlineWriter)
+	if !ok {
+		return errors.Errorf(ctx, "session %q stdin cannot take a write deadline", c.id)
+	}
+	// Wall clock on purpose, not c.now: a write deadline is a real-time bound that
+	// fifoWriter checks against the real clock, exactly as os.File does. A deadline
+	// taken from an injected (possibly fake) clock would disagree with that check —
+	// a fake clock in the past would time every write out at once.
+	deadline := time.Now().Add(timeout)
+	// A caller with an earlier deadline of its own is not kept waiting past it.
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := writer.SetWriteDeadline(deadline); err != nil {
+		return errors.Wrapf(ctx, err, "set write deadline on session %q stdin failed", c.id)
+	}
+	defer func() { _ = writer.SetWriteDeadline(time.Time{}) }()
+	_, err := c.stdin.Write(append(line, '\n'))
+	if err == nil {
+		return nil
+	}
+	if stderrors.Is(err, os.ErrDeadlineExceeded) {
+		c.writeBroken = true
+		return errors.Wrapf(ctx, ErrSendTimeout, "session %q did not read its stdin before %s", c.id, deadline.Format(time.RFC3339))
+	}
+	return errors.Wrapf(ctx, err, "write session %q stdin failed", c.id)
 }
 
 // setPermissionMode writes the SDK's own control request and waits for the
@@ -1532,10 +1604,7 @@ func (c *child) writeControl(ctx context.Context, requestID string, request map[
 	if err != nil {
 		return errors.Wrapf(ctx, err, "marshal control request failed")
 	}
-	c.writeMu.Lock()
-	_, writeErr := c.stdin.Write(append(encoded, '\n'))
-	c.writeMu.Unlock()
-	if writeErr != nil {
+	if writeErr := c.writeLine(ctx, encoded); writeErr != nil {
 		return errors.Wrapf(ctx, writeErr, "write control request to session %q failed", c.id)
 	}
 	return nil
