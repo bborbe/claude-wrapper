@@ -134,7 +134,7 @@ func keepaliveLister(
 	}
 }
 
-// newKeepaliveJob assembles the eight procedures and the two pre-steps.
+// newKeepaliveJob assembles the seven procedures and the two pre-steps.
 func newKeepaliveJob(
 	ctx context.Context,
 	registry pkg.SessionRegistry,
@@ -182,7 +182,7 @@ func newKeepaliveJob(
 	}, nil
 }
 
-// newKeepaliveProcedures wires the eight keep-alive procedures.
+// newKeepaliveProcedures wires the seven keep-alive procedures.
 func newKeepaliveProcedures(
 	filtered []pkg.Vault,
 	registry pkg.SessionRegistry,
@@ -206,15 +206,15 @@ func newKeepaliveProcedures(
 			Pending: store,
 			Now:     now,
 		},
-		&pkg.LapsedManagerProcedure{
-			Action:  "topicless-goal-manager",
-			Decide:  newTopiclessDecide(filtered),
-			Claim:   claim,
-			Hold:    hold,
-			Act:     act,
-			Pending: store,
-			Now:     now,
-		},
+		// ⚠️ `topicless-goal-manager` is RETIRED and deliberately absent
+		// (operator decision 2026-11-26). Its script
+		// (`topicless-goal-keepalive.py`) is a refusing stub upstream since
+		// 2026-11-24 — the goal-manager tier was merged into the topic tier —
+		// so it exited 1 on every invocation and the tick logged
+		// `result=error` 155 times. A wired procedure that can only error is
+		// noise in the tick's own contract, which says every line names what
+		// happened and to which session. Re-adding it requires re-adding a
+		// script that can decide something, not just this block.
 		&pkg.DeadWorkerProcedure{
 			Decisions: newWorkerDecisions(taskLister, filtered),
 			Claim:     claim,
@@ -378,26 +378,6 @@ func newManagerDecide(lister *pkg.KeepaliveLister, vaults []pkg.Vault, branch st
 			return pkg.LapsedManagerDecision{}, advanceErr
 		}
 		return pkg.LapsedManagerDecision{Verdict: verdict, SessionID: ref.SessionID, Vault: ref.Vault, Name: ref.Name, Branch: branch}, nil
-	}
-}
-
-// newTopiclessDecide runs the topicless BLOCK and returns its first actionable row.
-func newTopiclessDecide(filtered []pkg.Vault) func(context.Context) (pkg.LapsedManagerDecision, error) {
-	return func(ctx context.Context) (pkg.LapsedManagerDecision, error) {
-		for _, vault := range filtered {
-			out, _, runErr := keepaliveScript("topicless-goal-keepalive.py")(ctx, "--vault", vault.Path)
-			if runErr != nil {
-				return pkg.LapsedManagerDecision{}, runErr
-			}
-			block, parseErr := pkg.ParseTopiclessGoalBlock(ctx, out)
-			if parseErr != nil {
-				return pkg.LapsedManagerDecision{}, parseErr
-			}
-			if decision, ok := block.FirstActionable(vault.Name); ok {
-				return decision, nil
-			}
-		}
-		return pkg.LapsedManagerDecision{Verdict: "leave"}, nil
 	}
 }
 
