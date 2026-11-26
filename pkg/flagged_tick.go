@@ -311,7 +311,7 @@ func (r FlaggedTickResult) Line() string {
 		line += " rows_source=" + r.RowsSource
 	}
 	// `rows_stale=` names a cached run on the line the tick is known by.
-	line += rowsStaleField(r)
+	line += r.rowsStaleField()
 	// `provenance=` names all three states in one line. The refusal tokens below it
 	// mark only the refused rows; without this field an operator-set row is visible
 	// only as an `opened=` entry with no provenance of its own, so a reader cannot

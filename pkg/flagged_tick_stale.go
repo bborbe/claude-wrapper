@@ -24,7 +24,7 @@ func staleReason(err error) string {
 // It sits on the summary line because the `flagged-tick read failed:` line is a
 // separate one: a reader who greps ticks sees the summary alone and could not
 // otherwise tell a cached run from a healthy one.
-func rowsStaleField(r FlaggedTickResult) string {
+func (r FlaggedTickResult) rowsStaleField() string {
 	if r.RowsStale == "" {
 		return ""
 	}
