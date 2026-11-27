@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.68.2
 
 - fix: **the idle-close reaper now logs what it skipped, so an over-bar session that was not closed says why.** `IdleCloseReaper.Reap` called `IdleReaperJob.Tick` and mapped only `result.Closed`, so a tick that skipped every session wrote nothing — `job=idle-reaper action=tick closed=N skipped=N reasons=…` stopped at 2026-11-20 19:00:33 when `ReaperJob` replaced `IdleReaperJob`, and 622 such lines before it versus zero after is the whole record of the regression. The tick now records each skipped session with its reason (`IdleReaperResult.SkippedSessions`), the adapter writes the summary line itself in the idle job's own shape, and a **notable** skip — headless, still alive, at or past the floor, i.e. one that should have been closed — is returned as a `kept` result so `ReaperJob` renders `result=kept id=<sid> reason=<reason>`. Benign skips (interactive tabs, under-floor children, exited children) stay summary-count-only: a live tick skips ~37 sessions and a line each would drown the log. Floor, interval and `idleReapSkipReason` unchanged; the close path is untouched. Change set: `pkg/idle_reaper.go`, `pkg/keepalive_reaper_adapters.go`, `pkg/idle_reaper_observability_test.go` (new), `CHANGELOG.md`.
 
