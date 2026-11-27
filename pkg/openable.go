@@ -75,16 +75,19 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 			decision = OpenableDecisionHeld
 		} else if action != rowEligible {
 			decision = OpenableDecisionHeld
+		} else if openCount >= maxRowsPerTick {
+			// The budget is unconditional in the tick, so it is here too.
+			decision = OpenableDecisionHeld
+			reason = reasonRowBudget
 		} else if t.Caps != nil {
 			if err := t.Caps.CheckWorker(ctx, row.CapMode(), row.OperatorNamed()); err != nil {
 				decision = OpenableDecisionHeld
 				reason = reasonCapsRefused
-			} else if openCount >= maxRowsPerTick {
-				decision = OpenableDecisionHeld
-				reason = reasonRowBudget
 			} else {
 				openCount++
 			}
+		} else {
+			openCount++
 		}
 		out = append(out, OpenableEntry{
 			Vault:     row.Vault,

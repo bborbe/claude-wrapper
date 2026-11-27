@@ -1051,7 +1051,10 @@ func (t *FlaggedTick) classify(
 		skipReason, skipAction := t.classifySkip(ctx, row, reason, now, readOnly)
 		return skipReason, skipAction, false
 	}
-	if t.Parked != nil {
+	// Parked.Hold writes defer_date via vault-cli and persists park baselines, so
+	// a read-only caller skips it entirely; the row is reported by its classify
+	// reason, not `parked-until`.
+	if !readOnly && t.Parked != nil {
 		if reason, held := t.Parked.Hold(ctx, row); held {
 			return reason, rowSkipped, false
 		}
