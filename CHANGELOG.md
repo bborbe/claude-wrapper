@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.67.6
 
 - fix: **the stall escalation's card-history lookup now decodes the bare JSON array `GET /api/1.0/attention/history` returns (the `{items:[...]}` envelope is still tolerated).** `boardCardHistory.ExistingCard` decoded into `struct{Items []BoardItem}`, so every lookup failed with `decode attention history failed: json: cannot unmarshal array` and `escalateStall` failed closed, posting no card. Change set: `pkg/attention_history.go`, `pkg/attention_history_test.go` (new), `CHANGELOG.md`.
 
