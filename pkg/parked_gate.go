@@ -28,6 +28,10 @@ type ParkedHold interface {
 	// when it must. The reason is the class token, optionally followed by
 	// ": <cause>" when a probe failed.
 	Hold(ctx context.Context, row FlaggedRow) (reason string, held bool)
+	// Evaluate answers the same question WITHOUT any write or record, so the read
+	// endpoint reports the park verdict side-effect-free. It is on the interface so
+	// a substitute cannot silently fail open on the read path.
+	Evaluate(ctx context.Context, row FlaggedRow) (reason string, held bool)
 	// Opened tells the gate that the row's reopen actually succeeded, which is the
 	// only moment an advanced baseline may be committed.
 	//
@@ -182,6 +186,19 @@ func (g *parkedGate) Evaluate(ctx context.Context, row FlaggedRow) (string, bool
 	}
 	if observation.Satisfied {
 		return "", false
+	}
+	// Mirror holdOrRecord's baseline read WITHOUT writing: a matching baseline with
+	// a moved fingerprint means the tick would reopen the row (not held), and a
+	// parked-until row whose baseline has aged past MAX_AGE_S is released. Without
+	// this the endpoint reports held for rows the tick opens.
+	key := row.Key()
+	hash := sha256hex(closer)
+	baseline := g.Store.Load(ctx, key)
+	if baseline != nil && baseline.SessionID == row.SessionID && baseline.CloserHash == hash {
+		if baseline.Fingerprint != observation.Fingerprint {
+			return "", false
+		}
+		return g.holdRecorded(declaration, baseline)
 	}
 	return string(declaration.Class), true
 }

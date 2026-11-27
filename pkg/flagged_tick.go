@@ -1056,12 +1056,8 @@ func (t *FlaggedTick) classify(
 	// mutating the park store. A gate that cannot Evaluate is skipped on read.
 	if t.Parked != nil {
 		if readOnly {
-			if ev, ok := t.Parked.(interface {
-				Evaluate(context.Context, FlaggedRow) (string, bool)
-			}); ok {
-				if reason, held := ev.Evaluate(ctx, row); held {
-					return reason, rowSkipped, false
-				}
+			if reason, held := t.Parked.Evaluate(ctx, row); held {
+				return reason, rowSkipped, false
 			}
 		} else if reason, held := t.Parked.Hold(ctx, row); held {
 			return reason, rowSkipped, false

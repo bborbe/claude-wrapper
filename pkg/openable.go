@@ -42,8 +42,14 @@ type OpenableEntry struct {
 // would open the row and — when held — the tick's own reason token.
 //
 // It is read-only: it assembles exactly the inputs tickFromRows does and runs the
-// same classify() gates, returning the verdict instead of opening anything. The
-// tick and this endpoint therefore share ONE decision function and cannot drift.
+// same gateRow the tick runs (classify → budget → caps-with-halt → park), returning
+// the verdict instead of opening anything. The tick and this endpoint therefore
+// share ONE decision function.
+//
+// Residual divergence, documented not hidden: a read never nudges, so it cannot
+// predict the nudges that consume the tick's row budget. After a cycle with nudges
+// the endpoint's budget counter is lower than the tick's, and it can report `open`
+// for a row the tick would refuse with `row budget`. Every other gate is shared.
 func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 	rows, err := t.Source.Rows(ctx)
 	if err != nil {
@@ -68,6 +74,10 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 	openCount := 0
 	halted := ""
 	for _, row := range ordered {
+		// A client disconnect must stop the per-row census rather than run it to the end.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		// The same gateRow the tick runs: classify, budget, caps-with-halt, park.
 		reason, action, halt, _ := t.gateRow(
 			ctx, row, recent, dead, childLive, now, halted, openCount, true,
