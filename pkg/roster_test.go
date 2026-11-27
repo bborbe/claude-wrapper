@@ -75,6 +75,9 @@ type rosterLedger struct {
 	// posted records every row handed to Post, so a test can read what a spawn
 	// actually filed rather than what it was supposed to file.
 	posted []LedgerRow
+	// patches records every partial update, so a test can tell a resume (PATCH)
+	// from a fresh spawn (POST) — the distinction the spawn edge depends on.
+	patches []LedgerPatch
 }
 
 func (l *rosterLedger) Rows(context.Context) ([]LedgerRow, error) {
@@ -86,8 +89,12 @@ func (l *rosterLedger) Post(_ context.Context, _ string, row LedgerRow) error {
 	return nil
 }
 
-// Patch is a no-op: the roster reads and spawns, it never writes a verdict.
-func (l *rosterLedger) Patch(_ context.Context, _ string, _ LedgerPatch) error { return nil }
+// Patch records the partial update. A resume writes one instead of a POST, so a
+// no-op here would make "no row was filed" indistinguishable from the defect.
+func (l *rosterLedger) Patch(_ context.Context, _ string, patch LedgerPatch) error {
+	l.patches = append(l.patches, patch)
+	return nil
+}
 
 // rosterLiveness is a Liveness returning a fixed set.
 type rosterLiveness struct {
