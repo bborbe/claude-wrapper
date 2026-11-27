@@ -151,6 +151,18 @@ var _ = ginkgo.Describe("Openable waiting_on", func() {
 		gomega.Expect(entry.WaitingOn.Summary).To(gomega.Equal("session 11111111 still live"))
 	})
 
+	ginkgo.It("never calls a not-absent-dead session live", func() {
+		row := FlaggedRow{SessionID: "22222222-2222-2222-2222-222222222222"}
+
+		waiting := notAbsentWaitingOn(row, reasonNotAbsentDead)
+
+		gomega.Expect(waiting).ToNot(gomega.BeNil())
+		gomega.Expect(waiting.SessionID).To(gomega.Equal(row.SessionID))
+		gomega.Expect(waiting.Summary).ToNot(gomega.ContainSubstring("live"))
+		gomega.Expect(waiting.Summary).To(gomega.Equal(
+			"session 22222222 ended per ledger; absence not yet proven"))
+	})
+
 	ginkgo.It("gives a foreign-vault row a summary and omits waiting_on on an open row", func() {
 		foreign := FlaggedRow{
 			Kind: "task", Vault: "seibert-brogrammers", Name: "f", Branch: "create", Liveness: "none",

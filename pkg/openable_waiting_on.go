@@ -56,7 +56,7 @@ func (t *FlaggedTick) waitingOn(
 		strings.HasPrefix(reason, string(ParkedOnHost)):
 		return t.parkedWaitingOn(ctx, row, reason)
 	case isNotAbsentReason(reason):
-		return notAbsentWaitingOn(row)
+		return notAbsentWaitingOn(row, reason)
 	case reason == reasonRecentlySpawned:
 		return recentlySpawnedWaitingOn(row, recent)
 	case reason == reasonForeignVault:
@@ -135,7 +135,10 @@ func (t *FlaggedTick) parkedWaitingOn(
 	return waiting
 }
 
-func notAbsentWaitingOn(row FlaggedRow) *OpenableWaitingOn {
+// notAbsentWaitingOn names the session holding the row. For not-absent-dead the
+// ledger already records the session as ended, so the line must not claim it is
+// live — only that its absence is not yet proven.
+func notAbsentWaitingOn(row FlaggedRow, reason string) *OpenableWaitingOn {
 	if row.SessionID == "" {
 		return nil
 	}
@@ -143,8 +146,12 @@ func notAbsentWaitingOn(row FlaggedRow) *OpenableWaitingOn {
 	if len(short) > 8 {
 		short = short[:8]
 	}
+	summary := "session " + short + " still live"
+	if reason == reasonNotAbsentDead {
+		summary = "session " + short + " ended per ledger; absence not yet proven"
+	}
 	return &OpenableWaitingOn{
-		Summary:   "session " + short + " still live",
+		Summary:   summary,
 		SessionID: row.SessionID,
 	}
 }
