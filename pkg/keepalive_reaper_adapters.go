@@ -6,6 +6,8 @@ package pkg
 
 import (
 	"context"
+	"log"
+	"strconv"
 
 	"github.com/bborbe/errors"
 )
@@ -22,24 +24,62 @@ type IdleTicker interface {
 // the existing `IdleReaperJob.Tick`, adapted UNCHANGED. The merge is an adapter,
 // not a rewrite: the idle logic (the floor, the skip reasons, the Stop) stays in
 // IdleReaperJob; this only re-labels its result as a `ReaperResult`.
+//
+// ⚠️ The line shapes are documented here because this adapter is the only place
+// that produces them, and a quiet tick has no other evidence:
+//
+//	job=idle-reaper action=tick closed=<n> skipped=<n> reasons=<reason>:<n>,…
+//	job=reaper action=idle-close result=closed id=<sid>
+//	job=reaper action=idle-close result=kept id=<sid> reason=<reason>
+//
+// The `action=tick` summary is written by this adapter (not by ReaperJob) because
+// it is the idle job's own shape and the other four reapers have no equivalent.
+// A per-session `kept` line is written only for a NOTABLE skip — headless, still
+// alive, at or past the floor — i.e. a child that should have been closed and was
+// not; every other skip appears in the summary counts only.
 type IdleCloseReaper struct {
 	Job IdleTicker
+	// Logf writes the tick summary line. Nil means log.Printf.
+	Logf func(line string)
 }
 
 // Kind is the `action=` value.
 func (r *IdleCloseReaper) Kind() string { return "idle-close" }
 
-// Reap runs the idle tick and reports one closed result per stopped session.
+// Reap runs the idle tick, writes its summary line, and reports one result per
+// closed session plus one `kept` result per notable skipped session.
 func (r *IdleCloseReaper) Reap(ctx context.Context) ([]ReaperResult, error) {
 	result, err := r.Job.Tick(ctx)
 	if err != nil {
 		return nil, err
 	}
-	results := make([]ReaperResult, 0, len(result.Closed))
+	r.logf(JobLine(IdleReaperJobName, "tick",
+		"closed", strconv.Itoa(len(result.Closed)),
+		"skipped", strconv.Itoa(result.skippedCount()),
+		"reasons", result.skippedBreakdown(),
+	))
+	results := make([]ReaperResult, 0, len(result.Closed)+len(result.SkippedSessions))
 	for _, id := range result.Closed {
 		results = append(results, ReaperResult{Kind: r.Kind(), SessionID: id, Closed: true})
 	}
+	for _, skip := range result.SkippedSessions {
+		if !skip.Notable {
+			continue
+		}
+		results = append(results, ReaperResult{
+			Kind: r.Kind(), SessionID: skip.SessionID, Reason: skip.Reason,
+		})
+	}
 	return results, nil
+}
+
+// logf writes one rendered line. Nil Logf means log.Printf, like every other job.
+func (r *IdleCloseReaper) logf(line string) {
+	if r.Logf != nil {
+		r.Logf(line)
+		return
+	}
+	log.Printf("%s", line)
 }
 
 // TerminalTaskReaper closes a session whose anchored task is completed or aborted
