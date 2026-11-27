@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 - fix: **an adopted child the wrapper itself closed (idle-reaper, startup deadline, stop) now reads not-live, so the flagged tick sees its row ABSENT and can reopen it.** An adopted child has no `cmd.Wait`, so `reap(nil)` settles it with `state: exited` and a nil `exit_code`; `childVerdict` keyed only on `ExitCode == nil` and read it live forever. Measured 2026-11-27: session `7b71161a` was idle-reaped at 09:41:41 (adopted after the 09:26:41 restart), `/api/1.0/sessions` showed `state: exited, exit_code: null`, `/api/1.0/liveness` showed `live, source: child-table`, and the tick skipped the row `not-absent` every 2 minutes. `childVerdict` now also treats `StateExited` (set only by `reap`, after the pid is gone) as not-live; a registry-listed pid still wins, so the double-open guard is unchanged. Change set: `pkg/liveness_verdict.go`, `pkg/liveness_verdict_test.go`, `CHANGELOG.md`.
+- fix: **the stall escalation's card-history lookup now decodes the bare JSON array `GET /api/1.0/attention/history` returns (the `{items:[...]}` envelope is still tolerated).** `boardCardHistory.ExistingCard` decoded into `struct{Items []BoardItem}`, so every lookup failed with `decode attention history failed: json: cannot unmarshal array` and `escalateStall` failed closed, posting no card. Change set: `pkg/attention_history.go`, `pkg/attention_history_test.go` (new), `CHANGELOG.md`.
 
 ## v0.67.5
 
