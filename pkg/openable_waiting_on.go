@@ -58,7 +58,7 @@ func (t *FlaggedTick) waitingOn(
 	case isNotAbsentReason(reason):
 		return notAbsentWaitingOn(row, reason)
 	case reason == reasonRecentlySpawned:
-		return recentlySpawnedWaitingOn(row, recent)
+		return recentlySpawnedWaitingOn(row, recent, now)
 	case reason == reasonForeignVault:
 		return &OpenableWaitingOn{
 			Summary: "row belongs to a vault family this daemon does not serve",
@@ -109,7 +109,9 @@ func (t *FlaggedTick) parkedWaitingOn(
 		return waiting
 	}
 	declaration, found := declarer.Declaration(ctx, row)
-	if !found {
+	// The closer is re-read here; a declaration whose class no longer matches the
+	// held reason is not what held the row, so its detail is not reported.
+	if !found || !strings.HasPrefix(reason, string(declaration.Class)) {
 		return waiting
 	}
 	switch declaration.Class {
@@ -161,10 +163,24 @@ func notAbsentWaitingOn(row FlaggedRow, reason string) *OpenableWaitingOn {
 	}
 }
 
-func recentlySpawnedWaitingOn(row FlaggedRow, recent map[string]time.Time) *OpenableWaitingOn {
-	at, ok := recent[row.SessionID]
-	if row.SessionID == "" || !ok {
-		at, ok = recent[labelKey(row.Name)]
+// recentlySpawnedWaitingOn names the spawn time only from a ledger entry inside
+// the same window the tick's decision applies, under the same keys (session id,
+// then label), so a stale entry never becomes the reported start.
+func recentlySpawnedWaitingOn(
+	row FlaggedRow,
+	recent map[string]time.Time,
+	now time.Time,
+) *OpenableWaitingOn {
+	var at time.Time
+	ok := false
+	for _, key := range []string{row.SessionID, labelKey(row.Name)} {
+		if key == "" {
+			continue
+		}
+		if candidate, found := recent[key]; found && now.Sub(candidate) < recentlySpawnedWindow {
+			at, ok = candidate, true
+			break
+		}
 	}
 	waiting := &OpenableWaitingOn{
 		Summary: "recently spawned; held for " + recentlySpawnedWindow.String(),

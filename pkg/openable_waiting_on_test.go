@@ -172,6 +172,15 @@ var _ = ginkgo.Describe("Openable waiting_on", func() {
 			"flag provenance is not recorded; nobody attributed the flag"))
 	})
 
+	ginkgo.It("never reports a recently-spawned start outside the hold window", func() {
+		row := FlaggedRow{SessionID: "44444444-4444-4444-4444-444444444444", Name: "r"}
+		recent := map[string]time.Time{row.SessionID: now.Add(-recentlySpawnedWindow - time.Minute)}
+
+		waiting := recentlySpawnedWaitingOn(row, recent, now)
+
+		gomega.Expect(waiting.Since).To(gomega.BeEmpty())
+	})
+
 	ginkgo.It("never calls a not-absent-dead session live", func() {
 		row := FlaggedRow{SessionID: "22222222-2222-2222-2222-222222222222"}
 
