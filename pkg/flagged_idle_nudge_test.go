@@ -91,7 +91,7 @@ var _ = ginkgo.Describe("flagged tick: idle held child", func() {
 			result := tick.tickFromRows(context.Background(), []FlaggedRow{row})
 
 			gomega.Expect(result.Nudged).To(gomega.BeEmpty())
-			gomega.Expect(result.Skipped).To(gomega.Equal([]string{row.Key() + ": " + reasonNotAbsent}))
+			gomega.Expect(result.Skipped).To(gomega.Equal([]string{row.Key() + ": " + reasonIndeterminate}))
 			gomega.Expect(supervisor.sent()).To(gomega.BeEmpty())
 		},
 		ginkgo.Entry("a turn is generating", Session{State: StateGenerating, PendingTurns: 1}),
@@ -104,7 +104,7 @@ var _ = ginkgo.Describe("flagged tick: idle held child", func() {
 		result := tick.tickFromRows(context.Background(), []FlaggedRow{row})
 
 		gomega.Expect(result.Nudged).To(gomega.BeEmpty())
-		gomega.Expect(result.Skipped).To(gomega.Equal([]string{row.Key() + ": " + reasonNotAbsent}))
+		gomega.Expect(result.Skipped).To(gomega.Equal([]string{row.Key() + ": " + reasonIndeterminate}))
 		gomega.Expect(supervisor.sent()).To(gomega.BeEmpty())
 	})
 
@@ -128,7 +128,7 @@ var _ = ginkgo.Describe("flagged tick: idle held child", func() {
 		result := tick.tickFromRows(context.Background(), []FlaggedRow{row})
 
 		gomega.Expect(result.Nudged).To(gomega.BeEmpty())
-		gomega.Expect(result.Skipped).To(gomega.Equal([]string{row.Key() + ": " + reasonNotAbsent}))
+		gomega.Expect(result.Skipped).To(gomega.Equal([]string{row.Key() + ": " + reasonIndeterminate}))
 	})
 
 	ginkgo.It("records a failed send as a refusal, not a nudge", func() {

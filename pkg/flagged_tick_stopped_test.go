@@ -26,7 +26,7 @@ var _ = ginkgo.Describe("skips a stopped row only when the stop is newer than th
 
 	ginkgo.DescribeTable("each ordering case",
 		func(row FlaggedRow, wantOpened bool) {
-			reason, refused, skipped := decision(row, nil, nil, nil, now, false, false)
+			reason, refused, skipped := decision(row, nil, nil, nil, livenessLive, now, false, false)
 			ginkgo.GinkgoWriter.Printf(
 				"case=%s reason=%s opened=%t\n", row.Name, reason, !refused && !skipped,
 			)
