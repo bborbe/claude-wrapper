@@ -112,6 +112,34 @@ var _ = ginkgo.Describe("Openable waiting_on", func() {
 			"parked until " + deadline.Format(time.RFC3339)))
 	})
 
+	ginkgo.It("says a parked-until row on an event closer has no deadline", func() {
+		// Live closer shape (2026-11-27): the wait names an event, not a clock, so
+		// ClassifyParked falls through to parked-until with a nil Deadline and the
+		// hold itself has no deadline either.
+		sessionID := "123e4567-e89b-12d3-a456-426614174009"
+		row := FlaggedRow{
+			Kind: "task", Vault: "private-personal", Name: "p", Branch: "create",
+			Liveness: "ABSENT", SessionID: sessionID,
+		}
+		closer := "🟡 WAITING · nothing running · waiting on the observation line\n\n" +
+			"- **ETA:** unknown — depends on the operator typing it in chat\n\n" +
+			"⏰ Ends: the manager's cross-session message carrying the observation line"
+		tick := newTickWithParkedGate(
+			[]FlaggedRow{row},
+			map[string]string{sessionID: closer},
+			nil, &recordingRunner{}, fixedNow(now),
+		)
+
+		entry := only(tick)
+
+		gomega.Expect(entry.Reason).To(gomega.Equal(string(ParkedUntil)))
+		gomega.Expect(entry.WaitingOn).ToNot(gomega.BeNil())
+		gomega.Expect(entry.WaitingOn.Until).To(gomega.BeEmpty())
+		gomega.Expect(entry.WaitingOn.Summary).To(gomega.Equal(
+			"parked on an event with no deadline (released " + MAX_AGE_S.String() +
+				" after first sighting): the manager's cross-session message carrying the observation line"))
+	})
+
 	ginkgo.It("gives a parked-on-pr row its pull request url", func() {
 		sessionID := "123e4567-e89b-12d3-a456-426614174001"
 		row := FlaggedRow{

@@ -119,6 +119,15 @@ func (t *FlaggedTick) parkedWaitingOn(
 		if declaration.Deadline != nil {
 			waiting.Until = declaration.Deadline.Format(time.RFC3339)
 			waiting.Summary = "parked until " + waiting.Until
+			break
+		}
+		// A closer naming an event, not a clock, falls through ClassifyParked to
+		// parked-until with a nil Deadline; Hold has no deadline either and releases
+		// the row MAX_AGE_S after first sighting. Say so — never invent an `until`.
+		waiting.Summary = "parked on an event with no deadline (released " +
+			MAX_AGE_S.String() + " after first sighting)"
+		if text := truncateRunes(declaration.Text, parkedSummaryTextRunes); text != "" {
+			waiting.Summary += ": " + text
 		}
 	case ParkedOnPR:
 		waiting.PRURL = fmt.Sprintf(
@@ -136,6 +145,19 @@ func (t *FlaggedTick) parkedWaitingOn(
 		waiting.Summary = fmt.Sprintf("parked on host %s:%d", declaration.Host, declaration.Port)
 	}
 	return waiting
+}
+
+// parkedSummaryTextRunes bounds the closer's declaration text quoted in a
+// no-deadline parked-until summary, so one long closer line cannot bloat a row.
+const parkedSummaryTextRunes = 160
+
+// truncateRunes cuts text to at most limit runes, marking a cut with "…".
+func truncateRunes(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
 }
 
 // notAbsentWaitingOn names the session holding the row. For not-absent-dead the
