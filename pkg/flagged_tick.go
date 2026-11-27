@@ -995,6 +995,7 @@ func (t *FlaggedTick) classify(
 	dead map[string]struct{},
 	childLive map[string]bool,
 	now time.Time,
+	readOnly bool,
 ) (string, rowAction, bool) {
 	// The vault-family gate runs FIRST, before provenance, freshness, the park
 	// gate and any registry probe: a row from another family is not this daemon's
@@ -1047,11 +1048,18 @@ func (t *FlaggedTick) classify(
 		if refused {
 			return reason, rowRefused, false
 		}
-		skipReason, skipAction := t.classifySkip(ctx, row, reason, now)
+		skipReason, skipAction := t.classifySkip(ctx, row, reason, now, readOnly)
 		return skipReason, skipAction, false
 	}
+	// A read-only caller uses Evaluate (classify+probe, no write, no record) so the
+	// endpoint reports the same `parked-until` verdict the tick does without
+	// mutating the park store. A gate that cannot Evaluate is skipped on read.
 	if t.Parked != nil {
-		if reason, held := t.Parked.Hold(ctx, row); held {
+		if readOnly {
+			if reason, held := t.Parked.Evaluate(ctx, row); held {
+				return reason, rowSkipped, false
+			}
+		} else if reason, held := t.Parked.Hold(ctx, row); held {
 			return reason, rowSkipped, false
 		}
 	}
@@ -1060,7 +1068,7 @@ func (t *FlaggedTick) classify(
 	// row whose closer already names what it waits on. A row reaches here when the
 	// park gate did not hold it — no session id, no closer, no `⏰ Ends:`, or a
 	// declared park whose observable has been satisfied.
-	if reason, held := t.progressStalledHold(ctx, row, now); held {
+	if reason, held := t.progressStalledHold(ctx, row, now, readOnly); held {
 		return reason, rowSkipped, false
 	}
 	return "", rowEligible, retryNotLanded
@@ -1077,6 +1085,7 @@ func (t *FlaggedTick) progressStalledHold(
 	ctx context.Context,
 	row FlaggedRow,
 	now time.Time,
+	readOnly bool,
 ) (string, bool) {
 	if row.Kind != "task" {
 		return "", false
@@ -1090,6 +1099,15 @@ func (t *FlaggedTick) progressStalledHold(
 	// The signal is the progress hash PLUS the checkbox reading: ticking a box is
 	// progress too, and a page with no `# Progress` section would otherwise hash a
 	// constant empty string and stall on that absence alone.
+	// A read-only caller (the GET endpoint) must not advance the clock: it reads
+	// the current verdict but never stamps it, so a GET cannot reset a row's stall
+	// timer or mask a stall from the tick.
+	if readOnly {
+		if !t.progressStallFor(ctx).StalledRead(row.Key(), row.ProgressHash+"|"+row.Met, now) {
+			return "", false
+		}
+		return reasonProgressStalled, true
+	}
 	if !t.progressStallFor(ctx).Stalled(row.Key(), row.ProgressHash+"|"+row.Met, now) {
 		return "", false
 	}
@@ -1281,8 +1299,12 @@ func isNotAbsentReason(reason string) bool {
 // classifySkip turns a not-absent skip into a nudge when this process holds the
 // row's child idle. The park gate still applies: a parked row is not nudged.
 func (t *FlaggedTick) classifySkip(
-	ctx context.Context, row FlaggedRow, reason string, now time.Time,
+	ctx context.Context, row FlaggedRow, reason string, now time.Time, readOnly bool,
 ) (string, rowAction) {
+	if readOnly {
+		// A read-only caller never nudges: report the skip reason it would have.
+		return reason, rowSkipped
+	}
 	// BOTH not-absent reasons must reach the idle-nudge. reasonNotAbsentDead is
 	// the same condition reported truthfully - the predicate could not prove the
 	// session absent, and the ledger says the session ended - and a session that
@@ -1294,7 +1316,9 @@ func (t *FlaggedTick) classifySkip(
 	if !isNotAbsentReason(reason) || !t.idleNudgeDue(ctx, row, now) {
 		return reason, rowSkipped
 	}
-	if t.Parked != nil {
+	// Parked.Hold mutates the persisted park state, so a read-only caller skips it:
+	// the row is reported by its classify reason, not `parked-until`.
+	if !readOnly && t.Parked != nil {
 		if parkReason, held := t.Parked.Hold(ctx, row); held {
 			return parkReason, rowSkipped
 		}
@@ -1330,6 +1354,41 @@ func countProvenance(result *FlaggedTickResult, rows []FlaggedRow) {
 
 // tickFromRows is the decision pass, separated from the read so the running loop
 // can feed it a cached row set.
+// gateRow is the ONE per-row decision tickFromRows and Openable both run, so the
+// endpoint cannot report a verdict the tick would not act on. It returns the
+// reason, the action, and the halt token a caps refusal sets for later rows.
+//
+// budgetUsed is the caller's running count of opens+nudges; the tick passes
+// len(pending)+len(result.Nudged), the endpoint its own counter.
+func (t *FlaggedTick) gateRow(
+	ctx context.Context,
+	row FlaggedRow,
+	recent map[string]time.Time,
+	dead map[string]struct{},
+	childLive map[string]bool,
+	now time.Time,
+	halted string,
+	budgetUsed int,
+	readOnly bool,
+) (reason string, action rowAction, halt string, retryNotLanded bool) {
+	if halted != "" {
+		return halted, rowRefused, "", false
+	}
+	if budgetUsed >= maxRowsPerTick {
+		return reasonRowBudget, rowRefused, "", false
+	}
+	r, act, retry := t.classify(ctx, row, recent, dead, childLive, now, readOnly)
+	if act != rowEligible {
+		return r, act, "", retry
+	}
+	if t.Caps != nil {
+		if err := t.Caps.CheckWorker(ctx, row.CapMode(), row.OperatorNamed()); err != nil {
+			return reasonCapsRefused + ": " + err.Error(), rowRefused, reasonUnconsidered, retry
+		}
+	}
+	return "", rowEligible, "", retry
+}
+
 func (t *FlaggedTick) tickFromRows(
 	ctx context.Context, rows []FlaggedRow,
 ) FlaggedTickResult {
@@ -1373,22 +1432,18 @@ func (t *FlaggedTick) tickFromRows(
 	var pending []FlaggedRow
 	var pendingRetry []bool
 	for _, row := range ordered {
-		if halted != "" {
-			result.Refused = append(result.Refused, row.Key()+": "+halted)
-			continue
+		reason, action, halt, retryNotLanded := t.gateRow(
+			ctx, row, recent, dead, childLive, now, halted,
+			len(pending)+len(result.Nudged), false,
+		)
+		if halt != "" {
+			halted = halt
 		}
-		if len(pending)+len(result.Nudged) >= maxRowsPerTick {
-			result.Refused = append(result.Refused, row.Key()+": "+reasonRowBudget)
-			continue
-		}
-		reason, action, retryNotLanded := t.classify(ctx, row, recent, dead, childLive, now)
 		switch action {
 		case rowSkipped:
 			result.Skipped = append(result.Skipped, row.Key()+": "+reason)
 			// Remember WHEN this row was last held back, so a later open can tell
 			// "it could continue at its stop" from "it only became able later".
-			// Without this the two classes are indistinguishable and the delay
-			// measurement mixes them — see ResumeDelaysWaited.
 			t.rememberSkipped(row, now)
 			continue
 		case rowRefused:
@@ -1398,40 +1453,10 @@ func (t *FlaggedTick) tickFromRows(
 			t.nudgeRow(ctx, row, now, &result)
 			continue
 		}
-		// A cap or rate refusal ENDS the tick's opening rather than being retried
-		// against every remaining row: the refusal is a property of the fleet, not
-		// of the row, so the next row would be refused for the same reason.
-		//
-		// ⚠️ It does NOT end the loop. Ending it dropped every later row out of all
-		// three buckets, so `opened + refused + skipped` under-reported the fleet and
-		// a row could vanish with no trace at all — the accounting defect this tick
-		// had measured 2026-11-16. The remaining rows are now recorded as
-		// unconsidered, which is the honest description of what happened to them.
-		// The third argument is the row's own provenance verdict, never a constant.
-		// `decision` has already refused every row carrying a `Refused` entry, so
-		// what arrives here is operator-flagged or legacy-operator-opened and counts
-		// as operator-named (operator ruling 2026-11-17): it may open up to the hard
-		// limit. Passing `false` refused every one of them at the soft cap — the
-		// fleet stood at 51 live against 50 allowed on 2026-11-18 00:58 and 28 rows
-		// went unconsidered.
-		// The cap is charged against the mode the row will ACTUALLY open in, which
-		// follows its role, not its stored `mode:`. A `role: agent` row stored
-		// `interactive` opens headless (matrix Rule 2), so charging it to the
-		// interactive sub-cap refused it — and halted the batch — whenever that cap
-		// sat at its hard limit, which is exactly the stale-mode row this change
-		// exists to route correctly.
-		if err := t.Caps.CheckWorker(ctx, row.CapMode(), row.OperatorNamed()); err != nil {
-			halted = reasonUnconsidered
-			result.Refused = append(result.Refused, row.Key()+": "+reasonCapsRefused+": "+err.Error())
-			continue
-		}
 		// The start slot is reserved exactly once per row, by whichever opener runs.
-		// With an executor wired, the executor's own caps guard reserves it
-		// (enforceSpawnCaps → ReserveStart) as it opens the row; reserving here too
-		// spent two slots per tick-opened row, so a batch of N counted as 2N against
-		// the start rate and roughly doubled the tick's runtime past its 15-minute
-		// interval. On the legacy path (no executor) nothing else reserves, so the
-		// tick keeps doing it and keeps halting on a rate refusal as documented.
+		// With an executor wired, the executor reserves it; on the legacy path (no
+		// executor) nothing else reserves, so the tick keeps doing it and halts on a
+		// rate refusal.
 		if t.Open == nil {
 			if err := t.Caps.ReserveStart(ctx); err != nil {
 				halted = reasonUnconsidered

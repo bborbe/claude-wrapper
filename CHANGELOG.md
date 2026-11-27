@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- feat: **`GET /api/1.0/openable` exposes the flagged tick's per-row open decision as a read endpoint.** The tick computes every cycle whether each candidate row would be opened or held, and why, but discarded that into a log line — so a manager re-derived it by hunting the vault and the wrapper log, and a row the board showed as closed was held as `not-absent-dead` with no way to read the verdict. The endpoint returns one entry per candidate row (`vault`, `kind`, `name`, `session_id`, `decision` `open|held`, the tick's own `reason`, `phase`, `flag_set_by`) from the same `classify()` gates the tick uses, so the tick and the endpoint share one decision function. Read-only; `FlaggedRow` now carries the page's raw `flag_set_by`. Change set: `pkg/openable.go` (new), `pkg/handler/openable.go` (new), `pkg/openable_test.go` (new), `pkg/flagged_rows_source.go`, `pkg/flagged_rows_vaultapi.go`, `main.go`, `CHANGELOG.md`.
+
 ## v0.67.6
 
 - fix: **the stall escalation's card-history lookup now decodes the bare JSON array `GET /api/1.0/attention/history` returns (the `{items:[...]}` envelope is still tolerated).** `boardCardHistory.ExistingCard` decoded into `struct{Items []BoardItem}`, so every lookup failed with `decode attention history failed: json: cannot unmarshal array` and `escalateStall` failed closed, posting no card. Change set: `pkg/attention_history.go`, `pkg/attention_history_test.go` (new), `CHANGELOG.md`.
