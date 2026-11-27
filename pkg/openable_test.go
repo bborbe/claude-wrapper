@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -79,5 +80,74 @@ var _ = ginkgo.Describe("Openable negative probe", func() {
 		tick.tickFromRows(context.Background(), rows)
 
 		gomega.Expect(opener.opened).To(gomega.Equal(1))
+	})
+})
+
+// recordingParkedHold records every Hold call, so a test can prove a read never
+// takes the mutating path.
+type recordingParkedHold struct {
+	key    string
+	writes int
+}
+
+func (h *recordingParkedHold) Hold(ctx context.Context, row FlaggedRow) (string, bool) {
+	h.writes++
+	return h.Evaluate(ctx, row)
+}
+
+func (h *recordingParkedHold) Evaluate(_ context.Context, row FlaggedRow) (string, bool) {
+	if row.Key() == h.key {
+		return "parked-until", true
+	}
+	return "", false
+}
+
+func (h *recordingParkedHold) Opened(context.Context, FlaggedRow) {}
+
+var _ = ginkgo.Describe("Openable gate parity", func() {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+
+	ginkgo.It("holds the row past the per-cycle row budget with reasonRowBudget", func() {
+		rows := make([]FlaggedRow, maxRowsPerTick+1)
+		for i := range rows {
+			rows[i] = FlaggedRow{
+				Kind: "task", Vault: "private-personal", Name: fmt.Sprintf("r%d", i),
+				Branch: "create", Liveness: "none",
+			}
+		}
+		tick := newTick(staticSource{rows: rows}, nil, &recordingCaps{})
+		tick.Now = fixedNow(now)
+
+		got, err := tick.Openable(context.Background())
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(got).To(gomega.HaveLen(maxRowsPerTick + 1))
+		opens, held := 0, 0
+		for _, e := range got {
+			if e.Decision == OpenableDecisionOpen {
+				opens++
+			} else {
+				held++
+				gomega.Expect(e.Reason).ToNot(gomega.BeEmpty())
+			}
+		}
+		gomega.Expect(opens).To(gomega.Equal(maxRowsPerTick))
+		gomega.Expect(held).To(gomega.Equal(1))
+	})
+
+	ginkgo.It("reports a parked row held and never calls Hold on a read", func() {
+		row := FlaggedRow{
+			Kind: "task", Vault: "private-personal", Name: "p", Branch: "create", Liveness: "none",
+		}
+		parked := &recordingParkedHold{key: row.Key()}
+		tick := newTick(staticSource{rows: []FlaggedRow{row}}, nil, &recordingCaps{})
+		tick.Parked = parked
+		tick.Now = fixedNow(now)
+
+		got, err := tick.Openable(context.Background())
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(got).To(gomega.HaveLen(1))
+		gomega.Expect(got[0].Decision).To(gomega.Equal(OpenableDecisionHeld))
+		gomega.Expect(got[0].Reason).To(gomega.Equal("parked-until"))
+		gomega.Expect(parked.writes).To(gomega.Equal(0))
 	})
 })
