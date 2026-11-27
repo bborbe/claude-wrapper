@@ -1051,11 +1051,19 @@ func (t *FlaggedTick) classify(
 		skipReason, skipAction := t.classifySkip(ctx, row, reason, now, readOnly)
 		return skipReason, skipAction, false
 	}
-	// Parked.Hold writes defer_date via vault-cli and persists park baselines, so
-	// a read-only caller skips it entirely; the row is reported by its classify
-	// reason, not `parked-until`.
-	if !readOnly && t.Parked != nil {
-		if reason, held := t.Parked.Hold(ctx, row); held {
+	// A read-only caller uses Evaluate (classify+probe, no write, no record) so the
+	// endpoint reports the same `parked-until` verdict the tick does without
+	// mutating the park store. A gate that cannot Evaluate is skipped on read.
+	if t.Parked != nil {
+		if readOnly {
+			if ev, ok := t.Parked.(interface {
+				Evaluate(context.Context, FlaggedRow) (string, bool)
+			}); ok {
+				if reason, held := ev.Evaluate(ctx, row); held {
+					return reason, rowSkipped, false
+				}
+			}
+		} else if reason, held := t.Parked.Hold(ctx, row); held {
 			return reason, rowSkipped, false
 		}
 	}

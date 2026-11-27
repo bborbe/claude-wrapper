@@ -158,6 +158,34 @@ func (g *parkedGate) Hold(ctx context.Context, row FlaggedRow) (string, bool) {
 	return g.holdOrRecord(ctx, row, declaration, observation, closer)
 }
 
+// Evaluate answers whether the row is parked WITHOUT any write or record.
+//
+// The read endpoint GET /api/1.0/openable must report the same park verdict the
+// tick does, but Hold writes defer_date and records the observation. Evaluate
+// runs the same classify+probe and returns the class token, so the endpoint and
+// the tick agree on a parked row while the endpoint stays side-effect-free.
+func (g *parkedGate) Evaluate(ctx context.Context, row FlaggedRow) (string, bool) {
+	if row.SessionID == "" || !uuidPattern.MatchString(row.SessionID) {
+		return "", false
+	}
+	closer := LastCloser(filepath.Join(g.SessionsDir, row.SessionID, sessionEventsName))
+	if closer == "" {
+		return "", false
+	}
+	declaration, parked := ClassifyParked(closer)
+	if !parked {
+		return "", false
+	}
+	observation, err := g.probe(ctx, row, declaration)
+	if err != nil {
+		return string(declaration.Class) + ": " + err.Error(), true
+	}
+	if observation.Satisfied {
+		return "", false
+	}
+	return string(declaration.Class), true
+}
+
 // alreadyDeferred reports whether the row carries a defer_date that has not expired.
 //
 // ⚠️ This is a CHECKED invariant, not a restatement of the query. The tick's own
