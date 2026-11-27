@@ -62,7 +62,7 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 	t.mergeChildSpawnTimes(ctx, recent)
 	t.mergeOpened(recent)
 	dead := endedSessions(ledger)
-	childLive := t.childLiveness(ctx)
+	childLive, childErr := t.childLiveness(ctx)
 	now := t.now()
 	ordered := orderFlaggedRows(rows)
 	out := make([]OpenableEntry, 0, len(ordered))
@@ -80,7 +80,7 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 		}
 		// The same gateRow the tick runs: classify, budget, caps-with-halt, park.
 		reason, action, halt, _ := t.gateRow(
-			ctx, row, recent, dead, childLive, now, halted, openCount, true,
+			ctx, row, recent, dead, childLive, childErr, now, halted, openCount, true,
 		)
 		if halt != "" {
 			halted = halt

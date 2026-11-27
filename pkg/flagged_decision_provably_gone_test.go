@@ -74,7 +74,7 @@ func TestChildLivenessResolvesTheStore(t *testing.T) {
 
 	tick := &FlaggedTick{Home: home, Logf: func(string, ...any) {}}
 
-	got := tick.childLiveness(ctx)
+	got, _ := tick.childLiveness(ctx)
 	alive, ok := got["dead-child"]
 	if !ok {
 		t.Fatalf("childLiveness did not read the resolved store; map = %v", got)

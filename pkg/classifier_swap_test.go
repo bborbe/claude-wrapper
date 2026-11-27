@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ var _ = ginkgo.Describe("classifyLiveness", func() {
 	ginkgo.It("F2: a live child reads live", func() {
 		tick := newTick(ginkgo.GinkgoT().TempDir())
 		row := FlaggedRow{SessionID: sid, Cwd: cwd}
-		gomega.Expect(tick.classifyLiveness(context.Background(), row, nil, map[string]bool{sid: true}, now)).
+		gomega.Expect(tick.classifyLiveness(context.Background(), row, nil, map[string]bool{sid: true}, nil, now)).
 			To(gomega.Equal(livenessLive))
 	})
 
@@ -44,7 +45,7 @@ var _ = ginkgo.Describe("classifyLiveness", func() {
 
 		tick := newTick(dir)
 		row := FlaggedRow{SessionID: sid, Cwd: cwd}
-		gomega.Expect(tick.classifyLiveness(context.Background(), row, map[string]struct{}{sid: {}}, nil, now)).
+		gomega.Expect(tick.classifyLiveness(context.Background(), row, map[string]struct{}{sid: {}}, nil, nil, now)).
 			To(gomega.Equal(livenessAbsent))
 	})
 
@@ -52,7 +53,15 @@ var _ = ginkgo.Describe("classifyLiveness", func() {
 		tick := newTick(ginkgo.GinkgoT().TempDir())
 		// The source's registry read failed (UNKNOWN) — never auto-open.
 		row := FlaggedRow{SessionID: sid, Liveness: "UNKNOWN"}
-		gomega.Expect(tick.classifyLiveness(context.Background(), row, nil, nil, now)).
+		gomega.Expect(tick.classifyLiveness(context.Background(), row, nil, nil, nil, now)).
 			To(gomega.Equal(livenessIndeterminate))
+	})
+
+	ginkgo.It("F5b: a failed child-store read reads indeterminate, never absent", func() {
+		tick := newTick(ginkgo.GinkgoT().TempDir())
+		row := FlaggedRow{SessionID: sid}
+		gomega.Expect(tick.classifyLiveness(
+			context.Background(), row, nil, nil, fmt.Errorf("store down"), now,
+		)).To(gomega.Equal(livenessIndeterminate))
 	})
 })
