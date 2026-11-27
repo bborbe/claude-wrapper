@@ -22,8 +22,8 @@ var _ = ginkgo.Describe("IdleCloseReaper observability", func() {
 
 	// drive runs one real tick through the adapter and the job that renders it,
 	// over a fixture with one close and three skips: one notable (headless,
-	// generating, past the floor — the day-17 shape), one interactive tab, one
-	// headless child under the floor.
+	// generating, past the floor — a child that should have been closed and was
+	// not), one interactive tab, one headless child under the floor.
 	drive := func() []string {
 		sup := &idleSupervisor{sessions: []Session{
 			{ID: "idle-1", Mode: SpawnModeHeadless, State: StateIdle, LastEventAgeSeconds: age(901)},
