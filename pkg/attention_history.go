@@ -5,6 +5,7 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -75,16 +76,38 @@ func (b *boardCardHistory) ExistingCard(
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return "", errors.Errorf(ctx, "attention history answered %d", resp.StatusCode)
 	}
-	var payload struct {
-		Items []BoardItem `json:"items"`
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "read attention history body failed")
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&payload); err != nil {
+	items, err := decodeHistoryItems(ctx, body)
+	if err != nil {
 		return "", errors.Wrapf(ctx, err, "decode attention history failed")
 	}
-	for _, item := range payload.Items {
+	for _, item := range items {
 		if item.ProducerID == producerID && item.DedupKey == dedupKey {
 			return item.ItemID, nil
 		}
 	}
 	return "", nil
+}
+
+// decodeHistoryItems accepts the route's bare JSON array, and also tolerates an
+// `{"items":[...]}` envelope.
+func decodeHistoryItems(ctx context.Context, body []byte) ([]BoardItem, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var items []BoardItem
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return nil, errors.Wrapf(ctx, err, "unmarshal bare array")
+		}
+		return items, nil
+	}
+	var envelope struct {
+		Items []BoardItem `json:"items"`
+	}
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return nil, errors.Wrapf(ctx, err, "unmarshal items envelope")
+	}
+	return envelope.Items, nil
 }
