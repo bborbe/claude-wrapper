@@ -193,6 +193,38 @@ var _ = ginkgo.Describe("stall escalation against card history", func() {
 		gomega.Expect(sawPath).To(gomega.Equal(AttentionHistoryPath))
 	})
 
+	ginkgo.It("reads the store's bare-array body", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The store answers a bare JSON array, not {"items":[…]}. Decoding only
+			// the envelope made every read fail with `cannot unmarshal array into Go
+			// value of type struct { Items []BoardItem }`, so the stall escalation
+			// logged outcome=lookup-failed and posted nothing.
+			_, _ = w.Write([]byte(`[{"item_id":"bare-card","state":"closed",` +
+				`"producer_id":"claude-wrapper-stalled-row","dedup_key":"k1"}]`))
+		}))
+		defer server.Close()
+
+		id, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
+			context.Background(), "claude-wrapper-stalled-row", "k1",
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(id).To(gomega.Equal("bare-card"))
+	})
+
+	ginkgo.It("reads a bare array that holds no matching card", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`[{"item_id":"other","state":"closed",` +
+				`"producer_id":"someone-else","dedup_key":"k1"}]`))
+		}))
+		defer server.Close()
+
+		id, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
+			context.Background(), "claude-wrapper-stalled-row", "k1",
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(id).To(gomega.BeEmpty())
+	})
+
 	ginkgo.It("ignores another producer's card under the same key", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"items":[{"item_id":"other","state":"closed",` +

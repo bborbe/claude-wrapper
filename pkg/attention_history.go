@@ -5,6 +5,7 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -75,16 +76,48 @@ func (b *boardCardHistory) ExistingCard(
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return "", errors.Errorf(ctx, "attention history answered %d", resp.StatusCode)
 	}
-	var payload struct {
-		Items []BoardItem `json:"items"`
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", errors.Wrapf(ctx, err, "read attention history body failed")
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&payload); err != nil {
-		return "", errors.Wrapf(ctx, err, "decode attention history failed")
+	items, err := decodeAttentionHistory(ctx, body)
+	if err != nil {
+		return "", err
 	}
-	for _, item := range payload.Items {
+	for _, item := range items {
 		if item.ProducerID == producerID && item.DedupKey == dedupKey {
 			return item.ItemID, nil
 		}
 	}
 	return "", nil
+}
+
+// decodeAttentionHistory accepts both shapes the history route can answer: the
+// bare JSON array the store returns today, and the {"items":[…]} envelope this
+// decoder originally expected.
+//
+// ⚠️ The store answers a bare array (measured 2026-11-27: `GET
+// /api/1.0/attention/history?limit=2` starts `[{`). Decoding only the envelope
+// made every read fail with `cannot unmarshal array into Go value of type struct
+// { Items []BoardItem }`, which the stall escalation logs as outcome=lookup-failed
+// and then returns from — so no stall card was posted.
+func decodeAttentionHistory(ctx context.Context, body []byte) ([]BoardItem, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, errors.Errorf(ctx, "attention history body is empty")
+	}
+	if trimmed[0] == '[' {
+		var items []BoardItem
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return nil, errors.Wrapf(ctx, err, "decode attention history array failed")
+		}
+		return items, nil
+	}
+	var payload struct {
+		Items []BoardItem `json:"items"`
+	}
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
+		return nil, errors.Wrapf(ctx, err, "decode attention history object failed")
+	}
+	return payload.Items, nil
 }
