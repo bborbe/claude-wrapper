@@ -43,18 +43,33 @@ var _ = ginkgo.Describe("flagged tick stall escalation", func() {
 		}, poster
 	}
 
+	ginkgo.It("posts no attention card on a read-only call", func() {
+		tick, poster := harness()
+		row := stalledRow("h1")
+		ctx := context.Background()
+
+		// Stamp the clock on the tick's own path (first sight posts nothing).
+		gomega.Expect(mustHold(tick, ctx, row, base)).To(gomega.BeFalse())
+		poster.requests = nil
+
+		// A read past the threshold reports the hold and posts nothing.
+		_, held := tick.progressStalledHold(ctx, row, base.Add(progressStallThreshold), true)
+		gomega.Expect(held).To(gomega.BeTrue())
+		gomega.Expect(poster.requests).To(gomega.BeEmpty())
+	})
+
 	ginkgo.It("posts exactly one card for one stall episode", func() {
 		tick, poster := harness()
 		row := stalledRow("h1")
 		ctx := context.Background()
 
 		// First sight starts the clock and holds nothing.
-		_, held := tick.progressStalledHold(ctx, row, base)
+		_, held := tick.progressStalledHold(ctx, row, base, false)
 		gomega.Expect(held).To(gomega.BeFalse())
 		gomega.Expect(poster.requests).To(gomega.BeEmpty())
 
 		// Crossing the threshold posts the card.
-		_, held = tick.progressStalledHold(ctx, row, base.Add(progressStallThreshold))
+		_, held = tick.progressStalledHold(ctx, row, base.Add(progressStallThreshold), false)
 		gomega.Expect(held).To(gomega.BeTrue())
 		gomega.Expect(poster.requests).To(gomega.HaveLen(1))
 
@@ -62,7 +77,7 @@ var _ = ginkgo.Describe("flagged tick stall escalation", func() {
 		// assertion a per-tick poster fails: five more ticks, still one card.
 		for i := 1; i <= 5; i++ {
 			_, held = tick.progressStalledHold(
-				ctx, row, base.Add(progressStallThreshold+time.Duration(i)*time.Minute),
+				ctx, row, base.Add(progressStallThreshold+time.Duration(i)*time.Minute), false,
 			)
 			gomega.Expect(held).To(gomega.BeTrue())
 		}
@@ -263,6 +278,6 @@ func (l *countingLookup) ExistingCard(
 }
 
 func mustHold(tick *FlaggedTick, ctx context.Context, row FlaggedRow, now time.Time) bool {
-	_, held := tick.progressStalledHold(ctx, row, now)
+	_, held := tick.progressStalledHold(ctx, row, now, false)
 	return held
 }

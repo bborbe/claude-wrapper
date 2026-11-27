@@ -1316,6 +1316,11 @@ func (h keyedParkedHold) Hold(_ context.Context, row FlaggedRow) (string, bool) 
 	return "", false
 }
 
+// Evaluate is Hold without the record: this stub writes nothing, so the two agree.
+func (h keyedParkedHold) Evaluate(ctx context.Context, row FlaggedRow) (string, bool) {
+	return h.Hold(ctx, row)
+}
+
 // Opened is the no-op half of the interface: this stub never produces a pending
 // baseline, so there is nothing for a successful reopen to commit.
 func (h keyedParkedHold) Opened(_ context.Context, _ FlaggedRow) {}
