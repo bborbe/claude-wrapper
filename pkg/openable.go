@@ -66,26 +66,18 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 	// will refuse this cycle. The rate gate is stateful and can only be checked
 	// at open time; a row it refuses is reported `open` here by design.
 	openCount := 0
+	halted := ""
 	for _, row := range ordered {
-		reason, action, _ := t.classify(ctx, row, recent, dead, childLive, now, true)
+		// The same gateRow the tick runs: classify, budget, caps-with-halt, park.
+		reason, action, halt, _ := t.gateRow(
+			ctx, row, recent, dead, childLive, now, halted, openCount, true,
+		)
+		if halt != "" {
+			halted = halt
+		}
 		decision := OpenableDecisionOpen
-		if action == rowNudge {
-			// A nudge consumes the tick's row budget just as an open does.
-			openCount++
+		if action != rowEligible {
 			decision = OpenableDecisionHeld
-		} else if action != rowEligible {
-			decision = OpenableDecisionHeld
-		} else if openCount >= maxRowsPerTick {
-			// The budget is unconditional in the tick, so it is here too.
-			decision = OpenableDecisionHeld
-			reason = reasonRowBudget
-		} else if t.Caps != nil {
-			if err := t.Caps.CheckWorker(ctx, row.CapMode(), row.OperatorNamed()); err != nil {
-				decision = OpenableDecisionHeld
-				reason = reasonCapsRefused
-			} else {
-				openCount++
-			}
 		} else {
 			openCount++
 		}
