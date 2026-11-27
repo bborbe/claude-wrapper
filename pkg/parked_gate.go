@@ -28,6 +28,10 @@ type ParkedHold interface {
 	// when it must. The reason is the class token, optionally followed by
 	// ": <cause>" when a probe failed.
 	Hold(ctx context.Context, row FlaggedRow) (reason string, held bool)
+	// Evaluate answers the same question WITHOUT any write or record, so the read
+	// endpoint reports the park verdict side-effect-free. It is on the interface so
+	// a substitute cannot silently fail open on the read path.
+	Evaluate(ctx context.Context, row FlaggedRow) (reason string, held bool)
 	// Opened tells the gate that the row's reopen actually succeeded, which is the
 	// only moment an advanced baseline may be committed.
 	//
@@ -156,6 +160,47 @@ func (g *parkedGate) Hold(ctx context.Context, row FlaggedRow) (string, bool) {
 		g.writeDefer(ctx, row, *declaration.Deadline)
 	}
 	return g.holdOrRecord(ctx, row, declaration, observation, closer)
+}
+
+// Evaluate answers whether the row is parked WITHOUT any write or record.
+//
+// The read endpoint GET /api/1.0/openable must report the same park verdict the
+// tick does, but Hold writes defer_date and records the observation. Evaluate
+// runs the same classify+probe and returns the class token, so the endpoint and
+// the tick agree on a parked row while the endpoint stays side-effect-free.
+func (g *parkedGate) Evaluate(ctx context.Context, row FlaggedRow) (string, bool) {
+	if row.SessionID == "" || !uuidPattern.MatchString(row.SessionID) {
+		return "", false
+	}
+	closer := LastCloser(filepath.Join(g.SessionsDir, row.SessionID, sessionEventsName))
+	if closer == "" {
+		return "", false
+	}
+	declaration, parked := ClassifyParked(closer)
+	if !parked {
+		return "", false
+	}
+	observation, err := g.probe(ctx, row, declaration)
+	if err != nil {
+		return string(declaration.Class) + ": " + err.Error(), true
+	}
+	if observation.Satisfied {
+		return "", false
+	}
+	// Mirror holdOrRecord's baseline read WITHOUT writing: a matching baseline with
+	// a moved fingerprint means the tick would reopen the row (not held), and a
+	// parked-until row whose baseline has aged past MAX_AGE_S is released. Without
+	// this the endpoint reports held for rows the tick opens.
+	key := row.Key()
+	hash := sha256hex(closer)
+	baseline := g.Store.Load(ctx, key)
+	if baseline != nil && baseline.SessionID == row.SessionID && baseline.CloserHash == hash {
+		if baseline.Fingerprint != observation.Fingerprint {
+			return "", false
+		}
+		return g.holdRecorded(declaration, baseline)
+	}
+	return string(declaration.Class), true
 }
 
 // alreadyDeferred reports whether the row carries a defer_date that has not expired.

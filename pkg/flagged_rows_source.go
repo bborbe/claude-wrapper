@@ -38,6 +38,10 @@ type FlaggedRow struct {
 	Mode      string   `json:"mode"`
 	SessionID string   `json:"session_id"`
 	Liveness  string   `json:"liveness"`
+	// FlagSetBy is the page's raw `flag_set_by` value, carried so the read
+	// endpoint GET /api/1.0/openable can report who set the flag. Empty when the
+	// source did not compute it (the exec source, a fixture).
+	FlagSetBy string `json:"flag_set_by"`
 	Branch    string   `json:"branch"`
 	BlockedBy []string `json:"blocked_by"`
 	// Refused carries the predicate's OWN provenance verdicts — `agent-set-flag`

@@ -78,6 +78,23 @@ func (p *progressStallTracker) Stalled(key, hash string, now time.Time) bool {
 	return now.Sub(stamp.Since) >= progressStallThreshold
 }
 
+// StalledRead is Stalled without the side effect: it reports the current verdict
+// and never starts or restarts the clock.
+//
+// A read endpoint must not perturb the tick's stall detection. First sight or a
+// changed hash reads as not-stalled (fail open), exactly as Stalled returns, but
+// leaves the persisted clock untouched.
+func (p *progressStallTracker) StalledRead(key, hash string, now time.Time) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.loadLocked()
+	stamp, ok := p.mem[key]
+	if !ok || stamp.Hash != hash || stamp.Since.IsZero() || stamp.Since.After(now) {
+		return false
+	}
+	return now.Sub(stamp.Since) >= progressStallThreshold
+}
+
 func (p *progressStallTracker) loadLocked() {
 	if p.loaded {
 		return

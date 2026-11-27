@@ -144,17 +144,25 @@ func verdictFor(
 
 // childVerdict answers a session the registry did not list from its child row.
 //
-// The child's ExitCode is the whole question: nil means still running, non-nil
-// means it exited. A missing child row means nothing primary proves the session
-// is running, so it reads not-live with source `none`.
+// A child row reads exited when its State is StateExited OR it carries an exit
+// code. A missing child row means nothing primary proves the session is
+// running, so it reads not-live with source `none`.
+//
+// ⚠️ ExitCode alone is NOT the question. An adopted child (one this process
+// took over after a restart) has no cmd.Wait, so reap settles it with
+// StateExited and a nil ExitCode — the watch goroutine refuses to invent a code.
+// Keying on ExitCode alone read every adopted child the idle-reaper or the
+// startup deadline closed as live forever, and the flagged tick skipped its row
+// `not-absent` on every cycle. StateExited is set only by reap, after the pid
+// has gone, so it is the settled answer.
 func childVerdict(child Session, ok bool) (LivenessState, string) {
 	if !ok {
 		return LivenessNotLive, "none"
 	}
-	if child.ExitCode == nil {
-		return LivenessLive, "child-table"
+	if child.State == StateExited || child.ExitCode != nil {
+		return LivenessNotLive, "child-table"
 	}
-	return LivenessNotLive, "child-table"
+	return LivenessLive, "child-table"
 }
 
 // registryEntriesByID indexes live registry entries by session id, dropping

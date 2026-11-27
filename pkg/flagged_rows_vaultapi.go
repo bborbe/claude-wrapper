@@ -350,6 +350,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		Mode:         task.Mode,
 		SessionID:    task.Session,
 		Liveness:     live,
+		FlagSetBy:    flagSetBy,
 		Branch:       branch,
 		BlockedBy:    blockedBy,
 		Refused:      refused,
