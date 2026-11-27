@@ -95,6 +95,20 @@ func (p *progressStallTracker) StalledRead(key, hash string, now time.Time) bool
 	return now.Sub(stamp.Since) >= progressStallThreshold
 }
 
+// SinceRead returns when key's current stall clock started, without starting or
+// restarting it. ok is false when no clock is running for this hash, so a caller
+// never invents a start time.
+func (p *progressStallTracker) SinceRead(key, hash string, now time.Time) (time.Time, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.loadLocked()
+	stamp, ok := p.mem[key]
+	if !ok || stamp.Hash != hash || stamp.Since.IsZero() || stamp.Since.After(now) {
+		return time.Time{}, false
+	}
+	return stamp.Since, true
+}
+
 func (p *progressStallTracker) loadLocked() {
 	if p.loaded {
 		return
