@@ -36,6 +36,9 @@ type OpenableEntry struct {
 	Phase  string `json:"phase"`
 	// FlagSetBy is the page's raw `flag_set_by`.
 	FlagSetBy string `json:"flag_set_by"`
+	// WaitingOn says what a held row waits on. Omitted when the row is open or
+	// when the tick knows nothing beyond the reason token.
+	WaitingOn *OpenableWaitingOn `json:"waiting_on,omitempty"`
 }
 
 // Openable answers, for every row the tick would consider this cycle, whether it
@@ -91,7 +94,7 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 		} else {
 			openCount++
 		}
-		out = append(out, OpenableEntry{
+		entry := OpenableEntry{
 			Vault:     row.Vault,
 			Kind:      row.Kind,
 			Name:      row.Name,
@@ -100,7 +103,11 @@ func (t *FlaggedTick) Openable(ctx context.Context) ([]OpenableEntry, error) {
 			Reason:    reason,
 			Phase:     row.Phase,
 			FlagSetBy: row.FlagSetBy,
-		})
+		}
+		if decision == OpenableDecisionHeld {
+			entry.WaitingOn = t.waitingOn(ctx, row, reason, recent, now)
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }

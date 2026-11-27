@@ -35,13 +35,13 @@ type FlaggedRow struct {
 	// Mode is the row's own spawn mode (`headless` or `interactive`). It is
 	// passed to SpawnCaps verbatim: an empty mode takes no mode sub-cap at all,
 	// so defaulting it here would silently disable a cap.
-	Mode      string   `json:"mode"`
-	SessionID string   `json:"session_id"`
-	Liveness  string   `json:"liveness"`
+	Mode      string `json:"mode"`
+	SessionID string `json:"session_id"`
+	Liveness  string `json:"liveness"`
 	// FlagSetBy is the page's raw `flag_set_by` value, carried so the read
 	// endpoint GET /api/1.0/openable can report who set the flag. Empty when the
 	// source did not compute it (the exec source, a fixture).
-	FlagSetBy string `json:"flag_set_by"`
+	FlagSetBy string   `json:"flag_set_by"`
 	// Cwd is the page's `cwd`, carried so the liveness classifier can locate the
 	// session transcript at ~/.claude/projects/<slug(cwd)>/<session-id>.jsonl.
 	// Empty when the source did not compute it.

@@ -43,6 +43,13 @@ type ParkedHold interface {
 	Opened(ctx context.Context, row FlaggedRow)
 }
 
+// ParkedDeclarer is the optional read half of a ParkedHold: it names what the
+// row's last closer declared it waits on, running no probe and writing nothing.
+// A ParkedHold that does not implement it simply yields no parked detail.
+type ParkedDeclarer interface {
+	Declaration(ctx context.Context, row FlaggedRow) (ParkedDeclaration, bool)
+}
+
 // NewParkedGate wires the four probes and the baseline store.
 func NewParkedGate(
 	sessionsDir string,
@@ -160,6 +167,19 @@ func (g *parkedGate) Hold(ctx context.Context, row FlaggedRow) (string, bool) {
 		g.writeDefer(ctx, row, *declaration.Deadline)
 	}
 	return g.holdOrRecord(ctx, row, declaration, observation, closer)
+}
+
+// Declaration returns the row's classified `⏰ Ends:` declaration. It reads the
+// session's event tail and runs no probe, so it is side-effect-free.
+func (g *parkedGate) Declaration(_ context.Context, row FlaggedRow) (ParkedDeclaration, bool) {
+	if row.SessionID == "" || !uuidPattern.MatchString(row.SessionID) {
+		return ParkedDeclaration{}, false
+	}
+	closer := LastCloser(filepath.Join(g.SessionsDir, row.SessionID, sessionEventsName))
+	if closer == "" {
+		return ParkedDeclaration{}, false
+	}
+	return ClassifyParked(closer)
 }
 
 // Evaluate answers whether the row is parked WITHOUT any write or record.
