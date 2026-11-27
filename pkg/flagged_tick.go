@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -151,6 +153,9 @@ const (
 	// entire fleet — so a terminal ledger status alone must not make a row
 	// eligible. What it must do is stop the line asserting the session is alive.
 	reasonNotAbsentDead   = "not-absent-dead"
+	// reasonIndeterminate marks a row whose liveness source could not be read. It
+	// is never auto-opened: an unreadable store is not evidence of absence.
+	reasonIndeterminate = "indeterminate"
 	reasonAlreadyLive     = "already-live"
 	reasonRecentlySpawned = "recently-spawned"
 	// reasonSpawnNotLanded marks a spawn whose child exited inside the 10-min
@@ -469,6 +474,9 @@ type FlaggedTick struct {
 	// Empty resolves it from the daemon's state directory, which `Home` and
 	// `Getenv` scope, exactly as the session store resolves its own.
 	CacheDir string
+	// ProjectsDir is the Claude Code projects dir the liveness classifier reads the
+	// transcript mtime from. Empty resolves to ~/.claude/projects.
+	ProjectsDir string
 	// progressStallOnce and progressStall build the stall clock lazily, so a
 	// fixture that never reaches the predicate never touches a state file.
 	progressStallOnce sync.Once
@@ -994,6 +1002,7 @@ func (t *FlaggedTick) classify(
 	recent map[string]time.Time,
 	dead map[string]struct{},
 	childLive map[string]bool,
+	childErr error,
 	now time.Time,
 	readOnly bool,
 ) (string, rowAction, bool) {
@@ -1044,7 +1053,8 @@ func (t *FlaggedTick) classify(
 	if retryNotLanded {
 		t.logf("flagged-tick: spawn-not-landed row=%s — retrying once", row.Name)
 	}
-	if reason, refused, skipped := decision(row, recent, dead, childLive, now, fresh, retryNotLanded); refused || skipped {
+	verdict := t.classifyLiveness(ctx, row, dead, childLive, childErr, now)
+	if reason, refused, skipped := decision(row, recent, dead, childLive, verdict, now, fresh, retryNotLanded); refused || skipped {
 		if refused {
 			return reason, rowRefused, false
 		}
@@ -1232,6 +1242,7 @@ func (t *FlaggedTick) gateRow(
 	recent map[string]time.Time,
 	dead map[string]struct{},
 	childLive map[string]bool,
+	childErr error,
 	now time.Time,
 	halted string,
 	budgetUsed int,
@@ -1243,7 +1254,7 @@ func (t *FlaggedTick) gateRow(
 	if budgetUsed >= maxRowsPerTick {
 		return reasonRowBudget, rowRefused, "", false
 	}
-	r, act, retry := t.classify(ctx, row, recent, dead, childLive, now, readOnly)
+	r, act, retry := t.classify(ctx, row, recent, dead, childLive, childErr, now, readOnly)
 	if act != rowEligible {
 		return r, act, "", retry
 	}
@@ -1285,7 +1296,7 @@ func (t *FlaggedTick) tickFromRows(
 	// admit a row — `childLive` must also prove the process gone. See decision().
 	dead := endedSessions(ledger)
 	// One session-store read per tick: a 50-row batch must not List 50 times.
-	childLive := t.childLiveness(ctx)
+	childLive, childErr := t.childLiveness(ctx)
 	now := t.now()
 	// halted is the fleet-level refusal that ended this tick's opening pass. It
 	// is a reason string, not a bool, because the rows it leaves behind are still
@@ -1299,7 +1310,7 @@ func (t *FlaggedTick) tickFromRows(
 	var pendingRetry []bool
 	for _, row := range ordered {
 		reason, action, halt, retryNotLanded := t.gateRow(
-			ctx, row, recent, dead, childLive, now, halted,
+			ctx, row, recent, dead, childLive, childErr, now, halted,
 			len(pending)+len(result.Nudged), false,
 		)
 		if halt != "" {
@@ -1588,16 +1599,16 @@ func (t *FlaggedTick) sessionStore(ctx context.Context) SessionStore {
 //
 // An unreadable store yields an empty map, which admits nothing: a failed read
 // must not be read as "every child is gone".
-func (t *FlaggedTick) childLiveness(ctx context.Context) map[string]bool {
+func (t *FlaggedTick) childLiveness(ctx context.Context) (map[string]bool, error) {
 	out := map[string]bool{}
 	store := t.sessionStore(ctx)
 	if store == nil {
-		return out
+		return out, nil
 	}
 	records, err := store.List(ctx)
 	if err != nil {
 		t.logf("flagged-tick: child table read failed, no row is provably gone: %v", err)
-		return out
+		return out, err
 	}
 	for _, record := range records {
 		// A pid of 0 names no process. Treat the record as unknown rather than
@@ -1608,7 +1619,7 @@ func (t *FlaggedTick) childLiveness(ctx context.Context) map[string]bool {
 		}
 		out[record.ID] = pidAlive(record.ChildPID)
 	}
-	return out
+	return out, nil
 }
 
 // endedAtBySession maps a session id to the instant its last turn ended, which
@@ -1781,6 +1792,7 @@ func decision(
 	recent map[string]time.Time,
 	dead map[string]struct{},
 	childLive map[string]bool,
+	verdict livenessVerdict,
 	now time.Time,
 	fresh bool,
 	retryNotLanded bool,
@@ -1814,7 +1826,7 @@ func decision(
 	// left alone. `none` is what `--no-liveness` reports for every row, so the
 	// permissive form would have reopened the entire fleet.
 	if row.Liveness != "ABSENT" && !fresh {
-		if reason, skip := skipNotAbsent(row, dead, childLive); skip {
+		if reason, skip := skipNotAbsent(verdict); skip {
 			return reason, false, true
 		}
 	}
@@ -1850,24 +1862,101 @@ func decision(
 // `done` at 19:14:19, pid alive until 20:13:30). And a missing child record
 // proves nothing — a registry-only session has already been proved live by the
 // registry — so only an explicit dead pid admits the row.
-func skipNotAbsent(
-	row FlaggedRow,
-	dead map[string]struct{},
-	childLive map[string]bool,
-) (reason string, skip bool) {
-	if _, ended := dead[row.SessionID]; !ended {
+// liveWindow is the transcript-mtime window inside which a session is live.
+const liveWindow = 5 * time.Minute
+
+// livenessVerdict is the wrapper's own liveness classification for a session.
+type livenessVerdict int
+
+const (
+	livenessLive livenessVerdict = iota
+	livenessAbsent
+	livenessIndeterminate
+)
+
+// classifyLiveness reads the wrapper's own stores — a live child, the transcript
+// mtime against liveWindow, and the ledger's ended set — so the tick no longer
+// holds a row `not-absent-dead` merely because the ledger says its session ended.
+func (t *FlaggedTick) classifyLiveness(
+	ctx context.Context, row FlaggedRow, dead map[string]struct{}, childLive map[string]bool,
+	childErr error, now time.Time,
+) livenessVerdict {
+	if t.Idle != nil && t.Idle.HoldsIdleChild(ctx, row) {
+		return livenessLive
+	}
+	// The source's registry read is the next signal: LIVE is proof, UNKNOWN is an
+	// unreadable store and must never be auto-opened.
+	switch row.Liveness {
+	case "LIVE":
+		return livenessLive
+	case "UNKNOWN":
+		return livenessIndeterminate
+	}
+	if row.SessionID == "" {
+		return livenessAbsent
+	}
+	if alive, known := childLive[row.SessionID]; known {
+		if alive {
+			return livenessLive
+		}
+		return livenessAbsent
+	}
+	// A failed child-store read cannot prove absence: a transient error would
+	// otherwise reopen a live conversation. Same rule as the childLiveness comment.
+	if childErr != nil {
+		return livenessIndeterminate
+	}
+	mtime, err := t.transcriptMtime(row)
+	if err != nil {
+		return livenessIndeterminate
+	}
+	if !mtime.IsZero() {
+		if now.Sub(mtime) < liveWindow {
+			return livenessLive
+		}
+		return livenessAbsent
+	}
+	if _, ended := dead[row.SessionID]; ended {
+		return livenessAbsent
+	}
+	// The stores are readable and the session is not among them: that is absence,
+	// not an indeterminate read. Only a failed read is indeterminate.
+	return livenessAbsent
+}
+
+// transcriptMtime is the session transcript's mtime, zero when it does not exist.
+func (t *FlaggedTick) transcriptMtime(row FlaggedRow) (time.Time, error) {
+	if row.Cwd == "" {
+		return time.Time{}, nil
+	}
+	dir := t.ProjectsDir
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return time.Time{}, err
+		}
+		dir = filepath.Join(home, ".claude", "projects")
+	}
+	slug := strings.NewReplacer("/", "-", ".", "-").Replace(row.Cwd)
+	info, err := os.Stat(filepath.Join(dir, slug, row.SessionID+".jsonl"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
+}
+
+func skipNotAbsent(verdict livenessVerdict) (reason string, skip bool) {
+	switch verdict {
+	case livenessLive:
 		return reasonNotAbsent, true
-	}
-	// UNKNOWN means the liveness read failed. The ledger's terminal status does
-	// not override that, so the row stays skipped — the permissive form would
-	// reopen the whole fleet under `--no-liveness`.
-	if row.Liveness == "UNKNOWN" {
-		return reasonNotAbsentDead, true
-	}
-	if alive, known := childLive[row.SessionID]; known && !alive {
+	case livenessIndeterminate:
+		return reasonIndeterminate, true
+	default:
 		return "", false
 	}
-	return reasonNotAbsentDead, true
 }
 
 // orderFlaggedRows puts Direct (`role: human`) rows first.

@@ -12,70 +12,39 @@ import (
 )
 
 // TestDecisionProvablyGone pins the admission rule for a row whose liveness is
-// not ABSENT: it is opened only when the ledger says the session ended AND the
-// session store holds a child record whose pid is dead.
-//
-// The cases are the contract. (a) is the fix; (b)-(e) are the shapes it must
-// not break. (e) is the one that matters most: a missing key in
-// map[string]bool reads false, so a literal `!childLive[id]` would admit a
-// registry-only session and put a second writer on a live conversation.
+// not ABSENT: the classifier verdict decides. LIVE is skipped `not-absent`, an
+// unreadable source is skipped `indeterminate` (never auto-opened), and only a
+// provably absent session is admitted.
 func TestDecisionProvablyGone(t *testing.T) {
-	const sessionID = "11111111-2222-3333-4444-555555555555"
-	now := time.Date(2026, 11, 23, 20, 0, 0, 0, time.UTC)
-
-	terminal := map[string]struct{}{sessionID: {}}
-
 	tests := []struct {
 		name       string
-		liveness   string
-		childLive  map[string]bool
+		verdict    livenessVerdict
 		wantSkip   bool
 		wantReason string
 	}{
 		{
-			name:       "(a) terminal ledger + child pid dead -> admitted",
-			liveness:   "LIVE",
-			childLive:  map[string]bool{sessionID: false},
+			name:       "live -> skipped not-absent",
+			verdict:    livenessLive,
+			wantSkip:   true,
+			wantReason: reasonNotAbsent,
+		},
+		{
+			name:       "indeterminate -> skipped indeterminate",
+			verdict:    livenessIndeterminate,
+			wantSkip:   true,
+			wantReason: reasonIndeterminate,
+		},
+		{
+			name:       "absent -> admitted",
+			verdict:    livenessAbsent,
 			wantSkip:   false,
 			wantReason: "",
-		},
-		{
-			name:       "(b) terminal ledger + child pid alive -> skipped",
-			liveness:   "LIVE",
-			childLive:  map[string]bool{sessionID: true},
-			wantSkip:   true,
-			wantReason: reasonNotAbsentDead,
-		},
-		{
-			name:       "(c) UNKNOWN + terminal + no live process -> skipped",
-			liveness:   "UNKNOWN",
-			childLive:  map[string]bool{sessionID: false},
-			wantSkip:   true,
-			wantReason: reasonNotAbsentDead,
-		},
-		{
-			name:       "(d) liveness none + live child pid -> skipped",
-			liveness:   "none",
-			childLive:  map[string]bool{sessionID: true},
-			wantSkip:   true,
-			wantReason: reasonNotAbsentDead,
-		},
-		{
-			name:       "(e) terminal ledger + session absent from the map -> skipped",
-			liveness:   "LIVE",
-			childLive:  map[string]bool{},
-			wantSkip:   true,
-			wantReason: reasonNotAbsentDead,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			row := FlaggedRow{SessionID: sessionID, Liveness: tt.liveness}
-			reason, refused, skipped := decision(row, nil, terminal, tt.childLive, now, false, false)
-			if refused {
-				t.Fatalf("refused = true, want false (reason %q)", reason)
-			}
+			reason, skipped := skipNotAbsent(tt.verdict)
 			if skipped != tt.wantSkip {
 				t.Fatalf("skipped = %v, want %v (reason %q)", skipped, tt.wantSkip, reason)
 			}
@@ -105,7 +74,7 @@ func TestChildLivenessResolvesTheStore(t *testing.T) {
 
 	tick := &FlaggedTick{Home: home, Logf: func(string, ...any) {}}
 
-	got := tick.childLiveness(ctx)
+	got, _ := tick.childLiveness(ctx)
 	alive, ok := got["dead-child"]
 	if !ok {
 		t.Fatalf("childLiveness did not read the resolved store; map = %v", got)

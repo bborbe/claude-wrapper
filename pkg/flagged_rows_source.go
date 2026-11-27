@@ -42,6 +42,10 @@ type FlaggedRow struct {
 	// endpoint GET /api/1.0/openable can report who set the flag. Empty when the
 	// source did not compute it (the exec source, a fixture).
 	FlagSetBy string   `json:"flag_set_by"`
+	// Cwd is the page's `cwd`, carried so the liveness classifier can locate the
+	// session transcript at ~/.claude/projects/<slug(cwd)>/<session-id>.jsonl.
+	// Empty when the source did not compute it.
+	Cwd string `json:"cwd"`
 	Branch    string   `json:"branch"`
 	BlockedBy []string `json:"blocked_by"`
 	// Refused carries the predicate's OWN provenance verdicts — `agent-set-flag`

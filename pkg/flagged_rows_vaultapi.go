@@ -289,6 +289,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 	// field, so a task loses its provenance refusal and a goal loses its due date.
 	role, mode := item.Role, item.Mode
 	flagSetBy, deferDate, blockedBy := item.FlagSetBy, item.DeferDate, item.BlockedBy
+	var cwd string
 	var block string
 	// Only a task carries the stand-down marker and the two instants; a goal or
 	// topic keeps the zero values.
@@ -303,6 +304,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		role = frontmatterString(page.Frontmatter, "role")
 		mode = frontmatterString(page.Frontmatter, "mode")
 		flagSetBy = frontmatterString(page.Frontmatter, "flag_set_by")
+		cwd = frontmatterString(page.Frontmatter, "cwd")
 		deferDate = frontmatterString(page.Frontmatter, "defer_date")
 		blockedBy = frontmatterStrings(page.Frontmatter, "blocked_by")
 		stopped = frontmatterString(page.Frontmatter, "stopped") == "true"
@@ -351,6 +353,7 @@ func (s VaultAPIFlaggedRowsSource) rowForItem(
 		SessionID:    task.Session,
 		Liveness:     live,
 		FlagSetBy:    flagSetBy,
+		Cwd:          cwd,
 		Branch:       branch,
 		BlockedBy:    blockedBy,
 		Refused:      refused,

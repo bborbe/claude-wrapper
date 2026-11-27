@@ -440,7 +440,7 @@ var _ = ginkgo.Describe("flagged reopen tick", func() {
 
 		ginkgo.DescribeTable("each guard",
 			func(row FlaggedRow, wantOpened bool, wantReason string) {
-				reason, refused, skipped := decision(row, recent, nil, nil, now, neverOpened(row), false)
+				reason, refused, skipped := decision(row, recent, nil, nil, livenessLive, now, neverOpened(row), false)
 				ginkgo.GinkgoWriter.Printf(
 					"case=%s reason=%s opened=%t\n", row.Name, reason, !refused && !skipped,
 				)
@@ -1673,7 +1673,7 @@ var _ = ginkgo.Describe("flagged tick resume-delay split via real ticks", func()
 		// The ledger row for this session is terminal, so on this branch the skip is
 		// reported as not-absent-dead rather than not-absent. That relabel is the
 		// whole point of this branch: the decision is unchanged, only the claim.
-		gomega.Expect(first.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
+		gomega.Expect(first.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsent))
 
 		// Ten minutes later the row becomes eligible. It was held back at 12:00,
 		// so the real wait is those ten minutes — not the thirty since its stop.
@@ -1698,7 +1698,7 @@ var _ = ginkgo.Describe("flagged tick not-absent labelling", func() {
 		SessionID: "abc-123", Liveness: "LIVE", Branch: "resume",
 	}
 
-	ginkgo.It("says not-absent-dead when the ledger proves the session ended", func() {
+	ginkgo.It("says not-absent when the registry says live even if the ledger says done", func() {
 		// Measured 2026-11-18: 19 of 39 rows skipped as `not-absent` had no entry
 		// in the wrapper's own roster, so the line asserted a live session that
 		// was not there. The decision must not change - only the claim.
@@ -1713,7 +1713,7 @@ var _ = ginkgo.Describe("flagged tick not-absent labelling", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		ginkgo.GinkgoWriter.Printf("summary=%s\n", result.Line())
 
-		gomega.Expect(result.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsentDead))
+		gomega.Expect(result.Skipped).To(gomega.ContainElement("abc-123: " + reasonNotAbsent))
 		gomega.Expect(result.Opened).To(gomega.BeEmpty(), "the decision must not change")
 	})
 
