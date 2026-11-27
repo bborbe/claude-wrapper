@@ -78,6 +78,46 @@ var _ = ginkgo.Describe("LivenessVerdicts", func() {
 		gomega.Expect(verdicts[0].Source).To(gomega.Equal("child-table"))
 	})
 
+	ginkgo.It("reads not-live for an adopted child the wrapper reaped (exited, no exit code)", func() {
+		// An adopted child has no cmd.Wait, so reap settles it with a nil exit
+		// code. The idle-reaper closing an adopted headless session left the
+		// child table at `state: exited, exit_code: null`, and the verdict stayed
+		// live — the flagged tick skipped the row `not-absent` on every cycle.
+		dir := ginkgo.GinkgoT().TempDir()
+		c := &child{subscribers: map[int]chan Event{}}
+		c.session.ID = "s1"
+		c.session.State = StateIdle
+		c.reap(nil)
+
+		verdicts, err := LivenessVerdicts(
+			ctx,
+			NewSessionRegistry(dir),
+			[]Session{*c.snapshot()},
+			nil,
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(verdicts).To(gomega.HaveLen(1))
+		gomega.Expect(verdicts[0].Liveness).To(gomega.Equal(LivenessNotLive))
+		gomega.Expect(verdicts[0].Source).To(gomega.Equal("child-table"))
+	})
+
+	ginkgo.It("still reads live for an exited child the registry lists", func() {
+		// The double-open guard: a live registry pid wins over the child row.
+		dir := ginkgo.GinkgoT().TempDir()
+		writeRegistryEntry(dir, registryFile{PID: os.Getpid(), SessionID: "s1", Status: "idle"})
+
+		verdicts, err := LivenessVerdicts(
+			ctx,
+			NewSessionRegistry(dir),
+			[]Session{{ID: "s1", State: StateExited}},
+			nil,
+		)
+		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(verdicts).To(gomega.HaveLen(1))
+		gomega.Expect(verdicts[0].Liveness).To(gomega.Equal(LivenessLive))
+		gomega.Expect(verdicts[0].Source).To(gomega.Equal("registry"))
+	})
+
 	ginkgo.It("reads not-live for a session present ONLY in the heartbeat store", func() {
 		// The heartbeat is corroboration only. It must never create a live verdict
 		// on its own — a stale or self-posted row would otherwise resurrect a dead
