@@ -63,7 +63,8 @@ func (t *FlaggedTick) waitingOn(
 		return &OpenableWaitingOn{
 			Summary: "row belongs to a vault family this daemon does not serve",
 		}
-	case reason == RefusalProvenanceUnrecorded:
+	case strings.HasPrefix(reason, RefusalProvenanceUnrecorded):
+		// The refusal carries a ": no actor recorded; …" suffix, so match the token prefix.
 		return &OpenableWaitingOn{
 			Summary: "flag provenance is not recorded; nobody attributed the flag",
 		}
@@ -146,9 +147,13 @@ func notAbsentWaitingOn(row FlaggedRow, reason string) *OpenableWaitingOn {
 	if len(short) > 8 {
 		short = short[:8]
 	}
-	summary := "session " + short + " still live"
-	if reason == reasonNotAbsentDead {
+	// Only a LIVE liveness read justifies "still live"; UNKNOWN means the read failed.
+	summary := "session " + short + " liveness unknown; absence not yet proven"
+	switch {
+	case reason == reasonNotAbsentDead:
 		summary = "session " + short + " ended per ledger; absence not yet proven"
+	case row.Liveness == "LIVE":
+		summary = "session " + short + " still live"
 	}
 	return &OpenableWaitingOn{
 		Summary:   summary,

@@ -151,6 +151,27 @@ var _ = ginkgo.Describe("Openable waiting_on", func() {
 		gomega.Expect(entry.WaitingOn.Summary).To(gomega.Equal("session 11111111 still live"))
 	})
 
+	ginkgo.It("never calls an UNKNOWN-liveness not-absent session live", func() {
+		row := FlaggedRow{SessionID: "33333333-3333-3333-3333-333333333333", Liveness: "UNKNOWN"}
+
+		waiting := notAbsentWaitingOn(row, reasonNotAbsent)
+
+		gomega.Expect(waiting).ToNot(gomega.BeNil())
+		gomega.Expect(waiting.Summary).To(gomega.Equal(
+			"session 33333333 liveness unknown; absence not yet proven"))
+	})
+
+	ginkgo.It("summarises a flag-provenance-unrecorded refusal despite its suffix", func() {
+		tick := newTick(staticSource{}, nil, nil)
+		reason := RefusalProvenanceUnrecorded + ": no actor recorded; clear it with vault-cli task set 'x' flag true --by operator"
+
+		waiting := tick.waitingOn(ctx, FlaggedRow{Name: "x"}, reason, nil, now)
+
+		gomega.Expect(waiting).ToNot(gomega.BeNil())
+		gomega.Expect(waiting.Summary).To(gomega.Equal(
+			"flag provenance is not recorded; nobody attributed the flag"))
+	})
+
 	ginkgo.It("never calls a not-absent-dead session live", func() {
 		row := FlaggedRow{SessionID: "22222222-2222-2222-2222-222222222222"}
 
