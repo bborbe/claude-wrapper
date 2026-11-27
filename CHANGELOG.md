@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.69.2
 
 - fix: **the open-endpoint start command now confirms on an escaped prompt line, so a freshly opened manager's start command is not reported as unsent.** After the confirmation fix for the slash and roster paths (#215), a fresh goal manager opened via the open endpoint still failed with "pane 308 never showed the message as submitted": the open path's `sendStartCommands` uses `SendWhenReadyWithin`, whose confirmation was `SubmissionConfirmed` — matched against the raw escaped line, where a leading SGR before the prompt glyph makes it miss a submit that DID land. `SendWhenReadyWithin` now confirms with `SubmissionConfirmedVisible` (readiness stays `ComposerReady` — the pane is freshly spawned and must not be typed into while it paints); it has no other caller. Change set: `pkg/tab.go`, `pkg/tab_test.go`, `CHANGELOG.md`.
 
