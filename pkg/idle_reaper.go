@@ -48,6 +48,18 @@ type SenderNamer interface {
 	StopAs(ctx context.Context, id string, sender string) error
 }
 
+// IdleReaperSkip is one session a tick skipped, with the reason it was skipped.
+// The counts in IdleReaperResult.Skipped say how many; this says which.
+type IdleReaperSkip struct {
+	// SessionID is the session the tick examined and did not close.
+	SessionID string
+	// Reason is the token the tick recorded for it.
+	Reason string
+	// Notable is true when the session should have been closed and was not: a
+	// headless child, still alive, at or past the floor (or with no age at all).
+	Notable bool
+}
+
 // IdleReaperResult is what one tick did, so the caller can log and a test can
 // assert without reading the log.
 type IdleReaperResult struct {
@@ -55,6 +67,9 @@ type IdleReaperResult struct {
 	Closed []string
 	// Skipped counts the sessions the floor did not apply to, by reason.
 	Skipped map[string]int
+	// SkippedSessions names each skipped session with its reason, so a line can
+	// attribute a skip instead of only counting it.
+	SkippedSessions []IdleReaperSkip
 }
 
 // IdleReaperJob closes headless children that have rested idle past the floor.
@@ -128,6 +143,8 @@ func (j *IdleReaperJob) Tick(ctx context.Context) (IdleReaperResult, error) {
 		reason := idleReapSkipReason(session, floor)
 		if reason != "" {
 			result.Skipped[reason]++
+			result.SkippedSessions = append(result.SkippedSessions,
+				newIdleReaperSkip(session, reason, floor))
 			continue
 		}
 		// ⚠️ The list above is a snapshot. Between it and Stop the child can start a
@@ -137,12 +154,16 @@ func (j *IdleReaperJob) Tick(ctx context.Context) (IdleReaperResult, error) {
 		// interface offers no conditional stop.
 		if !j.stillReapable(ctx, session.ID, floor) {
 			result.Skipped["changed-since-list"]++
+			result.SkippedSessions = append(result.SkippedSessions,
+				newIdleReaperSkip(session, "changed-since-list", floor))
 			continue
 		}
 		if stopErr := j.stop(ctx, session.ID); stopErr != nil {
 			j.logf(JobLine(IdleReaperJobName, "stop-failed",
 				"sid", session.ID, "error", stopErr.Error()))
 			result.Skipped["stop-failed"]++
+			result.SkippedSessions = append(result.SkippedSessions,
+				newIdleReaperSkip(session, "stop-failed", floor))
 			continue
 		}
 		age := idleAge(session)
@@ -279,4 +300,16 @@ func (r IdleReaperResult) skippedCount() int {
 		total += n
 	}
 	return total
+}
+
+// newIdleReaperSkip records one skipped session for the log, with the notable
+// rule applied: a headless child that is still alive and already past the floor
+// (or that carries no age at all) should have been closed, so its reason is
+// worth a line of its own. Every other skip is counted in the tick summary only —
+// a line for every interactive tab or under-floor child every 900 s would drown
+// the log, and the notable set is exactly the "should have been closed" set.
+func newIdleReaperSkip(session Session, reason string, floor time.Duration) IdleReaperSkip {
+	notable := session.Mode == SpawnModeHeadless && session.ExitCode == nil &&
+		(session.LastEventAgeSeconds == nil || idleAge(session) >= floor)
+	return IdleReaperSkip{SessionID: session.ID, Reason: reason, Notable: notable}
 }
