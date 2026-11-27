@@ -482,8 +482,12 @@ func SendWhenReadyWith(
 
 // SendWhenReadyWithin is SendWhenReady with the composer wait given by the
 // caller: a manager's start command waits up to five minutes for the
-// previous command's planning turn to finish. The readiness and confirmation
-// rules are SendWhenReady's own (ComposerReady, SubmissionConfirmed).
+// previous command's planning turn to finish. Readiness stays ComposerReady (the
+// pane is freshly spawned and must not be typed into while it paints), but the
+// confirmation is SubmissionConfirmedVisible: the pane is read with `--escapes`,
+// where SGR interleaves the echoed command, so SubmissionConfirmed false-negatives
+// a start command that DID land — measured 2026-11-26, a fresh goal manager
+// returned "pane 308 never showed the message as submitted".
 func SendWhenReadyWithin(
 	ctx context.Context,
 	tabs TabClient,
@@ -492,7 +496,7 @@ func SendWhenReadyWithin(
 	now libtime.CurrentDateTimeGetter,
 	wait time.Duration,
 ) error {
-	return sendWhenReady(ctx, tabs, paneID, text, now, wait, ComposerReady, SubmissionConfirmed)
+	return sendWhenReady(ctx, tabs, paneID, text, now, wait, ComposerReady, SubmissionConfirmedVisible)
 }
 
 // sendWhenReady is the shared ready-gated send, with the composer wait as a

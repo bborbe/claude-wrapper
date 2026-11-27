@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the open-endpoint start command now confirms on an escaped prompt line, so a freshly opened manager's start command is not reported as unsent.** After the confirmation fix for the slash and roster paths (#215), a fresh goal manager opened via the open endpoint still failed with "pane 308 never showed the message as submitted": the open path's `sendStartCommands` uses `SendWhenReadyWithin`, whose confirmation was `SubmissionConfirmed` — matched against the raw escaped line, where a leading SGR before the prompt glyph makes it miss a submit that DID land. `SendWhenReadyWithin` now confirms with `SubmissionConfirmedVisible` (readiness stays `ComposerReady` — the pane is freshly spawned and must not be typed into while it paints); it has no other caller. Change set: `pkg/tab.go`, `pkg/tab_test.go`, `CHANGELOG.md`.
+
 ## v0.69.1
 
 - fix: **a `parked-until` row whose closer names an event, not a clock, now says so in `waiting_on.summary` instead of the bare `parked: parked-until`.** Live closers such as `⏰ Ends: the manager's cross-session message carrying the observation line` or ``⏰ Ends: `kubectl… get sts …` returning `NotFound` `` carry no date token, so `ClassifyParked` falls through to `parked-until` with a nil `Deadline` — the hold itself has no deadline and releases the row `MAX_AGE_S` after first sighting. `parkedWaitingOn` left the summary at its placeholder in that case. It now reads "parked on an event with no deadline (released 1h0m0s after first sighting): <declaration text, ≤160 runes>"; `until` stays empty — no deadline is invented. Change set: `pkg/openable_waiting_on.go`, `pkg/openable_waiting_on_test.go`, `CHANGELOG.md`.
