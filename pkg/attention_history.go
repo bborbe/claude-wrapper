@@ -114,10 +114,13 @@ func decodeAttentionHistory(ctx context.Context, body []byte) ([]BoardItem, erro
 		return items, nil
 	}
 	var payload struct {
-		Items []BoardItem `json:"items"`
+		Items *[]BoardItem `json:"items"`
 	}
 	if err := json.Unmarshal(trimmed, &payload); err != nil {
 		return nil, errors.Wrapf(ctx, err, "decode attention history object failed")
 	}
-	return payload.Items, nil
+	if payload.Items == nil {
+		return nil, errors.Errorf(ctx, "attention history body has no items field")
+	}
+	return *payload.Items, nil
 }

@@ -193,37 +193,46 @@ var _ = ginkgo.Describe("stall escalation against card history", func() {
 		gomega.Expect(sawPath).To(gomega.Equal(AttentionHistoryPath))
 	})
 
-	ginkgo.It("reads the store's bare-array body", func() {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// The store answers a bare JSON array, not {"items":[…]}. Decoding only
-			// the envelope made every read fail with `cannot unmarshal array into Go
-			// value of type struct { Items []BoardItem }`, so the stall escalation
-			// logged outcome=lookup-failed and posted nothing.
-			_, _ = w.Write([]byte(`[{"item_id":"bare-card","state":"closed",` +
-				`"producer_id":"claude-wrapper-stalled-row","dedup_key":"k1"}]`))
-		}))
-		defer server.Close()
+	// The store answers a bare JSON array, not {"items":[…]}. Decoding only the
+	// envelope made every read fail with `cannot unmarshal array into Go value of
+	// type struct { Items []BoardItem }`, so the stall escalation logged
+	// outcome=lookup-failed and posted nothing.
+	ginkgo.DescribeTable("decodes the history body",
+		func(body string, wantID string, wantErr bool) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
 
-		id, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
-			context.Background(), "claude-wrapper-stalled-row", "k1",
-		)
-		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(id).To(gomega.Equal("bare-card"))
-	})
-
-	ginkgo.It("reads a bare array that holds no matching card", func() {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`[{"item_id":"other","state":"closed",` +
-				`"producer_id":"someone-else","dedup_key":"k1"}]`))
-		}))
-		defer server.Close()
-
-		id, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
-			context.Background(), "claude-wrapper-stalled-row", "k1",
-		)
-		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(id).To(gomega.BeEmpty())
-	})
+			id, err := NewBoardCardHistory(server.URL, nil).ExistingCard(
+				context.Background(), "claude-wrapper-stalled-row", "k1",
+			)
+			if wantErr {
+				gomega.Expect(err).To(gomega.HaveOccurred())
+				gomega.Expect(id).To(gomega.BeEmpty())
+				return
+			}
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(id).To(gomega.Equal(wantID))
+		},
+		ginkgo.Entry("bare array with a matching card",
+			`[{"item_id":"bare-card","producer_id":"claude-wrapper-stalled-row","dedup_key":"k1"}]`,
+			"bare-card", false),
+		ginkgo.Entry("bare array whose match is not first",
+			`[{"item_id":"other","producer_id":"someone-else","dedup_key":"k1"},`+
+				`{"item_id":"bare-card","producer_id":"claude-wrapper-stalled-row","dedup_key":"k1"}]`,
+			"bare-card", false),
+		ginkgo.Entry("bare array with no matching card",
+			`[{"item_id":"other","producer_id":"someone-else","dedup_key":"k1"}]`,
+			"", false),
+		ginkgo.Entry("empty bare array", `[]`, "", false),
+		ginkgo.Entry("envelope with a matching card",
+			`{"items":[{"item_id":"envelope-card","producer_id":"claude-wrapper-stalled-row","dedup_key":"k1"}]}`,
+			"envelope-card", false),
+		ginkgo.Entry("empty body fails closed", ``, "", true),
+		ginkgo.Entry("object without items fails closed", `{}`, "", true),
+		ginkgo.Entry("null fails closed", `null`, "", true),
+	)
 
 	ginkgo.It("ignores another producer's card under the same key", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -255,9 +264,10 @@ var _ = ginkgo.Describe("stall escalation against card history", func() {
 
 	ginkgo.It("does not post when the episode's card is already closed", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`{"items":[{"item_id":"closed-card","state":"closed",` +
+			// The store's real shape: a bare array.
+			_, _ = w.Write([]byte(`[{"item_id":"closed-card","state":"closed",` +
 				`"producer_id":"claude-wrapper-stalled-row","dedup_key":"` +
-				stallEscalationDedupKey(stalledRow("h1")) + `"}]}`))
+				stallEscalationDedupKey(stalledRow("h1")) + `"}]`))
 		}))
 		defer server.Close()
 
