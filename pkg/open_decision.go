@@ -60,6 +60,7 @@ const (
 	OpenReasonInFlight            = "in-flight"
 	OpenReasonSpawnRefused        = "spawn-refused"
 	OpenReasonVaultMismatch       = "vault-mismatch"
+	OpenReasonNoCallerSession     = "no-caller-session"
 )
 
 // OpenWindowKeyHold is the role-map key no open may ever land in.
@@ -90,6 +91,7 @@ var openRemedies = map[string]string{
 	OpenReasonInFlight:            "wait for the other open of this row to finish, then re-run",
 	OpenReasonSpawnRefused:        "read the message, clear what refused (a slot, the launcher or the task state), then re-run",
 	OpenReasonVaultMismatch:       "open the row through a daemon serving its own vault family, then re-run",
+	OpenReasonNoCallerSession:     "pass this session's id in the X-Claude-Code-Session-Id header, then re-run",
 }
 
 // openFlagTruthy is the supervisor's strict YAML-boolean predicate, mirrored
