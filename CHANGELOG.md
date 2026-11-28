@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.71.1
 
 - fix: **a headless session whose turn was written but never started is reaped instead of living forever as `turn-pending`.** A turn is counted before it is written (`child.send`), and the counter is cleared only by the turn's own `result` event or by the child's exit (`apply`, `reap`) — nothing clears it when the write is never consumed. A lost turn therefore left `PendingTurns` at 1 with the record still reading `idle`, which is exactly the `turn-pending` skip, for the life of the process. Measured 2026-11-27: the idle reaper logged `closed=0 skipped=37 reasons=not-idle:28,turn-pending:9` on every 15-minute tick for an hour, and two of those sessions were still alive 11.5 h later. `idleReapSkipReason` now skips a pending turn only while it is still plausibly on its way — under `DefaultPendingTurnStaleAfter` (16 min, derived as `DefaultPermissionTimeout` 15 min + `childHoldMargin` 1 min so a dead permission gate has already timed out). A parked `Question` and an unageable record still keep the session, so a live turn is never cut. Change set: `pkg/idle_reaper.go`, `pkg/idle_reaper_test.go`, `CHANGELOG.md`.
 
