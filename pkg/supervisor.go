@@ -257,6 +257,10 @@ type supervisor struct {
 	// own Ledger, copied here so a child does not read a struct the caller could
 	// still mutate.
 	ledger LedgerReader
+	// parkWaker wakes the manager of a session whose gate just parked. Nil
+	// disables the wake and leaves the park on its own timeout — the behaviour
+	// every build before this field had.
+	parkWaker ParkWaker
 }
 
 // Spawn starts one claude child in stream-json duplex mode.
@@ -549,6 +553,9 @@ func (s *supervisor) RegisterQuestion(ctx context.Context, id string, question Q
 	// leave a goroutine holding a 15-minute timer for the common case.
 	if !s.applyPolicy(ctx, id, c, question) {
 		s.scheduleTimeout(id, c, question)
+		// The park stands, so somebody is waiting on a manager's turn. Wake that
+		// manager now instead of leaving the wait to the next sweep tick.
+		s.wakeParkOwner(ctx, id, question)
 	}
 	return nil
 }

@@ -423,6 +423,35 @@ func newSupervisor(
 	return supervisor, ledger
 }
 
+// installParkWaker wires the manager wake onto a supervisor that supports it.
+//
+// It is a top-level helper rather than inline in startFleetFaces, which is
+// already at the linter's length ceiling. The wake is optional: a supervisor
+// that does not implement the setter keeps its pre-existing behaviour, where a
+// park waits for its own timeout.
+func installParkWaker(
+	supervisor pkg.Supervisor,
+	roster pkg.Roster,
+	registry pkg.SessionRegistry,
+	heartbeats pkg.HeartbeatReader,
+	stateDir string,
+	now libtime.CurrentDateTimeGetter,
+) {
+	waker, ok := supervisor.(interface{ SetParkWaker(pkg.ParkWaker) })
+	if !ok {
+		return
+	}
+	waker.SetParkWaker(&pkg.ParkWake{
+		Sender:   supervisor,
+		Roster:   roster,
+		Liveness: pkg.NewRegistryLiveness(registry, heartbeats),
+		Clock:    now,
+		Recorder: &pkg.FileWakeRecorder{
+			Path: filepath.Join(stateDir, "park-wake", "wakes.jsonl"),
+		},
+	})
+}
+
 const closeOnTerminalTaskDirsUsage = "comma-separated absolute task dirs; at turn end a child whose task " +
 	"(claude_session_id) is completed or aborted is closed. Empty disables"
 
@@ -782,6 +811,9 @@ func startFleetFaces(
 		supervisor, ledger, pkg.NewRegistryLiveness(registry, heartbeats),
 		pkg.NewTranscriptReader(now), registry,
 	)
+	// The manager wake is installed after the roster because it resolves a parked
+	// session's spawner from it.
+	installParkWaker(supervisor, roster, registry, heartbeats, stateDir, now)
 	rosterServer := newRosterServer(
 		roster, supervisor, ledger, decider, attentionURL, a2aManager, tabSpawner,
 		vaults, ownVault, tabs, now, caps, registry, locks, openPaths,
