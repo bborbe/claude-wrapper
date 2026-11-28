@@ -166,22 +166,28 @@ func (w *ParkWake) Wake(ctx context.Context, parkedSessionID, gateID string) err
 		})
 		return nil
 	}
-	w.mutex.Unlock()
-
-	if err := w.Sender.Send(ctx, managerID, ParkWakeMessageText(gateID)); err != nil {
-		// The record is written and the error is NOT returned: the park itself
-		// registered successfully, and failing the caller would make a wake
-		// failure look like a park failure.
-		w.record(ctx, WakeRecord{TS: now, ManagerID: managerID, GateID: gateID, Result: ParkWakeSendFailed})
-		return nil
-	}
-
-	w.mutex.Lock()
+	// Reserve the slot BEFORE releasing the lock. Two parks arriving together
+	// both read "no recent wake" if the check and the write are not one step, and
+	// both send — the cap would then hold only for sequential parks, which is not
+	// the case it exists for.
 	if w.last == nil {
 		w.last = map[string]wakeState{}
 	}
 	w.last[managerID] = wakeState{at: now, coalesced: 0}
 	w.mutex.Unlock()
+
+	if err := w.Sender.Send(ctx, managerID, ParkWakeMessageText(gateID)); err != nil {
+		// Release the reservation so the next park retries instead of being
+		// coalesced against a wake that never landed. The record is written and
+		// the error is NOT returned: the park itself registered successfully, and
+		// failing the caller would make a wake failure look like a park failure.
+		w.mutex.Lock()
+		delete(w.last, managerID)
+		w.mutex.Unlock()
+		w.record(ctx, WakeRecord{TS: now, ManagerID: managerID, GateID: gateID, Result: ParkWakeSendFailed})
+		return nil
+	}
+
 	w.record(ctx, WakeRecord{TS: now, ManagerID: managerID, GateID: gateID, Result: ParkWakeDelivered})
 	return nil
 }

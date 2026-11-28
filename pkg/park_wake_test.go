@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -12,12 +13,21 @@ import (
 // recordingTurnSender records the turns a wake wrote. It is a real
 // implementation of the seam the wake uses, not a mock of the supervisor.
 type recordingTurnSender struct {
-	sent []string
+	mutex sync.Mutex
+	sent  []string
 }
 
 func (s *recordingTurnSender) Send(_ context.Context, id string, _ string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	s.sent = append(s.sent, id)
 	return nil
+}
+
+func (s *recordingTurnSender) sentIDs() []string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return append([]string(nil), s.sent...)
 }
 
 type staticRoster struct {
@@ -45,12 +55,21 @@ func (l *staticLiveness) Live(context.Context) (map[string]struct{}, error) {
 }
 
 type recordingWakeRecorder struct {
+	mutex   sync.Mutex
 	records []WakeRecord
 }
 
 func (r *recordingWakeRecorder) Record(_ context.Context, record WakeRecord) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
 	r.records = append(r.records, record)
 	return nil
+}
+
+func (r *recordingWakeRecorder) all() []WakeRecord {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return append([]WakeRecord(nil), r.records...)
 }
 
 var _ = ginkgo.Describe("ParkWake", func() {
@@ -94,7 +113,7 @@ var _ = ginkgo.Describe("ParkWake", func() {
 
 		gomega.Expect(wake.Wake(ctx, "worker-1", "gate-1")).To(gomega.Succeed())
 
-		gomega.Expect(sender.sent).To(gomega.Equal([]string{"manager-1"}))
+		gomega.Expect(sender.sentIDs()).To(gomega.Equal([]string{"manager-1"}))
 		gomega.Expect(recorder.records).To(gomega.HaveLen(1))
 		gomega.Expect(recorder.records[0].Result).To(gomega.Equal(ParkWakeDelivered))
 		gomega.Expect(recorder.records[0].GateID).To(gomega.Equal("gate-1"))
@@ -112,7 +131,7 @@ var _ = ginkgo.Describe("ParkWake", func() {
 
 		gomega.Expect(wake.Wake(ctx, "worker-1", "gate-2")).To(gomega.Succeed())
 
-		gomega.Expect(sender.sent).To(gomega.Equal([]string{"manager-1"}))
+		gomega.Expect(sender.sentIDs()).To(gomega.Equal([]string{"manager-1"}))
 		gomega.Expect(recorder.records).To(gomega.HaveLen(2))
 		gomega.Expect(recorder.records[1].Result).To(gomega.Equal(ParkWakeCoalesced))
 		gomega.Expect(recorder.records[1].GateID).To(gomega.Equal("gate-2"))
@@ -129,7 +148,7 @@ var _ = ginkgo.Describe("ParkWake", func() {
 
 		gomega.Expect(wake.Wake(ctx, "worker-1", "gate-2")).To(gomega.Succeed())
 
-		gomega.Expect(sender.sent).To(gomega.Equal([]string{"manager-1", "manager-1"}))
+		gomega.Expect(sender.sentIDs()).To(gomega.Equal([]string{"manager-1", "manager-1"}))
 		gomega.Expect(recorder.records).To(gomega.HaveLen(2))
 		gomega.Expect(recorder.records[1].Result).To(gomega.Equal(ParkWakeDelivered))
 	})
@@ -142,7 +161,7 @@ var _ = ginkgo.Describe("ParkWake", func() {
 
 		gomega.Expect(wake.Wake(ctx, "worker-1", "gate-1")).To(gomega.Succeed())
 
-		gomega.Expect(sender.sent).To(gomega.BeEmpty())
+		gomega.Expect(sender.sentIDs()).To(gomega.BeEmpty())
 		gomega.Expect(recorder.records).To(gomega.HaveLen(1))
 		gomega.Expect(recorder.records[0].Result).To(gomega.Equal(ParkWakeNoManager))
 	})
@@ -155,7 +174,7 @@ var _ = ginkgo.Describe("ParkWake", func() {
 
 		gomega.Expect(wake.Wake(ctx, "worker-1", "gate-1")).To(gomega.Succeed())
 
-		gomega.Expect(sender.sent).To(gomega.BeEmpty())
+		gomega.Expect(sender.sentIDs()).To(gomega.BeEmpty())
 		gomega.Expect(recorder.records).To(gomega.HaveLen(1))
 		gomega.Expect(recorder.records[0].Result).To(gomega.Equal(ParkWakeDeadManager))
 	})
@@ -169,8 +188,27 @@ var _ = ginkgo.Describe("ParkWake", func() {
 
 		gomega.Expect(wake.Wake(ctx, "manager-1", "gate-1")).To(gomega.Succeed())
 
-		gomega.Expect(sender.sent).To(gomega.BeEmpty())
+		gomega.Expect(sender.sentIDs()).To(gomega.BeEmpty())
 		gomega.Expect(recorder.records).To(gomega.HaveLen(1))
 		gomega.Expect(recorder.records[0].Result).To(gomega.Equal(ParkWakeSelfManager))
+	})
+
+	ginkgo.It("sends at most one wake when two parks arrive together", func() {
+		wake := newWake(
+			[]AgentRow{{SessionID: "worker-1", ParentSession: parent()}},
+			map[string]struct{}{"manager-1": {}},
+		)
+		var group sync.WaitGroup
+		for index := 0; index < 2; index++ {
+			group.Add(1)
+			go func() {
+				defer ginkgo.GinkgoRecover()
+				defer group.Done()
+				gomega.Expect(wake.Wake(ctx, "worker-1", "gate")).To(gomega.Succeed())
+			}()
+		}
+		group.Wait()
+
+		gomega.Expect(sender.sentIDs()).To(gomega.HaveLen(1))
 	})
 })
