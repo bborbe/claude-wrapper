@@ -89,6 +89,16 @@ func (r *FileWakeRecorder) Record(ctx context.Context, record WakeRecord) error 
 	if r == nil || r.Path == "" {
 		return nil
 	}
+	// ⚠️ A relative path writes wherever the daemon's cwd happens to be — under
+	// launchd that is `/`, where the mkdir fails and every record is lost. The
+	// resolver below returns an absolute path; anything else is refused loudly
+	// rather than dropped, because a record that cannot be written is not
+	// evidence and must not read as one.
+	if !filepath.IsAbs(r.Path) {
+		err := errors.Errorf(ctx, "park-wake record path %q is not absolute", r.Path)
+		log.Printf("park wake record refused: %v", err)
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(r.Path), 0o750); err != nil {
 		return errors.Wrapf(ctx, err, "create park-wake directory for %s failed", r.Path)
 	}
@@ -245,12 +255,16 @@ func (w *ParkWake) clock() libtime.CurrentDateTimeGetter {
 }
 
 // record writes one line and never fails the wake: a wake that happened must
-// not be reported as failed because its ledger was unwritable.
+// not be reported as failed because its ledger was unwritable. It does LOG the
+// failure — a record that vanishes silently is how a broken path went unnoticed
+// through a release.
 func (w *ParkWake) record(ctx context.Context, record WakeRecord) {
 	if w.Recorder == nil {
 		return
 	}
-	_ = w.Recorder.Record(ctx, record)
+	if err := w.Recorder.Record(ctx, record); err != nil {
+		log.Printf("park wake record failed: %v", err)
+	}
 }
 
 // ParkWakeMessageText formats the wake turn for one gate. It is deliberately
@@ -260,6 +274,25 @@ func ParkWakeMessageText(gateID string) string {
 	return "Parked gate wake: a permission gate is parked for a worker you spawned " +
 		"(gate " + gateID + "). Answer it from your gate feed. Nothing was authorised on your behalf and " +
 		"this is not a green light past any gate."
+}
+
+// ParkWakeRecordPath resolves the wake ledger's absolute path.
+//
+// ⚠️ `-state-dir` defaults to "" and the launchd job passes no flag, so a bare
+// `filepath.Join(stateDir, …)` yields a RELATIVE path. Under launchd the daemon's
+// cwd is `/`, the mkdir fails, and every wake decision is lost. Measured
+// 2026-11-28 on v0.71.0: a held park produced no record and no log line, while
+// the fix itself was live.
+func ParkWakeRecordPath(stateDir string) string {
+	base := stateDir
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".claude", "state", "claude-wrapper")
+	}
+	return filepath.Join(base, "park-wake", "wakes.jsonl")
 }
 
 // SetParkWaker installs the manager wake. It is set after construction because

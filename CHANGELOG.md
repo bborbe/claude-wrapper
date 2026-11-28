@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- fix: **the park-wake record now resolves an absolute path, so a wake decision can no longer vanish under launchd.** `-state-dir` defaults to `""` and the launchd job passes no flag, so `filepath.Join(stateDir, "park-wake", "wakes.jsonl")` produced a **relative** path; the daemon's cwd is `/`, `MkdirAll("/park-wake")` failed, and `record()` swallowed the error. Measured 2026-11-28 on v0.71.0: a held park produced no record and no log line while the wake itself was live. `pkg.ParkWakeRecordPath` resolves the default (`~/.claude/state/claude-wrapper/park-wake/wakes.jsonl`), `FileWakeRecorder` refuses a non-absolute path and logs it, and `record()` logs every write failure instead of discarding it. Change set: `pkg/park_wake.go`, `pkg/park_wake_test.go`, `main.go`, `CHANGELOG.md`.
+
 ## v0.71.0
 
 - feat: **a permission gate that parks for a live manager now wakes that manager immediately, instead of waiting for the next sweep tick.** The pane wake could never reach the two populations this exists for: a live headless manager has no pane (`claude-supervisor`'s `manager-wake.py:520-527` prints `HEADLESS`), and a mid-turn manager is refused by `pane-wake-guard.py:157` (`skip:spinner`). This daemon holds the child's stdin, so `RegisterQuestion` now calls a `ParkWaker` after a park the policy did not release: it resolves the parked session's spawner from the roster, checks it is live, and writes one turn to it, coalescing at most one wake per manager per 60 s. Every decision writes one JSON line to `<stateDir>/park-wake/wakes.jsonl` carrying `ts`, `manager_id`, `gate_id`, `result` and `coalesced`, so a suppressed wake is visible rather than invisible and the park→wake latency is measurable. A wake is not an authorisation and never answers the gate. Change set: `pkg/park_wake.go` (new), `pkg/park_wake_test.go` (new), `pkg/supervisor.go`, `main.go`, `CHANGELOG.md`.

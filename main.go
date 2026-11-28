@@ -447,7 +447,7 @@ func installParkWaker(
 		Liveness: pkg.NewRegistryLiveness(registry, heartbeats),
 		Clock:    now,
 		Recorder: &pkg.FileWakeRecorder{
-			Path: filepath.Join(stateDir, "park-wake", "wakes.jsonl"),
+			Path: pkg.ParkWakeRecordPath(stateDir),
 		},
 	})
 }

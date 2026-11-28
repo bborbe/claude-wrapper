@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -210,5 +211,28 @@ var _ = ginkgo.Describe("ParkWake", func() {
 		group.Wait()
 
 		gomega.Expect(sender.sentIDs()).To(gomega.HaveLen(1))
+	})
+})
+
+var _ = ginkgo.Describe("ParkWakeRecordPath", func() {
+	ginkgo.It("resolves an absolute path under the default state dir when stateDir is empty", func() {
+		path := ParkWakeRecordPath("")
+
+		gomega.Expect(filepath.IsAbs(path)).To(gomega.BeTrue())
+		gomega.Expect(path).To(gomega.HaveSuffix(filepath.Join(".claude", "state", "claude-wrapper", "park-wake", "wakes.jsonl")))
+	})
+
+	ginkgo.It("uses the given state dir when it is set", func() {
+		path := ParkWakeRecordPath("/var/tmp/cw-state")
+
+		gomega.Expect(path).To(gomega.Equal(filepath.Join("/var/tmp/cw-state", "park-wake", "wakes.jsonl")))
+	})
+
+	ginkgo.It("refuses a relative record path instead of dropping the record", func() {
+		recorder := &FileWakeRecorder{Path: "park-wake/wakes.jsonl"}
+
+		err := recorder.Record(context.Background(), WakeRecord{Result: ParkWakeDelivered})
+
+		gomega.Expect(err).To(gomega.HaveOccurred())
 	})
 })
