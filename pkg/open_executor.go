@@ -152,6 +152,18 @@ func (e *openExecutor) openRow(
 	mode openCallerMode,
 	callerSessionID string,
 ) OpenVerdict {
+	// A request-mode row with no calling session has no spawner to record, so
+	// opening it would manufacture exactly the unadoptable gate the ownership
+	// predicate refuses. Fail the row by name; the tick mode (the daemon) has no
+	// caller by design and is unaffected.
+	if mode == openModeRequest && callerSessionID == "" {
+		verdict := newOpenVerdict(row)
+		verdict.refuse(*newOpenRefusal(
+			OpenReasonNoCallerSession,
+			"no X-Claude-Code-Session-Id header, so this row has no calling session to record as its spawner",
+		))
+		return e.finish(verdict)
+	}
 	key := openRowKey(row)
 	if !e.claim(key) {
 		verdict := newOpenVerdict(row)

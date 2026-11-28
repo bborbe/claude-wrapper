@@ -271,6 +271,32 @@ var _ = ginkgo.Describe("OpenExecutor", func() {
 		gomega.Expect(f.roleMap.reads).To(gomega.Equal(0))
 	})
 
+	ginkgo.It("a request-mode row with no caller session is refused by name and opens nothing", func() {
+		f := newOpenExecutorFixture()
+		writeOpenPage(f.dir, openTaskTestFolder, "A", "role: agent")
+		writeOpenPage(f.dir, openTaskTestFolder, "H", "role: human")
+		verdicts := f.executor.OpenRequest(ctx, []OpenRow{openTaskRow("A"), openTaskRow("H")}, "")
+		gomega.Expect(verdicts).To(gomega.HaveLen(2))
+		for _, v := range verdicts {
+			gomega.Expect(v.Branch).To(gomega.Equal(OpenBranchRefused))
+			gomega.Expect(v.Reason).To(gomega.Equal(OpenReasonNoCallerSession))
+			gomega.Expect(v.Message).To(gomega.ContainSubstring("no X-Claude-Code-Session-Id header"))
+			gomega.Expect(v.Remedy).To(gomega.ContainSubstring("X-Claude-Code-Session-Id"))
+		}
+		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
+		gomega.Expect(f.tabOpener.requests).To(gomega.BeEmpty())
+		gomega.Expect(f.scripts.calls).To(gomega.BeEmpty())
+	})
+
+	ginkgo.It("a caller session is recorded on the spawn request", func() {
+		f := newOpenExecutorFixture()
+		writeOpenPage(f.dir, openTaskTestFolder, "A", "role: agent")
+		verdict := f.executor.OpenRequest(ctx, []OpenRow{openTaskRow("A")}, "caller-1")[0]
+		gomega.Expect(verdict.Branch).To(gomega.Equal(OpenBranchCreate))
+		gomega.Expect(f.headless.requests).To(gomega.HaveLen(1))
+		gomega.Expect(f.headless.requests[0].CallerSessionID).To(gomega.Equal("caller-1"))
+	})
+
 	ginkgo.It("AC10: the answer-path probe gates every request-mode headless spawn", func() {
 		// Exit 1 refuses with the probe's stdout.
 		f := newOpenExecutorFixture()
@@ -304,7 +330,7 @@ var _ = ginkgo.Describe("OpenExecutor", func() {
 		f = newOpenExecutorFixture()
 		writeOpenPage(f.dir, openTaskTestFolder, "A", "role: agent")
 		verdict = f.executor.OpenRequest(ctx, []OpenRow{openTaskRow("A")}, "")[0]
-		gomega.Expect(verdict.Reason).To(gomega.Equal(OpenReasonAnswerPath))
+		gomega.Expect(verdict.Reason).To(gomega.Equal(OpenReasonNoCallerSession))
 		gomega.Expect(verdict.Message).To(gomega.ContainSubstring("no X-Claude-Code-Session-Id header"))
 		gomega.Expect(f.scripts.calls).To(gomega.BeEmpty())
 		gomega.Expect(f.headless.requests).To(gomega.BeEmpty())
