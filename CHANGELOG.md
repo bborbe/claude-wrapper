@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.71.0
 
 - feat: **a permission gate that parks for a live manager now wakes that manager immediately, instead of waiting for the next sweep tick.** The pane wake could never reach the two populations this exists for: a live headless manager has no pane (`claude-supervisor`'s `manager-wake.py:520-527` prints `HEADLESS`), and a mid-turn manager is refused by `pane-wake-guard.py:157` (`skip:spinner`). This daemon holds the child's stdin, so `RegisterQuestion` now calls a `ParkWaker` after a park the policy did not release: it resolves the parked session's spawner from the roster, checks it is live, and writes one turn to it, coalescing at most one wake per manager per 60 s. Every decision writes one JSON line to `<stateDir>/park-wake/wakes.jsonl` carrying `ts`, `manager_id`, `gate_id`, `result` and `coalesced`, so a suppressed wake is visible rather than invisible and the park→wake latency is measurable. A wake is not an authorisation and never answers the gate. Change set: `pkg/park_wake.go` (new), `pkg/park_wake_test.go` (new), `pkg/supervisor.go`, `main.go`, `CHANGELOG.md`.
 
