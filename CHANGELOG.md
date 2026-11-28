@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.70.0
 
 - fix: **a request-mode `open_rows` / `POST /api/1.0/open` row with no `X-Claude-Code-Session-Id` header is refused by name (`no-caller-session`) instead of opening with no recorded spawner.** A spawn with no caller records an empty `spawner_session_id`, so the resulting worker's permission gates can never be adopted by the ownership predicate — the unadoptable gate this change removes at the source. The refusal fires in the row loop (`pkg/open_executor.go` `openRow`, request mode only), carries a remedy naming the missing header, opens nothing and writes no ledger row; the daemon's tick mode (no caller by design) is unchanged. Change set: `pkg/open_executor.go`, `pkg/open_decision.go`, `pkg/open_executor_test.go`, `CHANGELOG.md`.
 
