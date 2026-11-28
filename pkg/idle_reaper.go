@@ -39,6 +39,21 @@ const (
 	DefaultIdleReaperInterval = 900 * time.Second
 	// IdleReaperJobName is the name the reaper writes in its `job=` lines.
 	IdleReaperJobName = "idle-reaper"
+	// DefaultPendingTurnStaleAfter bounds how long a written-but-unstarted turn
+	// keeps a session out of this job's population.
+	//
+	// A turn is counted before it is written (`child.send`), and the counter is
+	// cleared only by the turn's own `result` event or by the child's exit
+	// (`apply`, `reap`) — nothing clears it when the write is never consumed. Left
+	// unbounded, one lost turn makes a headless session immortal: `StateIdle` plus
+	// `PendingTurns > 0` is exactly the `turn-pending` skip, for the life of the
+	// process.
+	//
+	// The bound is the one legitimate reason a written turn stays unstarted — a
+	// child parked on a permission gate — plus the margin that keeps this from
+	// racing the gate's own timeout. After it, a turn that has not started never
+	// will.
+	DefaultPendingTurnStaleAfter = DefaultPermissionTimeout + childHoldMargin
 )
 
 // SenderNamer is implemented by a supervisor that can name the job closing a
@@ -222,8 +237,23 @@ func idleReapSkipReason(session Session, floor time.Duration) string {
 	// A turn has been written but the child has not yet emitted message_start,
 	// so it still reads idle while a turn is on its way. Closing here would cut
 	// a turn that has not started.
+	//
+	// ⚠️ Only while it is still plausibly on its way. The counter is cleared by the
+	// turn's own `result` or by the child's exit and by nothing else, so a write the
+	// child never consumed leaves `PendingTurns` at 1 with the record still reading
+	// idle — for the life of the process. That session is not a turn on its way, it
+	// is a lost turn, and skipping it here is what makes it immortal. Past the stale
+	// bound it reaps like any other idle child.
+	//
+	// Two readings still keep it, and both are the fail-closed side of that: a
+	// parked question (the child is waiting on a gate, not lost) and an unageable
+	// record (cannot be proven stale).
 	if session.PendingTurns > 0 {
-		return "turn-pending"
+		if session.Question != nil ||
+			session.LastEventAgeSeconds == nil ||
+			idleAge(session) < DefaultPendingTurnStaleAfter {
+			return "turn-pending"
+		}
 	}
 	// Defensive, and kept deliberately. reap() sets State and ExitCode together, so
 	// today this is unreachable — but it is the guard that stops a future path
