@@ -152,10 +152,10 @@ const (
 	// `decision`'s conservatism is deliberate — the permissive form reopens the
 	// entire fleet — so a terminal ledger status alone must not make a row
 	// eligible. What it must do is stop the line asserting the session is alive.
-	reasonNotAbsentDead   = "not-absent-dead"
+	reasonNotAbsentDead = "not-absent-dead"
 	// reasonIndeterminate marks a row whose liveness source could not be read. It
 	// is never auto-opened: an unreadable store is not evidence of absence.
-	reasonIndeterminate = "indeterminate"
+	reasonIndeterminate   = "indeterminate"
 	reasonAlreadyLive     = "already-live"
 	reasonRecentlySpawned = "recently-spawned"
 	// reasonSpawnNotLanded marks a spawn whose child exited inside the 10-min
